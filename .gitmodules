@@ -1,0 +1,6 @@
+[submodule "native_spark"]
+	path = native_spark
+	url = https://github.com/rajasekarv/native_spark
+[submodule "incubator-teaclave-sgx-sdk"]
+	path = incubator-teaclave-sgx-sdk
+	url = https://github.com/apache/incubator-teaclave-sgx-sdk
