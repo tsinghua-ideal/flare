@@ -30,7 +30,7 @@ extern crate sgx_tstd as std;
 use sgx_types::*;
 use sgx_types::metadata::*;
 use sgx_trts::enclave;
-//use sgx_trts::{is_x86_feature_detected, is_cpu_feature_supported};
+use sgx_trts::{is_x86_feature_detected, is_cpu_feature_supported};
 use std::string::String;
 use std::vec::Vec;
 use std::io::{self, Write};

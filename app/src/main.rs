@@ -15,8 +15,6 @@
 // specific language governing permissions and limitations
 // under the License..
 
-extern crate sgx_types;
-extern crate sgx_urts;
 use native_spark::*;
 use sgx_types::*;
 use sgx_urts::SgxEnclave;
@@ -74,7 +72,7 @@ fn main() -> Result<()> {
     enclave.destroy();
 
     let sc = Context::new()?;
-    let col = sc.make_rdd((0..10).collect::<Vec<_>>(), 32);
+    let col = sc.make_rdd((0..10).collect::<Vec<_>>(), 32, true);
     //Fn! will make the closures serializable. It is necessary. use serde_closure version 0.1.3.
     let vec_iter = col.map(Fn!(|i| (0..i).collect::<Vec<_>>()));
     let res = vec_iter.collect().unwrap();
