@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License..
 
-use native_spark::*;
+use vega::*;
 use sgx_types::*;
 use sgx_urts::SgxEnclave;
 
