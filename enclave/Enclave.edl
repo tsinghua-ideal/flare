@@ -23,6 +23,7 @@ enclave {
     trusted {
         /* define ECALLs here. */
 
-        public sgx_status_t say_something([in, size=len] const uint8_t* some_string, size_t len);
+        public size_t secure_executing([in, size=in_len] const uint8_t* input, size_t in_len, [user_check] uint8_t* output);
     };
+
 };

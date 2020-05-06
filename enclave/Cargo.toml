@@ -2,6 +2,7 @@
 name = "sparkenclave"
 version = "1.0.0"
 authors = ["Xiang Li <Xiang.Leee@outlook.com>"]
+edition = "2018"
 
 [lib]
 name = "sparkenclave"
@@ -12,15 +13,25 @@ default = []
 
 [target.'cfg(not(target_env = "sgx"))'.dependencies]
 sgx_types = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
-sgx_tstd = { git = "https://github.com/apache/teaclave-sgx-sdk.git", features = ["backtrace"] }
+sgx_tstd = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
+sgx_tcrypto = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
 sgx_trts = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
+
+[dependencies]
+serde = { git = "https://github.com/mesalock-linux/serde-sgx" }
+serde_derive = { git = "https://github.com/mesalock-linux/serde-sgx" }
+bincode = { git = "https://github.com/mesalock-linux/bincode-sgx" }
+lazy_static = { version = "1.1.0", features = ["spin_no_std"] }
 
 [patch.'https://github.com/apache/teaclave-sgx-sdk.git']
 sgx_alloc = { path = "../incubator-teaclave-sgx-sdk/sgx_alloc" }
+sgx_backtrace = { path = "../incubator-teaclave-sgx-sdk/sgx_backtrace" }
+sgx_backtrace_sys = { path = "../incubator-teaclave-sgx-sdk/sgx_backtrace_sys" }
 sgx_build_helper = { path = "../incubator-teaclave-sgx-sdk/sgx_build_helper" }
 sgx_cov = { path = "../incubator-teaclave-sgx-sdk/sgx_cov" }
 sgx_crypto_helper = { path = "../incubator-teaclave-sgx-sdk/sgx_crypto_helper" }
 sgx_libc = { path = "../incubator-teaclave-sgx-sdk/sgx_libc" }
+sgx_demangle = { path = "../incubator-teaclave-sgx-sdk/sgx_demangle" }
 sgx_rand = { path = "../incubator-teaclave-sgx-sdk/sgx_rand" }
 sgx_rand_derive = { path = "../incubator-teaclave-sgx-sdk/sgx_rand_derive" }
 sgx_serialize = { path = "../incubator-teaclave-sgx-sdk/sgx_serialize" }
