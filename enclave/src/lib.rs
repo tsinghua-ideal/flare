@@ -52,18 +52,21 @@ fn run_function(data: Vec<i32>, ecall_ids: Vec<usize>) -> Vec<i32> {
 #[derive(Serialize, Deserialize, Clone, Default, Debug)]
 pub struct DataAndFuncId<T> {
     pub data: Vec<T>,
-    pub ecall_ids: Vec<usize>,
+    pub ecall_ids: Vec<usize>, //not used yet
 }
 
 #[no_mangle]
 pub extern "C" fn secure_executing(input: *const u8, in_len: usize, output: *mut u8 ) -> usize {
     let input_slice = unsafe { slice::from_raw_parts(input, in_len) };
+    //TODO: i32 needs to be consistent with type of item in the initial RDD.
     let data_and_fid: DataAndFuncId<i32> = bincode::deserialize(input_slice).unwrap();
     let DataAndFuncId {data, ecall_ids} = data_and_fid;
+    //TODO: This closures needs to be consistent with other parts
     let result = data.into_iter()
         .map(|i| i+1 )
         .map(|i| (0..i).collect::<Vec<_>>())
         .collect::<Vec<_>>();
+    
     let serialized_result: Vec<u8> = bincode::serialize(&result).unwrap();
     let out_len = serialized_result.len();
     let output_slice = unsafe { slice::from_raw_parts_mut( output as * mut u8, out_len as usize) }; 
