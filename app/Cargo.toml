@@ -9,7 +9,7 @@ build = "build.rs"
 sgx_types = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
 sgx_urts = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
 
-vega = { path = "../native_spark" }
+vega = { path = "../Submodule-of-SecureSpark" }
 
 # serialization
 bincode = "1.2.1"

@@ -7,7 +7,24 @@ This is the secure version of `Native Spark`, or `Vega`(https://github.com/rajas
 
 ##Infrastructure
 
-It contains two submodules named `native_spark`, which is the focus to modify, and `incubator-teaclave-sgx-sdk`, the Rust SGX SDK developed by Baidu X Lab. `native_spark` has two branches: one is `master`, developed by the development team of `Vega`; the other is `secure`, which is modified by me based on `master`.
+It contains two submodules named `Submodule-of-SecureSpark`, which is the focus to modify, and `incubator-teaclave-sgx-sdk`, the Rust SGX SDK developed by Baidu X Lab. `Submodule-of-SecureSpark` has one branch `master`, which is modified by me based on `master` branch of `Vega` repo.
+
+####git procedure
+
+```
+git clone https://github.com/tsinghua-ideal/SecureSpark
+git submodule update --init --recursive
+```
+
+Patching with the original `Vega` is feasible, you can do this in directory `Submodule-of-SecureSpark`:
+```
+git remote add upstream https://github.com/rajasekarv/vega
+```
+When there is update in `master` branch of `Vega`, you can do this to merge it into our secure version: 
+```
+git fetch upstream
+git merge remotes/upstream/master
+```
 
 ##Setup Environment
 
@@ -29,6 +46,5 @@ Please refer to https://rajasekarv.github.io/vega/ for `Getting started` part an
 
 ###Write an app and run
 
-You can write you Spark App in `./app/src/main.rs`. But only supports `map` now. And the you need to revise the correspond part in enclave. Even you need to slightly reviseone place in `native_spark`. I mark `TODO` for it, and you can use `grep` to search.
-
+You can write you Spark App in `./app/src/main.rs`. But only supports `map` now. And the you need to revise the correspond part in enclave, I mark `TODO` for it. As for most of `TODO`s in `Submodule-of-SecureSpark`, they are marked by the authors of Vega to develop the native Spark. I just marked one `TODO` in `Submodule-of-SecureSpark/src/rdd/rdd.rs:line 201`, which may need revised in order to be consistent with the app. In the future, we expect that there is no need to for user to revise the submodule.
 
