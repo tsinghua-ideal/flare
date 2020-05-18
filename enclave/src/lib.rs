@@ -35,6 +35,7 @@ use std::ptr;
 use std::vec::Vec;
 use std::string::String;
 use std::boxed::Box;
+use bytes::{Bytes, BytesMut};
 
 /*
 fn run_function(data: Vec<i32>, ecall_ids: Vec<usize>) -> Vec<i32> {
@@ -49,22 +50,18 @@ fn run_function(data: Vec<i32>, ecall_ids: Vec<usize>) -> Vec<i32> {
 }
 */
 
-#[derive(Serialize, Deserialize, Clone, Default, Debug)]
-pub struct DataAndFuncId<T> {
-    pub data: Vec<T>,
-    pub ecall_ids: Vec<usize>, //not used yet
-}
-
 #[no_mangle]
-pub extern "C" fn secure_executing(input: *const u8, in_len: usize, output: *mut u8 ) -> usize {
+pub extern "C" fn secure_executing(ecall_ids: *const u8, id_len: usize, input: *const u8, in_len: usize, output: *mut u8 ) -> usize {
+    println!("inside enclave");
     let input_slice = unsafe { slice::from_raw_parts(input, in_len) };
+    //TODO: get ecall_id
+
     //TODO: i32 needs to be consistent with type of item in the initial RDD.
-    let data_and_fid: DataAndFuncId<i32> = bincode::deserialize(input_slice).unwrap();
-    let DataAndFuncId {data, ecall_ids} = data_and_fid;
+    let data: Vec<i32> = bincode::deserialize(input_slice).unwrap();
+
     //TODO: This closures needs to be consistent with other parts
     let result = data.into_iter()
         .map(|i| i+1 )
-        .map(|i| (0..i).collect::<Vec<_>>())
         .collect::<Vec<_>>();
     
     let serialized_result: Vec<u8> = bincode::serialize(&result).unwrap();
@@ -74,3 +71,4 @@ pub extern "C" fn secure_executing(input: *const u8, in_len: usize, output: *mut
     output_slice.copy_from_slice(serialized_result.as_slice());
     out_len 
 }
+
