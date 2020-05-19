@@ -42,9 +42,8 @@ Suppose tasks are not allowed to run on the master node, and all the tasks run o
 
 Checkout the `secure` branch of `native spark` first.
 
-Please refer to https://rajasekarv.github.io/vega/ for `Getting started` part and `Executing an application` part. For setting environment variables, here are two examples in `./bin`. For example of distributed mode, the master is '172.16.124.9' and the slave is '172.16.111.236'.
+Please refer to https://rajasekarv.github.io/vega/ for `Getting started` part and `Executing an application` part. For setting environment variables, here are two examples in `./bin`. For example of distributed mode, the master is '172.16.124.9' and the slave is '172.16.111.236'. To make the configuration effective, you need to type, e.g., `source bin/set_env_local.sh`. `bin/set_env_local.sh` is useless.
 
 ## Usage
 
-You can write you Spark App in `./app/src/main.rs`. But only supports `map` now. And the you need to revise the correspond part in enclave, I mark `TODO` for it. As for most of `TODO`s in `Submodule-of-SecureSpark`, they are marked by the authors of Vega to develop the native Spark. I just marked one `TODO` in `Submodule-of-SecureSpark/src/rdd/rdd.rs:line 201`, which may need revised in order to be consistent with the app. In the future, we expect that there is no need to for user to revise the submodule.
-
+You can write you Spark App in `./app/src/main.rs`. But only supports `map` now. And the you need to revise the correspond part in enclave, I mark `TODO` for it. In nutshell, user only needs to revise app and enclave now.
