@@ -3,23 +3,21 @@ use std::boxed::Box;
 use std::marker::PhantomData;
 use std::sync::{Arc, SgxMutex, Weak};
 use std::vec::Vec;
-use crate::common::{Common, Context};
+use crate::op::{Context, Op, OpVals};
 use crate::basic::{AnyData, Data};
 use crate::dependency::{Dependency};
 
 pub struct ParallelCollection<T> {
-    context: Weak<Context>,
-    id: usize,
-    dependencies: Arc<SgxMutex<Vec<Dependency>>>,
+    vals: Arc<OpVals>, 
+    next_deps: Arc<SgxMutex<Vec<Dependency>>>,
     _marker_t: PhantomData<T>,
 }
 
 impl<T: Data> Clone for ParallelCollection<T> {
     fn clone(&self) -> Self {
         ParallelCollection {
-            context: self.context.clone(),
-            id: self.id,
-            dependencies: self.dependencies.clone(),
+            vals: self.vals.clone(),
+            next_deps: self.next_deps.clone(),
             _marker_t: PhantomData,
         }
     }
@@ -28,37 +26,40 @@ impl<T: Data> Clone for ParallelCollection<T> {
 impl<T: Data> ParallelCollection<T> {
     pub fn new(context: Arc<Context>) -> Self {
         ParallelCollection {
-            context: Arc::downgrade(&context),
-            id: context.new_op_id(),
-            dependencies: Arc::new(SgxMutex::new(Vec::<Dependency>::new())),
+            vals: Arc::new(OpVals::new(context.clone())),
+            next_deps: Arc::new(SgxMutex::new(Vec::<Dependency>::new())),
             _marker_t: PhantomData,
         }
     }
 }
 
-impl<T: Data> Common for ParallelCollection<T> {
+impl<T: Data> Op for ParallelCollection<T> {
     type Item = T;
     fn get_id(&self) -> usize {
-        self.id
+        self.vals.id
     }
 
     fn get_context(&self) -> Arc<Context> {
-        self.context.upgrade().unwrap()
+        self.vals.context.upgrade().unwrap()
     }
 
-    fn get_op(&self) -> Arc<dyn Common<Item = Self::Item>> {
+    fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>> {
         Arc::new(self.clone())
     }
 
-    fn get_dependencies(&self) -> Arc<SgxMutex<Vec<Dependency>>> {
-        self.dependencies.clone()
+    fn get_deps(&self) -> Vec<Dependency> {
+        self.vals.deps.clone()
+    }
+
+    fn get_next_deps(&self) -> Arc<SgxMutex<Vec<Dependency>>> {
+        self.next_deps.clone()
     }
 
     fn compute_by_id(&self, ser_data: &[u8], ser_data_idx: &[usize], id: usize, is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
-        if id == self.id {
+        if id == self.get_id() {
             assert!(ser_data_idx.len()==1 && ser_data.len()==*ser_data_idx.last().unwrap());
-            let dep = self.dependencies.lock().unwrap();
-            match self.id > dep.len() || is_shuffle == 0 {
+            let next_deps = self.next_deps.lock().unwrap();
+            match is_shuffle == 0 {  //TODO maybe need to check if shuf_dep not in dep
                 true => {       //No shuffle later
                     let result = self.compute(ser_data).collect::<Vec<Self::Item>>();
                     let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
@@ -68,7 +69,7 @@ impl<T: Data> Common for ParallelCollection<T> {
                 false => {      //Shuffle later
                     let data: Vec<Self::Item> = bincode::deserialize(ser_data).unwrap();  
                     let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
-                    let shuf_dep = match &dep[id] {
+                    let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
                         Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
                         Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
                     };

@@ -6,25 +6,27 @@ use std::sync::{Arc, SgxMutex, Weak};
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
 use crate::basic::{Data};
-use crate::common::{Common, Context};
+use crate::op::{Context, Op, OpVals};
 use crate::dependency::{Dependency, ShuffleDependency, ShuffleDependencyTrait};
 use crate::partitioner::Partitioner;
 
 pub struct Shuffled<K: Data + Eq + Hash, V: Data, C: Data> {
-    context: Weak<Context>,
-    id: usize,
-    dependencies: Arc<SgxMutex<Vec<Dependency>>>,
-    parent: Arc<dyn Common<Item = (K, V)>>,
+    vals: Arc<OpVals>,
+    next_deps: Arc<SgxMutex<Vec<Dependency>>>,
+    parent: Arc<dyn Op<Item = (K, V)>>,
+    aggregator: Arc<Aggregator<K, V, C>>,
+    part: Box<dyn Partitioner>,
     _marker_t: PhantomData<C>
 }
 
 impl<K: Data + Eq + Hash, V: Data, C: Data> Clone for Shuffled<K, V, C> {
     fn clone(&self) -> Self {
         Shuffled {
-            context: self.context.clone(),
-            id: self.id,
-            dependencies: self.dependencies.clone(),
+            vals: self.vals.clone(),
+            next_deps: self.next_deps.clone(),
             parent: self.parent.clone(),
+            aggregator: self.aggregator.clone(),
+            part: self.part.clone(),
             _marker_t: PhantomData,
         }
     }
@@ -32,54 +34,64 @@ impl<K: Data + Eq + Hash, V: Data, C: Data> Clone for Shuffled<K, V, C> {
 
 impl<K: Data + Eq + Hash, V: Data, C: Data> Shuffled<K, V, C> {
     pub(crate) fn new(
-        parent: Arc<dyn Common<Item = (K, V)>>,
+        parent: Arc<dyn Op<Item = (K, V)>>,
         aggregator: Arc<Aggregator<K, V, C>>,
         part: Box<dyn Partitioner>,
     ) -> Self {
+        let dep = Dependency::ShuffleDependency(Arc::new(
+            ShuffleDependency::new(
+                false,
+                aggregator.clone(),
+                part.clone(),
+            ),
+        ));
         let ctx = parent.get_context();
-
-        parent.get_dependencies().lock().unwrap().push(
-            Dependency::ShuffleDependency(Arc::new(
-                ShuffleDependency::new(
-                    false,
-                    aggregator.clone(),
-                    part.clone(),
-                ),
-            ))
-        );
+        let mut vals = OpVals::new(ctx);
+        vals.deps.push(dep.clone());
+        let vals = Arc::new(vals);
+        parent.get_next_deps().lock().unwrap().push(dep);
         Shuffled {
-            context: Arc::downgrade(&ctx),
-            id: ctx.new_op_id(),
-            dependencies: parent.get_dependencies(),
+            vals,
+            next_deps: Arc::new(SgxMutex::new(Vec::<Dependency>::new())),
             parent,
+            aggregator,
+            part,
             _marker_t: PhantomData
         }
     }
 }
 
-impl<K: Data + Eq + Hash, V: Data, C: Data> Common for Shuffled<K, V, C> {
+impl<K: Data + Eq + Hash, V: Data, C: Data> Op for Shuffled<K, V, C> {
     type Item = (K, C);
 
     fn get_id(&self) -> usize {
-        self.id
+        self.vals.id
     }
 
-    fn get_op(&self) -> Arc<dyn Common<Item = Self::Item>> {
+    fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>> {
         Arc::new(self.clone())
     }
 
     fn get_context(&self) -> Arc<Context> {
-        self.context.upgrade().unwrap()
+        self.vals.context.upgrade().unwrap()
     }
 
-    fn get_dependencies(&self) -> Arc<SgxMutex<Vec<Dependency>>> {
-        self.dependencies.clone()
+    fn get_deps(&self) -> Vec<Dependency> {
+        self.vals.deps.clone()
+    }
+
+    fn get_next_deps(&self) -> Arc<SgxMutex<Vec<Dependency>>> {
+        self.next_deps.clone()
+    }
+
+    fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
+        Some(self.part.clone())
     }
 
     fn compute_by_id(&self, ser_data: &[u8], ser_data_idx: &[usize], id: usize, is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
-        if id == self.id {
-            let dep = self.dependencies.lock().unwrap();
-            match self.id > dep.len() || is_shuffle == 0 {
+        if id == self.get_id() {
+            let next_deps = self.next_deps.lock().unwrap();
+            match is_shuffle == 0 {
                 true => {       //No shuffle later
                     assert!(ser_data_idx.len()==1 && ser_data.len()==*ser_data_idx.last().unwrap());
                     let result = self.compute(ser_data).collect::<Vec<Self::Item>>();
@@ -89,15 +101,7 @@ impl<K: Data + Eq + Hash, V: Data, C: Data> Common for Shuffled<K, V, C> {
                 },
                 false => {      //Shuffle later
                     let mut combiners: HashMap<K, Option<C>> = HashMap::new();
-                    let shuf_dep_r = match &dep[self.id-1] {
-                        Dependency::ShuffleDependency(shuf_dep) => shuf_dep.clone().downcast_arc::<ShuffleDependency<K, V, C>>(),
-                        Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
-                    };
-                    let aggregator = match shuf_dep_r {
-                        Ok(shuf_dep) => shuf_dep.aggregator.clone(),
-                        Err(_) => panic!("get aggregator error!"),
-                    };
-
+                    let aggregator = self.aggregator; 
                     let mut data = Vec::<(K, C)>::with_capacity(std::mem::size_of_val(ser_data));
                     let mut pre_idx: usize = 0;
                     let mut i = 0;
@@ -124,7 +128,7 @@ impl<K: Data + Eq + Hash, V: Data, C: Data> Common for Shuffled<K, V, C> {
                 },
             }
         }
-        else if id < self.id {
+        else if id < self.get_id() {
             self.parent.compute_by_id(ser_data, ser_data_idx, id, is_shuffle) 
         } else {
             panic!("Invalid id")

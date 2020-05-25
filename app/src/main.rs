@@ -18,8 +18,10 @@
 use vega::*;
 
 fn main() -> Result<()> {
-    let sc = Context::new()?;
     
+    //group_by
+    /*
+    let sc = Context::new()?;
     let vec = vec![
         ("x".to_string(), 1),
         ("x".to_string(), 2),
@@ -37,8 +39,37 @@ fn main() -> Result<()> {
         ("y".to_string(), 7),
         ("y".to_string(), 8),
     ];
-    
+    let r = sc.make_rdd(vec, 4, true);
+    let g = r.group_by_key(4);
+    let res = g.collect().unwrap();
+    println!("result: {:?}", res);
+    */
+
+    //join
+    let sc = Context::new()?;
+    let col1 = vec![
+        (1, ("A".to_string(), "B".to_string())),
+        (2, ("C".to_string(), "D".to_string())),
+        (3, ("E".to_string(), "F".to_string())),
+        (4, ("G".to_string(), "H".to_string())),
+    ];
+    let col1 = sc.parallelize(col1, 4, true);
+    let col2 = vec![
+        (1, "A1".to_string()),
+        (1, "A2".to_string()),
+        (2, "B1".to_string()),
+        (2, "B2".to_string()),
+        (3, "C1".to_string()),
+        (3, "C2".to_string()),
+    ];
+    let col2 = sc.parallelize(col2, 4, true);
+    let inner_joined_rdd = col2.join(col1.clone(), 4);
+    let res = inner_joined_rdd.collect().unwrap();
+    println!("result: {:?}", res);
+
+    //map
     /*
+    let sc = Context::new()?;
     let col = sc.make_rdd((0..100).collect::<Vec<_>>(), 1, true);
     //Fn! will make the closures serializable. It is necessary. use serde_closure version 0.1.3.
     let vec_iter = col.map(Fn!(|i| i+1 ));
@@ -46,10 +77,6 @@ fn main() -> Result<()> {
     println!("result: {:?}", res.last());
     */
     
-    let r = sc.make_rdd(vec, 4, true);
-    let g = r.group_by_key(4);
-    let res = g.collect().unwrap();
-    println!("result: {:?}", res);
     
     Ok(())
 }

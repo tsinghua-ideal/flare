@@ -39,17 +39,13 @@ use bytes::{Bytes, BytesMut};
 
 mod aggregator;
 mod basic;
-mod common;
 mod dependency;
 mod downcast_rs;
 mod dyn_clone;
-mod pair;
-mod parallel_collection;
 mod partitioner;
-mod mapper;
-mod shuffled;
-use crate::common::Common;
-use crate::pair::Pair;
+mod op;
+
+use crate::op::{Context, Op, Pair};
 
 #[no_mangle]
 pub extern "C" fn secure_executing(id: usize, 
@@ -64,10 +60,12 @@ pub extern "C" fn secure_executing(id: usize,
     let ser_data_idx = unsafe { slice::from_raw_parts(input_idx as *const usize, idx_len)};
     let ser_data = unsafe { slice::from_raw_parts(input as *const u8, ser_data_idx[idx_len-1]) };
 
-    let sc = common::Context::new();
+    //TODO
+    let sc = Context::new();
     let r = sc.make_op::<(String, i32)>();
     let g = r.group_by_key(4);
     let (ser_result, ser_result_idx) = g.compute_by_id(ser_data, ser_data_idx, id, is_shuffle);
+    //End TODO
 
     let out_idx_len = ser_result_idx.len();
     let out_idx = unsafe { slice::from_raw_parts_mut(output_idx as * mut usize, out_idx_len as usize) }; 

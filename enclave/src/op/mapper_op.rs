@@ -2,7 +2,7 @@ use std::boxed::Box;
 use std::marker::PhantomData;
 use std::sync::{Arc, SgxMutex, Weak};
 use std::vec::Vec;
-use crate::common::{Common, Context};
+use crate::op::{Context, Op, OpVals};
 use crate::dependency::{Dependency, OneToOneDependency};
 use crate::basic::{AnyData, Data};
 
@@ -10,10 +10,9 @@ pub struct Mapper<T: Data, U: Data, F>
 where
     F: Fn(T) -> U + Clone,
 {
-    context: Weak<Context>,
-    id: usize,
-    dependencies: Arc<SgxMutex<Vec<Dependency>>>,
-    prev: Arc<dyn Common<Item = T>>,
+    vals: Arc<OpVals>,
+    next_deps: Arc<SgxMutex<Vec<Dependency>>>,
+    prev: Arc<dyn Op<Item = T>>,
     f: F,
     _marker_t: PhantomData<T>,
 }
@@ -24,9 +23,8 @@ where
 {
     fn clone(&self) -> Self {
         Mapper {
-            context: self.context.clone(),
-            id: self.id,
-            dependencies: self.dependencies.clone(),
+            vals: self.vals.clone(),
+            next_deps: self.next_deps.clone(),
             prev: self.prev.clone(),
             f: self.f.clone(),
             _marker_t: PhantomData,
@@ -38,18 +36,21 @@ impl<T: Data, U: Data, F> Mapper<T, U, F>
 where
     F: Fn(T) -> U + Clone,
 {
-    pub(crate) fn new(prev: Arc<dyn Common<Item = T>>, f: F) -> Self {
-        let sc = prev.get_context();
-        prev.get_dependencies().lock().unwrap().push(
+    pub(crate) fn new(prev: Arc<dyn Op<Item = T>>, f: F) -> Self {
+        let mut vals = OpVals::new(prev.get_context());
+        vals.deps
+            .push(Dependency::NarrowDependency(Arc::new(
+                OneToOneDependency::new(),
+            )));
+        let vals = Arc::new(vals);
+        prev.get_next_deps().lock().unwrap().push(
             Dependency::NarrowDependency(
                 Arc::new(OneToOneDependency::new())
             )
         );
-
         Mapper {
-            context: Arc::downgrade(&sc),
-            id: sc.new_op_id(),
-            dependencies: prev.get_dependencies(),
+            vals,
+            next_deps: Arc::new(SgxMutex::new(Vec::<Dependency>::new())),
             prev,
             f,
             _marker_t: PhantomData,
@@ -57,32 +58,36 @@ where
     }
 }
 
-impl<T: Data, U: Data, F> Common for Mapper<T, U, F>
+impl<T: Data, U: Data, F> Op for Mapper<T, U, F>
 where
     F: Fn(T) -> U + Send + Sync + Clone + 'static,
 {
     type Item = U;
     fn get_id(&self) -> usize {
-        self.id
+        self.vals.id
     }
     
-    fn get_op(&self) -> Arc<dyn Common<Item = Self::Item>> { 
+    fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>> { 
         Arc::new(self.clone())
     }
 
     fn get_context(&self) -> Arc<Context> {
-        self.context.upgrade().unwrap()
+        self.vals.context.upgrade().unwrap()
     }
-
-    fn get_dependencies(&self) -> Arc<SgxMutex<Vec<Dependency>>> {
-        self.dependencies.clone()
+    
+    fn get_deps(&self) -> Vec<Dependency> {
+        self.vals.deps.clone()
+    }
+    
+    fn get_next_deps(&self) -> Arc<SgxMutex<Vec<Dependency>>> {
+        self.next_deps.clone()
     }
 
     fn compute_by_id (&self, ser_data: &[u8], ser_data_idx: &[usize], id: usize, is_shuffle: u8) -> (Vec<u8>, Vec<usize>){
-        if id == self.id {
+        if id == self.get_id() {
             assert!(ser_data_idx.len()==1 && ser_data.len()==*ser_data_idx.last().unwrap());
-            let dep = self.dependencies.lock().unwrap();
-            match self.id > dep.len() || is_shuffle == 0 {
+            let next_deps = self.next_deps.lock().unwrap();
+            match is_shuffle == 0 {
                 true => {       //No shuffle later
                     let result = self.compute(ser_data).collect::<Vec<Self::Item>>();
                     let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
@@ -92,7 +97,7 @@ where
                 false => {      //Shuffle later
                     let data: Vec<Self::Item> = bincode::deserialize(ser_data).unwrap();    
                     let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
-                    let shuf_dep = match &dep[id] {
+                    let shuf_dep = match &next_deps[0] {
                         Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
                         Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
                     };
@@ -110,7 +115,7 @@ where
             } 
 
         }
-        else if id < self.id {
+        else if id < self.get_id() {
             self.prev.compute_by_id(ser_data, ser_data_idx, id, is_shuffle)
         } else {
             panic!("Invalid id")
