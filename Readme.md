@@ -46,4 +46,4 @@ Please refer to https://rajasekarv.github.io/vega/ for `Getting started` part an
 
 ## Usage
 
-You can write you Spark App in `./app/src/main.rs`. But only supports `map` now. And the you need to revise the correspond part in enclave, I mark `TODO` for it. In nutshell, user only needs to revise app and enclave now.
+You can write you Spark App in `./app/src/main.rs`. It supports `map` and `group_by` now. And the you need to revise the correspond part in enclave, I mark `TODO` for it. In nutshell, user only needs to revise app and enclave now.

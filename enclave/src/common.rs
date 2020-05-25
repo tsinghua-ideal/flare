@@ -1,12 +1,13 @@
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc,
+    Arc, SgxMutex,
 };
 use std::boxed::Box;
 use std::vec::Vec;
-use crate::parallel_collection::ParallelCollection;
+use crate::basic::{AnyData, Data, Arc as SerArc};
+use crate::dependency::Dependency;
 use crate::mapper::Mapper;
-use crate::basic::{Data, Arc as SerArc};
+use crate::parallel_collection::ParallelCollection;
 
 #[derive(Default)]
 pub struct Context {
@@ -40,8 +41,11 @@ impl<I: Common + ?Sized> Common for SerArc<I> {
     fn get_context(&self) -> Arc<Context> {
         (**self).get_context()
     }
-    fn compute_by_id(&self, ser_data: &[u8], id: usize) -> Vec<u8> {
-        (**self).compute_by_id(ser_data, id)
+    fn get_dependencies(&self) -> Arc<SgxMutex<Vec<Dependency>>> {
+        (**self).get_dependencies()
+    }
+    fn compute_by_id(&self, ser_data: &[u8], ser_data_idx: &[usize], id: usize, is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
+        (**self).compute_by_id(ser_data, ser_data_idx, id, is_shuffle)
     }
     fn compute(&self, ser_data: &[u8]) -> Box<dyn Iterator<Item = Self::Item>> {
         (**self).compute(ser_data)
@@ -53,7 +57,8 @@ pub trait Common: Send + Sync + 'static {
     fn get_id(&self) -> usize;
     fn get_op(&self) -> Arc<dyn Common<Item = Self::Item>>;
     fn get_context(&self) -> Arc<Context>;
-    fn compute_by_id(&self, ser_data: &[u8], id: usize) -> Vec<u8>;
+    fn get_dependencies(&self) -> Arc<SgxMutex<Vec<Dependency>>>;
+    fn compute_by_id(&self, ser_data: &[u8], ser_data_idx: &[usize], id: usize, is_shuffle: u8) -> (Vec<u8>, Vec<usize>);
     fn compute(&self, ser_data: &[u8]) -> Box<dyn Iterator<Item = Self::Item>>;
 
     fn map<U: Data, F>(&self, f: F) -> SerArc<dyn Common<Item = U>>

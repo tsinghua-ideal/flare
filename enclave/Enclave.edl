@@ -23,7 +23,13 @@ enclave {
     trusted {
         /* define ECALLs here. */
 
-        public size_t secure_executing([in, size=id_len] const uint8_t* ecall_ids, size_t id_len, [in, size=in_len] const uint8_t* input, size_t in_len, [user_check] uint8_t* output);
+        public size_t secure_executing(size_t id, 
+				uint8_t is_shuffle, 
+				[user_check] const uint8_t* input, 
+				[in, count=idx_len] const size_t* input_idx, 
+				size_t idx_len, 
+				[user_check] uint8_t* output, 
+				[user_check] size_t* output_idx);
     };
 
 };

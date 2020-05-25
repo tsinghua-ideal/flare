@@ -1,5 +1,5 @@
 use std::{
-	any, borrow::{Borrow, BorrowMut}, error, fmt, marker, ops::{self, Deref, DerefMut}, sync
+	any, boxed, borrow::{Borrow, BorrowMut}, error, fmt, marker, ops::{self, Deref, DerefMut}, sync, vec::Vec,
 };
 
 pub trait Data:
@@ -25,6 +25,54 @@ impl<
         + 'static,
     > Data for T
 {
+}
+
+pub trait AnyData:
+    crate::dyn_clone::DynClone + any::Any + Send + Sync + fmt::Debug + 'static
+{
+    fn as_any(&self) -> &dyn any::Any;
+    /// Convert to a `&mut std::any::Any`.
+    fn as_any_mut(&mut self) -> &mut dyn any::Any;
+    /// Convert to a `std::boxed::Box<dyn std::any::Any>`.
+    fn into_any(self: boxed::Box<Self>) -> boxed::Box<dyn any::Any>;
+    /// Convert to a `std::boxed::Box<dyn std::any::Any + Send>`.
+    fn into_any_send(self: boxed::Box<Self>) -> boxed::Box<dyn any::Any + Send>;
+    /// Convert to a `std::boxed::Box<dyn std::any::Any + Sync>`.
+    fn into_any_sync(self: boxed::Box<Self>) -> boxed::Box<dyn any::Any + Sync>;
+    /// Convert to a `std::boxed::Box<dyn std::any::Any + Send + Sync>`.
+    fn into_any_send_sync(self: boxed::Box<Self>) -> boxed::Box<dyn any::Any + Send + Sync>;
+}
+
+crate::clone_trait_object!(AnyData);
+
+// Automatically implementing the Data trait for all types which implements the required traits
+impl<
+        T: crate::dyn_clone::DynClone
+            + any::Any
+            + Send
+            + Sync
+            + fmt::Debug
+            + 'static,
+    > AnyData for T
+{
+    fn as_any(&self) -> &dyn any::Any {
+        self
+    }
+    fn as_any_mut(&mut self) -> &mut dyn any::Any {
+        self
+    }
+    fn into_any(self: boxed::Box<Self>) -> boxed::Box<dyn any::Any> {
+        self
+    }
+    fn into_any_send(self: boxed::Box<Self>) -> boxed::Box<dyn any::Any + Send> {
+        self
+    }
+    fn into_any_sync(self: boxed::Box<Self>) -> boxed::Box<dyn any::Any + Sync> {
+        self
+    }
+    fn into_any_send_sync(self: boxed::Box<Self>) -> boxed::Box<dyn any::Any + Send + Sync> {
+        self
+    }
 }
 
 /// Convenience wrapper around [std::sync::Arc<T>](std::sync::Arc) that automatically uses `serde_traitobject` for (de)serialization.

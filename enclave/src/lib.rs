@@ -16,9 +16,10 @@
 // under the License..
 #![crate_name = "sparkenclave"]
 #![crate_type = "staticlib"]
+#![feature(coerce_unsized)]
+#![feature(fn_traits)]
 #![feature(unboxed_closures)]
 #![feature(unsize)]
-#![feature(coerce_unsized)]
 
 #![cfg_attr(not(target_env = "sgx"), no_std)]
 #![cfg_attr(target_env = "sgx", feature(rustc_private))]
@@ -32,29 +33,48 @@ extern crate serde_derive;
 use sgx_types::*;
 use sgx_tcrypto::*;
 use std::slice;
+use std::string::String;
+use std::vec::Vec;
 use bytes::{Bytes, BytesMut};
 
+mod aggregator;
 mod basic;
 mod common;
+mod dependency;
+mod downcast_rs;
+mod dyn_clone;
+mod pair;
 mod parallel_collection;
+mod partitioner;
 mod mapper;
+mod shuffled;
 use crate::common::Common;
+use crate::pair::Pair;
 
 #[no_mangle]
-pub extern "C" fn secure_executing(ecall_ids: *const u8, id_len: usize, input: *const u8, in_len: usize, output: *mut u8 ) -> usize {
-    println!("inside enclave");
-    let input_slice = unsafe { slice::from_raw_parts(input, in_len) };
-    let id_len = id_len/std::mem::size_of::<usize>();
-    let ecall_ids = unsafe { slice::from_raw_parts(ecall_ids as *const usize, id_len) };    
-    
-    let sc = common::Context::new();
-    let op = sc.make_op::<i32>();
-    let op1 = op.map(|x| x+1);
-    let ser_result = op1.compute_by_id(input_slice, ecall_ids[0]);
+pub extern "C" fn secure_executing(id: usize, 
+                                   is_shuffle: u8, 
+                                   input: *const u8, 
+                                   input_idx: *const usize,
+                                   idx_len: usize, 
+                                   output: *mut u8, 
+                                   output_idx: *mut usize) -> usize 
+{
+    //println!("inside enclave id = {:?}, is_shuffle = {:?}", id, is_shuffle);
+    let ser_data_idx = unsafe { slice::from_raw_parts(input_idx as *const usize, idx_len)};
+    let ser_data = unsafe { slice::from_raw_parts(input as *const u8, ser_data_idx[idx_len-1]) };
 
-    let out_len = ser_result.len();
-    let output_slice = unsafe { slice::from_raw_parts_mut( output as * mut u8, out_len as usize) }; 
-    output_slice.copy_from_slice(ser_result.as_slice());
-    out_len 
+    let sc = common::Context::new();
+    let r = sc.make_op::<(String, i32)>();
+    let g = r.group_by_key(4);
+    let (ser_result, ser_result_idx) = g.compute_by_id(ser_data, ser_data_idx, id, is_shuffle);
+
+    let out_idx_len = ser_result_idx.len();
+    let out_idx = unsafe { slice::from_raw_parts_mut(output_idx as * mut usize, out_idx_len as usize) }; 
+    out_idx.copy_from_slice(ser_result_idx.as_slice());
+    let out = unsafe { slice::from_raw_parts_mut(output as * mut u8, out_idx[out_idx_len-1] as usize) }; 
+    out.copy_from_slice(ser_result.as_slice());
+    out_idx_len
 }
+
 
