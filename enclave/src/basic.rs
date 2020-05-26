@@ -53,8 +53,6 @@ impl<
             + Send
             + Sync
             + fmt::Debug
-            + serde::ser::Serialize
-            + serde::de::DeserializeOwned
             + 'static,
     > AnyData for T
 {

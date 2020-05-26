@@ -18,8 +18,15 @@
 #![crate_type = "staticlib"]
 #![feature(coerce_unsized)]
 #![feature(fn_traits)]
+#![feature(specialization)]
 #![feature(unboxed_closures)]
 #![feature(unsize)]
+
+#![feature(
+    arbitrary_self_types,
+    core_intrinsics,
+    binary_heap_into_iter_sorted,
+)]
 
 #![cfg_attr(not(target_env = "sgx"), no_std)]
 #![cfg_attr(target_env = "sgx", feature(rustc_private))]
@@ -45,7 +52,14 @@ mod dyn_clone;
 mod partitioner;
 mod op;
 
+use crate::basic::AnyData;
 use crate::op::{Context, Op, Pair};
+
+#[typetag::serde(name = "type")]
+impl AnyData for (i32, (String, String)) {} 
+#[typetag::serde(name = "type")]
+impl AnyData for (i32, String) {}
+
 
 #[no_mangle]
 pub extern "C" fn secure_executing(id: usize, 
@@ -60,12 +74,33 @@ pub extern "C" fn secure_executing(id: usize,
     let ser_data_idx = unsafe { slice::from_raw_parts(input_idx as *const usize, idx_len)};
     let ser_data = unsafe { slice::from_raw_parts(input as *const u8, ser_data_idx[idx_len-1]) };
 
-    //TODO
+    /* join */
+    let sc = Context::new();
+    let col1 = vec![
+        (1, ("A".to_string(), "B".to_string())),
+        (2, ("C".to_string(), "D".to_string())),
+        (3, ("E".to_string(), "F".to_string())),
+        (4, ("G".to_string(), "H".to_string())),
+    ];
+    let col1 = sc.make_op::<(i32, (String, String))>();
+    let col2 = vec![
+        (1, "A1".to_string()),
+        (1, "A2".to_string()),
+        (2, "B1".to_string()),
+        (2, "B2".to_string()),
+        (3, "C1".to_string()),
+        (3, "C2".to_string()),
+    ];
+    let col2 = sc.make_op::<(i32, String)>();
+    let inner_joined_rdd = col2.join(col1.clone(), 4);
+    let res = inner_joined_rdd.compute_by_id();
+
+    /* group_by
     let sc = Context::new();
     let r = sc.make_op::<(String, i32)>();
     let g = r.group_by_key(4);
     let (ser_result, ser_result_idx) = g.compute_by_id(ser_data, ser_data_idx, id, is_shuffle);
-    //End TODO
+    */
 
     let out_idx_len = ser_result_idx.len();
     let out_idx = unsafe { slice::from_raw_parts_mut(output_idx as * mut usize, out_idx_len as usize) }; 
