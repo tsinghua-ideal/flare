@@ -34,6 +34,8 @@ use sgx_types::*;
 use sgx_tcrypto::*;
 use std::slice;
 use std::string::String;
+use std::time::{Duration, Instant};
+use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use bytes::{Bytes, BytesMut};
 
@@ -60,13 +62,21 @@ pub extern "C" fn secure_executing(id: usize,
                                    output: *mut u8, 
                                    output_idx: *mut usize) -> usize 
 {
-    //println!("inside enclave id = {:?}, is_shuffle = {:?}", id, is_shuffle);
+    println!("inside enclave id = {:?}, is_shuffle = {:?}", id, is_shuffle);
     let ser_data_idx = unsafe { slice::from_raw_parts(input_idx as *const usize, idx_len)};
     let ser_data = unsafe { slice::from_raw_parts(input as *const u8, ser_data_idx[idx_len-1]) };
 
     let sc = common::Context::new();
-    let r = sc.make_op::<(String, i32)>();
+    
+    let r = sc.make_op::<(i32, i32)>();
     let g = r.group_by_key(4);
+    
+    
+    /*
+    let col = sc.make_op::<i32>();
+    let g = col.map(|i| i+1 );
+    */
+
     let (ser_result, ser_result_idx) = g.compute_by_id(ser_data, ser_data_idx, id, is_shuffle);
 
     let out_idx_len = ser_result_idx.len();

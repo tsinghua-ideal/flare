@@ -1,6 +1,8 @@
 use std::boxed::Box;
 use std::marker::PhantomData;
 use std::sync::{Arc, SgxMutex, Weak};
+use std::time::{Duration, Instant};
+use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::common::{Common, Context};
 use crate::dependency::{Dependency, OneToOneDependency};
@@ -85,6 +87,7 @@ where
             match self.id > dep.len() || is_shuffle == 0 {
                 true => {       //No shuffle later
                     let result = self.compute(ser_data).collect::<Vec<Self::Item>>();
+                    
                     let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
                     let ser_result_idx: Vec<usize> = vec![ser_result.len()];
                     (ser_result, ser_result_idx)

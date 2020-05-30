@@ -2,6 +2,8 @@ use std::cmp;
 use std::boxed::Box;
 use std::marker::PhantomData;
 use std::sync::{Arc, SgxMutex, Weak};
+use std::time::{Duration, Instant};
+use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::common::{Common, Context};
 use crate::basic::{AnyData, Data};

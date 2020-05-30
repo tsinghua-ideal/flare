@@ -16,40 +16,31 @@
 // under the License..
 
 use vega::*;
+use rand::Rng;
 
 fn main() -> Result<()> {
     let sc = Context::new()?;
     
-    let vec = vec![
-        ("x".to_string(), 1),
-        ("x".to_string(), 2),
-        ("x".to_string(), 3),
-        ("x".to_string(), 4),
-        ("x".to_string(), 5),
-        ("x".to_string(), 6),
-        ("x".to_string(), 7),
-        ("y".to_string(), 1),
-        ("y".to_string(), 2),
-        ("y".to_string(), 3),
-        ("y".to_string(), 4),
-        ("y".to_string(), 5),
-        ("y".to_string(), 6),
-        ("y".to_string(), 7),
-        ("y".to_string(), 8),
-    ];
-    
+    let len = 30_000_000;
+    let mut vec: Vec<(i32, i32)> = Vec::with_capacity(len);
+    let mut rng = rand::thread_rng();
+    for i in (0..len) {
+        vec.push((rng.gen::<i32>(), rng.gen::<i32>()));
+    }
+     
+    let r = sc.make_rdd(vec, 1, true);
+    let g = r.group_by_key(4);
+    let res = g.collect().unwrap();
+    println!("result: {:?}", res[0]);
+   
     /*
-    let col = sc.make_rdd((0..100).collect::<Vec<_>>(), 1, true);
+    let col = sc.make_rdd((0..100_000_00).collect::<Vec<_>>(), 1, true);
     //Fn! will make the closures serializable. It is necessary. use serde_closure version 0.1.3.
     let vec_iter = col.map(Fn!(|i| i+1 ));
     let res = vec_iter.collect().unwrap();
     println!("result: {:?}", res.last());
     */
     
-    let r = sc.make_rdd(vec, 4, true);
-    let g = r.group_by_key(4);
-    let res = g.collect().unwrap();
-    println!("result: {:?}", res);
     
     Ok(())
 }
