@@ -62,7 +62,7 @@ pub extern "C" fn secure_executing(id: usize,
                                    output: *mut u8, 
                                    output_idx: *mut usize) -> usize 
 {
-    println!("inside enclave id = {:?}, is_shuffle = {:?}", id, is_shuffle);
+    //println!("inside enclave id = {:?}, is_shuffle = {:?}", id, is_shuffle);
     let ser_data_idx = unsafe { slice::from_raw_parts(input_idx as *const usize, idx_len)};
     let ser_data = unsafe { slice::from_raw_parts(input as *const u8, ser_data_idx[idx_len-1]) };
 
@@ -70,8 +70,7 @@ pub extern "C" fn secure_executing(id: usize,
     
     let r = sc.make_op::<(i32, i32)>();
     let g = r.group_by_key(4);
-    
-    
+   
     /*
     let col = sc.make_op::<i32>();
     let g = col.map(|i| i+1 );

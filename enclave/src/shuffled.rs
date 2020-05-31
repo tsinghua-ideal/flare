@@ -118,8 +118,34 @@ impl<K: Data + Eq + Hash, V: Data, C: Data> Common for Shuffled<K, V, C> {
                         }
                     }
                     let result = combiners.into_iter().map(|(k, v)| (k, v.unwrap())).collect::<Vec<Self::Item>>();
-                    let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
-                    let ser_result_idx: Vec<usize> = vec![ser_result.len()];
+                    //sub-partition
+                    let len = result.len(); 
+                    //println!("shuffled.rs : result.len() = {:?}", len);
+                    let data_size = std::mem::size_of::<Self::Item>(); //need revising
+                    let block_len = (1 << (5+10+10))/ data_size;
+                    let mut cur = 0;
+                    let mut ser_result: Vec<u8> = Vec::with_capacity(len * data_size);
+                    let mut ser_result_idx: Vec<usize> = Vec::new();
+                    let mut idx: usize = 0;
+
+                    while cur < len {
+                        let next = match cur + block_len > len {
+                            true => len,
+                            false => cur + block_len,
+                        };
+                        
+                        
+                        let ser_result_bl = bincode::serialize(&result[cur..next]).unwrap();
+                        idx += ser_result_bl.len();
+                        ser_result.extend_from_slice(&ser_result_bl);
+                        ser_result_idx.push(idx);
+
+                        cur = next;
+                    }
+                    if len == 0 {
+                        ser_result = vec![0; 8];
+                        ser_result_idx = vec![8];
+                    }
                     (ser_result, ser_result_idx)
                 },
             }
