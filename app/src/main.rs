@@ -20,9 +20,8 @@ use rand::Rng;
 
 fn main() -> Result<()> {
     let sc = Context::new()?;
-   
     
-    let len = 1_000_000;
+    let len = 20_000_000;
     let mut vec: Vec<(i32, i32)> = Vec::with_capacity(len);
     let mut rng = rand::thread_rng();
     for i in (0..len) {

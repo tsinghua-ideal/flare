@@ -84,6 +84,7 @@ pub extern "C" fn secure_executing(id: usize,
     let out = unsafe { slice::from_raw_parts_mut(output as * mut u8, out_idx[out_idx_len-1] as usize) }; 
     out.copy_from_slice(ser_result.as_slice());
     out_idx_len
+
 }
 
 

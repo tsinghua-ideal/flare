@@ -100,12 +100,10 @@ impl<K: Data + Eq + Hash, V: Data, C: Data> Common for Shuffled<K, V, C> {
 
                     let mut data = Vec::<(K, C)>::with_capacity(std::mem::size_of_val(ser_data));
                     let mut pre_idx: usize = 0;
-                    let mut i = 0;
                     for idx in ser_data_idx {
-                        let mut data_bl = bincode::deserialize::<Vec<(K, C)>>(&ser_data[pre_idx..*idx]).unwrap(); 
-                        data.append(&mut data_bl);
+                        let mut data_bl = bincode::deserialize::<Vec<Vec<(K, C)>>>(&ser_data[pre_idx..*idx]).unwrap(); 
+                        data.append(&mut data_bl.into_iter().flatten().collect());
                         pre_idx = *idx;
-                        i += 1;
                     }
                     for (k, c) in data.into_iter() {
                         if let Some(old_c) = combiners.get_mut(&k) {
@@ -133,7 +131,6 @@ impl<K: Data + Eq + Hash, V: Data, C: Data> Common for Shuffled<K, V, C> {
                             true => len,
                             false => cur + block_len,
                         };
-                        
                         
                         let ser_result_bl = bincode::serialize(&result[cur..next]).unwrap();
                         idx += ser_result_bl.len();
