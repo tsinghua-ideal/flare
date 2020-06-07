@@ -20,8 +20,8 @@ use rand::Rng;
 
 fn main() -> Result<()> {
     let sc = Context::new()?;
-    
-    let len = 20_000_000;
+   
+    let len = 1_000_000;
     let mut vec: Vec<(i32, i32)> = Vec::with_capacity(len);
     let mut rng = rand::thread_rng();
     for i in (0..len) {
@@ -32,10 +32,9 @@ fn main() -> Result<()> {
     let g = r.group_by_key(4);
     let res = g.collect().unwrap();
     println!("result: {:?}", res[0]);
-    
 
     /*
-    let col = sc.make_rdd((0..100_00).collect::<Vec<_>>(), 1, true);
+    let col = sc.make_rdd((0..1_000_000).collect::<Vec<_>>(), 1, true);
     //Fn! will make the closures serializable. It is necessary. use serde_closure version 0.1.3.
     let vec_iter = col.map(Fn!(|i| i+1 ));
     let res = vec_iter.collect().unwrap();

@@ -70,7 +70,7 @@ pub extern "C" fn secure_executing(id: usize,
     
     let r = sc.make_op::<(i32, i32)>();
     let g = r.group_by_key(4);
-   
+
     /*
     let col = sc.make_op::<i32>();
     let g = col.map(|i| i+1 );
