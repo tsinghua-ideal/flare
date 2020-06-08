@@ -1,6 +1,8 @@
 use std::boxed::Box;
 use std::marker::PhantomData;
 use std::sync::{Arc, SgxMutex, Weak};
+use std::time::{Duration, Instant};
+use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::op::{Context, Op, OpVals};
 use crate::dependency::{Dependency, OneToOneDependency};
@@ -38,14 +40,16 @@ where
 {
     pub(crate) fn new(prev: Arc<dyn Op<Item = T>>, f: F) -> Self {
         let mut vals = OpVals::new(prev.get_context());
+        let mut prev_ids = prev.get_prev_ids();
+        prev_ids.insert(prev.get_id()); 
         vals.deps
             .push(Dependency::NarrowDependency(Arc::new(
-                OneToOneDependency::new(),
+                OneToOneDependency::new(prev_ids.clone())
             )));
         let vals = Arc::new(vals);
         prev.get_next_deps().lock().unwrap().push(
             Dependency::NarrowDependency(
-                Arc::new(OneToOneDependency::new())
+                Arc::new(OneToOneDependency::new(prev_ids))
             )
         );
         Mapper {
@@ -89,7 +93,9 @@ where
             let next_deps = self.next_deps.lock().unwrap();
             match is_shuffle == 0 {
                 true => {       //No shuffle later
-                    let result = self.compute(ser_data).collect::<Vec<Self::Item>>();
+                    let result = self.compute(ser_data, ser_data_idx)
+                        .collect::<Vec<Self::Item>>();
+                    
                     let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
                     let ser_result_idx: Vec<usize> = vec![ser_result.len()];
                     (ser_result, ser_result_idx)
@@ -122,8 +128,8 @@ where
         }
     }
 
-    fn compute(&self, ser_data: &[u8]) -> Box<dyn Iterator<Item = Self::Item>> {
-        Box::new(self.prev.compute(ser_data).map(self.f.clone()))
+    fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>> {
+        Box::new(self.prev.compute(ser_data, ser_data_idx).map(self.f.clone()))
     }
 
 }

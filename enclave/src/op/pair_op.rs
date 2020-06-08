@@ -49,7 +49,7 @@ pub trait Pair<K: Data + Eq + Hash, V: Data>: Op<Item = (K, V)> + Send + Sync {
         f: F,
     ) -> SerArc<dyn Op<Item = (K, U)>>
     where
-        F: Fn(V) -> U + Clone,
+        F: Fn(V) -> U + Clone + Send + Sync + 'static,
         Self: Sized,
     {
         SerArc::new(MappedValues::new(self.get_op(), f))
@@ -60,7 +60,7 @@ pub trait Pair<K: Data + Eq + Hash, V: Data>: Op<Item = (K, V)> + Send + Sync {
         f: F,
     ) -> SerArc<dyn Op<Item = (K, U)>>
     where
-        F: Fn(V) -> Box<dyn Iterator<Item = U>> + Clone,
+        F: Fn(V) -> Box<dyn Iterator<Item = U>> + Clone + Send + Sync + 'static,
         Self: Sized,
     {
         SerArc::new(FlatMappedValues::new(self.get_op(), f))
@@ -90,29 +90,11 @@ pub trait Pair<K: Data + Eq + Hash, V: Data>: Op<Item = (K, V)> + Send + Sync {
         other: SerArc<dyn Op<Item = (K, W)>>,
         partitioner: Box<dyn Partitioner>,
     ) -> SerArc<dyn Op<Item = (K, (Vec<V>, Vec<W>))>> {
-        let op1 = SerArc::from(self.get_op());
-        let op2 = SerArc::from(other.get_op());
-        let cg_op = CoGrouped::<K>::new(op1, op2, partitioner);
-        let f = |v: Vec<Vec<Box<dyn AnyData>>>| -> (Vec<V>, Vec<W>) {
-            let mut count = 0;
-            let mut vs: Vec<V> = Vec::new();
-            let mut ws: Vec<W> = Vec::new();
-            for v in v.into_iter() {
-                if count >= 2 {
-                    break;
-                }
-                if count == 0 {
-                    for i in v {
-                        vs.push(*(i.into_any().downcast::<V>().unwrap()))
-                    }
-                } else if count == 1 {
-                    for i in v {
-                        ws.push(*(i.into_any().downcast::<W>().unwrap()))
-                    }
-                }
-                count += 1;
-            }
-            (vs, ws)
+        let op0 = SerArc::from(self.get_op());
+        let op1 = SerArc::from(other.get_op());
+        let cg_op = CoGrouped::<K, V, W>::new(op0, op1, partitioner);
+        let f = |v: (Vec<V>, Vec<W>)| -> (Vec<V>, Vec<W>) {
+            v
         };
         cg_op.map_values(Box::new(f))
     }
@@ -125,7 +107,7 @@ impl<K: Data + Eq + Hash, V: Data, T: Op<Item = (K, V)>> Pair<K, V> for SerArc<T
 
 pub struct MappedValues<K: Data, V: Data, U: Data, F>
 where
-    F: Fn(V) -> U + Clone,
+    F: Fn(V) -> U + Clone + 'static,
 { 
     vals: Arc<OpVals>,
     next_deps: Arc<SgxMutex<Vec<Dependency>>>,
@@ -138,7 +120,7 @@ where
 
 impl<K: Data, V: Data, U: Data, F> Clone for MappedValues<K, V, U, F>
 where
-    F: Fn(V) -> U + Clone,
+    F: Fn(V) -> U + Clone + 'static,
 {
     fn clone(&self) -> Self {
         MappedValues { 
@@ -155,18 +137,20 @@ where
 
 impl<K: Data, V: Data, U: Data, F> MappedValues<K, V, U, F>
 where
-    F: Func(V) -> U + Clone,
+    F: Fn(V) -> U + Clone + 'static,
 {
     fn new(prev: Arc<dyn Op<Item = (K, V)>>, f: F) -> Self {
+        let mut prev_ids = prev.get_prev_ids();
+        prev_ids.insert(prev.get_id());
         let mut vals = OpVals::new(prev.get_context());
         vals.deps
             .push(Dependency::NarrowDependency(Arc::new(
-                OneToOneDependency::new(),
+                OneToOneDependency::new(prev_ids.clone()),
             )));
         let vals = Arc::new(vals);
         prev.get_next_deps().lock().unwrap().push(
             Dependency::NarrowDependency(
-                Arc::new(OneToOneDependency::new())
+                Arc::new(OneToOneDependency::new(prev_ids))
             )
         ); 
         MappedValues {
@@ -183,7 +167,7 @@ where
 
 impl<K: Data, V: Data, U: Data, F> Op for MappedValues<K, V, U, F>
 where
-    F: Fn(V) -> U,
+    F: Fn(V) -> U + Clone + Send + Sync + 'static,
 {
     type Item = (K, U);
     fn get_id(&self) -> usize {
@@ -208,11 +192,11 @@ where
     
     fn compute_by_id (&self, ser_data: &[u8], ser_data_idx: &[usize], id: usize, is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
         if id == self.get_id() {
-            assert!(ser_data_idx.len()==1 && ser_data.len()==*ser_data_idx.last().unwrap());
             let next_deps = self.next_deps.lock().unwrap();
             match is_shuffle == 0 {
                 true => {       //No shuffle later
-                    let result = self.compute(ser_data).collect::<Vec<Self::Item>>();
+                    let result = self.compute(ser_data, ser_data_idx)
+                        .collect::<Vec<Self::Item>>();
                     let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
                     let ser_result_idx: Vec<usize> = vec![ser_result.len()];
                     (ser_result, ser_result_idx)
@@ -244,17 +228,17 @@ where
         }
     }
     
-    fn compute(&self, ser_data: &[u8]) -> Box<dyn Iterator<Item = Self::Item>> {
+    fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>> {
         let f = self.f.clone();
         Box::new(
-            self.prev.compute(ser_data).map(move |(k, v)| (k, f(v))),
+            self.prev.compute(ser_data, ser_data_idx).map(move |(k, v)| (k, f(v))),
         )
     }
 }
 
 pub struct FlatMappedValues<K: Data, V: Data, U: Data, F>
 where
-    F: Fn(V) -> Box<dyn Iterator<Item = U>> + Clone,
+    F: Fn(V) -> Box<dyn Iterator<Item = U>> + Clone + 'static,
 {
     vals: Arc<OpVals>,
     next_deps: Arc<SgxMutex<Vec<Dependency>>>,
@@ -267,7 +251,7 @@ where
 
 impl<K: Data, V: Data, U: Data, F> Clone for FlatMappedValues<K, V, U, F>
 where
-    F: Fn(V) -> Box<dyn Iterator<Item = U>> + Clone,
+    F: Fn(V) -> Box<dyn Iterator<Item = U>> + Clone + 'static,
 {
     fn clone(&self) -> Self {
         FlatMappedValues {
@@ -284,23 +268,25 @@ where
 
 impl<K: Data, V: Data, U: Data, F> FlatMappedValues<K, V, U, F>
 where
-    F: Fn(V) -> Box<dyn Iterator<Item = U>> + Clone,
+    F: Fn(V) -> Box<dyn Iterator<Item = U>> + Clone + 'static,
 {
     fn new(prev: Arc<dyn Op<Item = (K, V)>>, f: F) -> Self {
+        let mut prev_ids = prev.get_prev_ids();
+        prev_ids.insert(prev.get_id());
         let mut vals = OpVals::new(prev.get_context());
         vals.deps
             .push(Dependency::NarrowDependency(Arc::new(
-                OneToOneDependency::new(),
+                OneToOneDependency::new(prev_ids.clone()),
             )));
         let vals = Arc::new(vals);
         prev.get_next_deps().lock().unwrap().push(
             Dependency::NarrowDependency(
-                Arc::new(OneToOneDependency::new())
+                Arc::new(OneToOneDependency::new(prev_ids))
             )
         );
         FlatMappedValues {
             vals,
-            next_deps,
+            next_deps: Arc::new(SgxMutex::new(Vec::<Dependency>::new())),
             prev,
             f,
             _marker_t: PhantomData,
@@ -312,7 +298,7 @@ where
 
 impl<K: Data, V: Data, U: Data, F> Op for FlatMappedValues<K, V, U, F>
 where
-    F: Fn(V) -> Box<dyn Iterator<Item = U>>,
+    F: Fn(V) -> Box<dyn Iterator<Item = U>> + Clone + Send + Sync + 'static,
 {
     type Item = (K, U);
     fn get_id(&self) -> usize {
@@ -337,11 +323,11 @@ where
 
     fn compute_by_id (&self, ser_data: &[u8], ser_data_idx: &[usize], id: usize, is_shuffle: u8) -> (Vec<u8>, Vec<usize>){
         if id == self.get_id() {
-            assert!(ser_data_idx.len()==1 && ser_data.len()==*ser_data_idx.last().unwrap());
             let next_deps = self.next_deps.lock().unwrap();
             match is_shuffle == 0 {
                 true => {       //No shuffle later
-                    let result = self.compute(ser_data).collect::<Vec<Self::Item>>();
+                    let result = self.compute(ser_data, ser_data_idx)
+                        .collect::<Vec<Self::Item>>();
                     let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
                     let ser_result_idx: Vec<usize> = vec![ser_result.len()];
                     (ser_result, ser_result_idx)
@@ -374,11 +360,11 @@ where
         }
     }
 
-    fn compute(&self, ser_data: &[u8]) -> Box<dyn Iterator<Item = Self::Item>> {
+    fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>> {
         let f = self.f.clone();
         Box::new(
             self.prev
-                .compute(ser_data)
+                .compute(ser_data, ser_data_idx)
                 .flat_map(move |(k, v)| f(v).map(move |x| (k.clone(), x))),
         )
     }

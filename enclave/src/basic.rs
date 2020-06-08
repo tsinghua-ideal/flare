@@ -27,7 +27,6 @@ impl<
 {
 }
 
-#[typetag::serde(tag = "type")]
 pub trait AnyData:
     crate::dyn_clone::DynClone + any::Any + Send + Sync + fmt::Debug + 'static
 {

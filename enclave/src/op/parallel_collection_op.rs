@@ -2,6 +2,8 @@ use std::cmp;
 use std::boxed::Box;
 use std::marker::PhantomData;
 use std::sync::{Arc, SgxMutex, Weak};
+use std::time::{Duration, Instant};
+use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::op::{Context, Op, OpVals};
 use crate::basic::{AnyData, Data};
@@ -25,8 +27,9 @@ impl<T: Data> Clone for ParallelCollection<T> {
 
 impl<T: Data> ParallelCollection<T> {
     pub fn new(context: Arc<Context>) -> Self {
+        let vals = OpVals::new(context.clone());
         ParallelCollection {
-            vals: Arc::new(OpVals::new(context.clone())),
+            vals: Arc::new(vals),
             next_deps: Arc::new(SgxMutex::new(Vec::<Dependency>::new())),
             _marker_t: PhantomData,
         }
@@ -61,7 +64,8 @@ impl<T: Data> Op for ParallelCollection<T> {
             let next_deps = self.next_deps.lock().unwrap();
             match is_shuffle == 0 {  //TODO maybe need to check if shuf_dep not in dep
                 true => {       //No shuffle later
-                    let result = self.compute(ser_data).collect::<Vec<Self::Item>>();
+                    let result = self.compute(ser_data, ser_data_idx)
+                        .collect::<Vec<Self::Item>>();
                     let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
                     let ser_result_idx: Vec<usize> = vec![ser_result.len()];
                     (ser_result, ser_result_idx)
@@ -91,7 +95,7 @@ impl<T: Data> Op for ParallelCollection<T> {
         }
     }
 
-    fn compute(&self, ser_data: &[u8]) -> Box<dyn Iterator<Item = Self::Item>> {
+    fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>> {
         let data: Vec<Self::Item> = bincode::deserialize(ser_data).unwrap();
         Box::new(data.into_iter())
     }

@@ -3,6 +3,7 @@ use std::sync::{
     Arc, SgxMutex, Weak,
 };
 use std::boxed::Box;
+use std::collections::HashSet;
 use std::vec::Vec;
 use crate::basic::{AnyData, Data, Arc as SerArc};
 use crate::dependency::Dependency;
@@ -72,11 +73,14 @@ impl<I: Op + ?Sized> Op for SerArc<I> {
     fn get_next_deps(&self) -> Arc<SgxMutex<Vec<Dependency>>> {
         (**self).get_next_deps()
     }
+    fn get_prev_ids(&self) -> HashSet<usize> {
+        (**self).get_prev_ids()
+    }
     fn compute_by_id(&self, ser_data: &[u8], ser_data_idx: &[usize], id: usize, is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
         (**self).compute_by_id(ser_data, ser_data_idx, id, is_shuffle)
     }
-    fn compute(&self, ser_data: &[u8]) -> Box<dyn Iterator<Item = Self::Item>> {
-        (**self).compute(ser_data)
+    fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>> {
+        (**self).compute(ser_data, ser_data_idx)
     }
 }
 
@@ -87,11 +91,21 @@ pub trait Op: Send + Sync + 'static {
     fn get_context(&self) -> Arc<Context>;
     fn get_deps(&self) -> Vec<Dependency>;
     fn get_next_deps(&self) -> Arc<SgxMutex<Vec<Dependency>>>;
+    fn get_prev_ids(&self) -> HashSet<usize> {
+        let deps = self.get_deps();
+        let mut set = HashSet::new();
+        for dep in deps {
+            for i in dep.get_prev_ids() {
+                set.insert(i);
+            }  
+        };
+        set
+    }
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
         None
     }
     fn compute_by_id(&self, ser_data: &[u8], ser_data_idx: &[usize], id: usize, is_shuffle: u8) -> (Vec<u8>, Vec<usize>);
-    fn compute(&self, ser_data: &[u8]) -> Box<dyn Iterator<Item = Self::Item>>;
+    fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>>;
 
     fn map<U: Data, F>(&self, f: F) -> SerArc<dyn Op<Item = U>>
     where

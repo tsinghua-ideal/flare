@@ -16,35 +16,26 @@
 // under the License..
 
 use vega::*;
+use rand::Rng;
 
 fn main() -> Result<()> {
-    
     //group_by
     /*
     let sc = Context::new()?;
-    let vec = vec![
-        ("x".to_string(), 1),
-        ("x".to_string(), 2),
-        ("x".to_string(), 3),
-        ("x".to_string(), 4),
-        ("x".to_string(), 5),
-        ("x".to_string(), 6),
-        ("x".to_string(), 7),
-        ("y".to_string(), 1),
-        ("y".to_string(), 2),
-        ("y".to_string(), 3),
-        ("y".to_string(), 4),
-        ("y".to_string(), 5),
-        ("y".to_string(), 6),
-        ("y".to_string(), 7),
-        ("y".to_string(), 8),
-    ];
-    let r = sc.make_rdd(vec, 4, true);
+   
+    let len = 1_000_000;
+    let mut vec: Vec<(i32, i32)> = Vec::with_capacity(len);
+    let mut rng = rand::thread_rng();
+    for i in (0..len) {
+        vec.push((rng.gen(), rng.gen()));
+    }
+     
+    let r = sc.make_rdd(vec, 1, true);
     let g = r.group_by_key(4);
     let res = g.collect().unwrap();
-    println!("result: {:?}", res);
+    println!("result: {:?}", res[0]);
     */
-
+    
     //join
     let sc = Context::new()?;
     let col1 = vec![
@@ -53,7 +44,7 @@ fn main() -> Result<()> {
         (3, ("E".to_string(), "F".to_string())),
         (4, ("G".to_string(), "H".to_string())),
     ];
-    let col1 = sc.parallelize(col1, 4, true);
+    let col1 = sc.parallelize(col1, 1, true);
     let col2 = vec![
         (1, "A1".to_string()),
         (1, "A2".to_string()),
@@ -62,7 +53,7 @@ fn main() -> Result<()> {
         (3, "C1".to_string()),
         (3, "C2".to_string()),
     ];
-    let col2 = sc.parallelize(col2, 4, true);
+    let col2 = sc.parallelize(col2, 1, true);
     let inner_joined_rdd = col2.join(col1.clone(), 4);
     let res = inner_joined_rdd.collect().unwrap();
     println!("result: {:?}", res);
@@ -76,7 +67,6 @@ fn main() -> Result<()> {
     let res = vec_iter.collect().unwrap();
     println!("result: {:?}", res.last());
     */
-    
     
     Ok(())
 }

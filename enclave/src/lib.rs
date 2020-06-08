@@ -41,6 +41,8 @@ use sgx_types::*;
 use sgx_tcrypto::*;
 use std::slice;
 use std::string::String;
+use std::time::{Duration, Instant};
+use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use bytes::{Bytes, BytesMut};
 
@@ -54,12 +56,6 @@ mod op;
 
 use crate::basic::AnyData;
 use crate::op::{Context, Op, Pair};
-
-#[typetag::serde(name = "type")]
-impl AnyData for (i32, (String, String)) {} 
-#[typetag::serde(name = "type")]
-impl AnyData for (i32, String) {}
-
 
 #[no_mangle]
 pub extern "C" fn secure_executing(id: usize, 
@@ -76,31 +72,22 @@ pub extern "C" fn secure_executing(id: usize,
 
     /* join */
     let sc = Context::new();
-    let col1 = vec![
-        (1, ("A".to_string(), "B".to_string())),
-        (2, ("C".to_string(), "D".to_string())),
-        (3, ("E".to_string(), "F".to_string())),
-        (4, ("G".to_string(), "H".to_string())),
-    ];
     let col1 = sc.make_op::<(i32, (String, String))>();
-    let col2 = vec![
-        (1, "A1".to_string()),
-        (1, "A2".to_string()),
-        (2, "B1".to_string()),
-        (2, "B2".to_string()),
-        (3, "C1".to_string()),
-        (3, "C2".to_string()),
-    ];
     let col2 = sc.make_op::<(i32, String)>();
-    let inner_joined_rdd = col2.join(col1.clone(), 4);
-    let res = inner_joined_rdd.compute_by_id();
+    let g = col2.join(col1.clone(), 4);
 
     /* group_by
     let sc = Context::new();
-    let r = sc.make_op::<(String, i32)>();
+    let r = sc.make_op::<(i32, i32)>();
     let g = r.group_by_key(4);
-    let (ser_result, ser_result_idx) = g.compute_by_id(ser_data, ser_data_idx, id, is_shuffle);
     */
+
+    /* map
+    let col = sc.make_op::<i32>();
+    let g = col.map(|i| i+1 );
+    */
+
+    let (ser_result, ser_result_idx) = g.compute_by_id(ser_data, ser_data_idx, id, is_shuffle);
 
     let out_idx_len = ser_result_idx.len();
     let out_idx = unsafe { slice::from_raw_parts_mut(output_idx as * mut usize, out_idx_len as usize) }; 
@@ -108,6 +95,7 @@ pub extern "C" fn secure_executing(id: usize,
     let out = unsafe { slice::from_raw_parts_mut(output as * mut u8, out_idx[out_idx_len-1] as usize) }; 
     out.copy_from_slice(ser_result.as_slice());
     out_idx_len
+
 }
 
 

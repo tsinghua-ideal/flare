@@ -1,5 +1,5 @@
 use std::boxed::Box;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::sync::Arc;
 use std::vec::Vec;
@@ -14,44 +14,66 @@ pub enum Dependency {
     ShuffleDependency(Arc<dyn ShuffleDependencyTrait>),
 }
 
+impl Dependency {
+    pub fn get_prev_ids(&self) -> HashSet<usize> {
+        match self {
+            Dependency::NarrowDependency(nar) => nar.get_prev_ids(),
+            Dependency::ShuffleDependency(shuf) => shuf.get_prev_ids(),
+        }
+    }
+}
+
 impl<K: Data + Eq + Hash, V: Data, C: Data> From<ShuffleDependency<K, V, C>> for Dependency {
     fn from(shuf_dep: ShuffleDependency<K, V, C>) -> Self {
         Dependency::ShuffleDependency(Arc::new(shuf_dep) as Arc<dyn ShuffleDependencyTrait>)
     }
 }
 
-pub trait NarrowDependencyTrait: DowncastSync + Send + Sync {}
+pub trait NarrowDependencyTrait: DowncastSync + Send + Sync {
+    fn get_prev_ids(&self) -> HashSet<usize>;
+}
 crate::impl_downcast!(sync NarrowDependencyTrait);
 
 #[derive(Clone)]
-pub struct OneToOneDependency {}
+pub struct OneToOneDependency {
+    prev_ids: HashSet<usize>, 
+}
 
 impl OneToOneDependency {
-    pub fn new() -> Self {
-        OneToOneDependency {}
+    pub fn new(prev_ids: HashSet<usize>) -> Self {
+        OneToOneDependency{ prev_ids }
     }
 }
 
-impl NarrowDependencyTrait for OneToOneDependency {}
+impl NarrowDependencyTrait for OneToOneDependency {
+    fn get_prev_ids(&self) -> HashSet<usize> {
+        self.prev_ids.clone()
+    }
+}
 
 #[derive(Clone)]
 pub struct RangeDependency {
     in_start: usize,
     out_start: usize,
     length: usize,
+    prev_ids: HashSet<usize>,
 }
 
 impl RangeDependency {
-    pub fn new(in_start: usize, out_start: usize, length: usize) -> Self {
-        RangeDependency { in_start, out_start, length, }
+    pub fn new(in_start: usize, out_start: usize, length: usize, prev_ids: HashSet<usize>) -> Self {
+        RangeDependency { in_start, out_start, length, prev_ids}
     }
 }
 
-impl NarrowDependencyTrait for RangeDependency {}
+impl NarrowDependencyTrait for RangeDependency {
+    fn get_prev_ids(&self) -> HashSet<usize> {
+        self.prev_ids.clone()
+    }
+}
 
 pub trait ShuffleDependencyTrait: DowncastSync + Send + Sync  { 
     fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>) -> Vec<Vec<u8>>;
-
+    fn get_prev_ids(&self) -> HashSet<usize>;
 }
 crate::impl_downcast!(sync ShuffleDependencyTrait);
 
@@ -59,6 +81,7 @@ pub struct ShuffleDependency<K: Data, V: Data, C: Data> {
     pub is_cogroup: bool,
     pub aggregator: Arc<Aggregator<K, V, C>>,
     pub partitioner: Box<dyn Partitioner>,
+    prev_ids: HashSet<usize>,
 }
 
 impl<K: Data + Eq + Hash, V: Data, C: Data> ShuffleDependency<K, V, C> {
@@ -66,11 +89,13 @@ impl<K: Data + Eq + Hash, V: Data, C: Data> ShuffleDependency<K, V, C> {
         is_cogroup: bool,
         aggregator: Arc<Aggregator<K, V, C>>,
         partitioner: Box<dyn Partitioner>,
+        prev_ids: HashSet<usize>,
     ) -> Self {
         ShuffleDependency {
             is_cogroup,
             aggregator,
             partitioner,
+            prev_ids,
         }
     }
 }
@@ -102,6 +127,10 @@ impl<K: Data + Eq + Hash, V: Data, C: Data> ShuffleDependencyTrait for ShuffleDe
             ser_result.push(bincode::serialize(&bucket).unwrap());
         }
         ser_result
+    }
+    
+    fn get_prev_ids(&self) -> HashSet<usize> {
+        self.prev_ids.clone()
     }
 
 }
