@@ -44,6 +44,34 @@ pub trait Pair<K: Data + Eq + Hash, V: Data>: Op<Item = (K, V)> + Send + Sync {
         self.combine_by_key(Aggregator::<K, V, _>::default(), partitioner)
     }
 
+    fn reduce_by_key<F>(&self, func: F, num_splits: usize) -> SerArc<dyn Op<Item = (K, V)>>
+    where
+        F: Fn((V, V)) -> V + Clone + Send + Sync + 'static,
+        Self: Sized + 'static,
+    {
+        self.reduce_by_key_using_partitioner(
+            func,
+            Box::new(HashPartitioner::<K>::new(num_splits)) as Box<dyn Partitioner>,
+        )
+    }
+
+    fn reduce_by_key_using_partitioner<F>(
+        &self,
+        func: F,
+        partitioner: Box<dyn Partitioner>,
+    ) -> SerArc<dyn Op<Item = (K, V)>>
+    where
+        F: Fn((V, V)) -> V + Clone + Send + Sync + 'static,
+        Self: Sized + 'static,
+    {
+        let create_combiner = Box::new(|v: V| v);
+        let f_clone = func.clone();
+        let merge_value = Box::new(move |(buf, v)| { (f_clone)((buf, v)) });
+        let merge_combiners = Box::new(move |(b1, b2)| { (func)((b1, b2)) });
+        let aggregator = Aggregator::new(create_combiner, merge_value, merge_combiners);
+        self.combine_by_key(aggregator, partitioner)
+    }
+
     fn map_values<U: Data, F>(
         &self,
         f: F,

@@ -37,6 +37,7 @@ fn main() -> Result<()> {
     */
     
     //join
+    /*
     let sc = Context::new()?;
     let col1 = vec![
         (1, ("A".to_string(), "B".to_string())),
@@ -57,6 +58,7 @@ fn main() -> Result<()> {
     let inner_joined_rdd = col2.join(col1.clone(), 4);
     let res = inner_joined_rdd.collect().unwrap();
     println!("result: {:?}", res);
+    */
 
     //map
     /*
@@ -67,6 +69,11 @@ fn main() -> Result<()> {
     let res = vec_iter.collect().unwrap();
     println!("result: {:?}", res.last());
     */
-    
+
+    //reduce
+    let sc = Context::new()?;
+    let nums = sc.make_rdd(vec![1i32, 2, 3, 4], 2, true);
+    let res = nums.reduce(Fn!(|x: i32, y: i32| x + y))?;
+    println!("result: {:?}", res);
     Ok(())
 }

@@ -71,21 +71,31 @@ pub extern "C" fn secure_executing(id: usize,
     let ser_data = unsafe { slice::from_raw_parts(input as *const u8, ser_data_idx[idx_len-1]) };
 
     /* join */
+    /*
     let sc = Context::new();
     let col1 = sc.make_op::<(i32, (String, String))>();
     let col2 = sc.make_op::<(i32, String)>();
     let g = col2.join(col1.clone(), 4);
+    */
 
-    /* group_by
+    /* group_by */
+    /*
     let sc = Context::new();
     let r = sc.make_op::<(i32, i32)>();
     let g = r.group_by_key(4);
     */
 
-    /* map
+    /* map */
+    /*
+    let sc = Context::new();
     let col = sc.make_op::<i32>();
     let g = col.map(|i| i+1 );
     */
+
+    /* reduce */
+    let sc = Context::new();
+    let nums = sc.make_op::<i32>();
+    let g = nums.reduce(|x, y| x+y);
 
     let (ser_result, ser_result_idx) = g.compute_by_id(ser_data, ser_data_idx, id, is_shuffle);
 
