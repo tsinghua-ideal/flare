@@ -23,6 +23,7 @@ SGX_ARCH ?= x64
 
 TOP_DIR := ./incubator-teaclave-sgx-sdk
 APP_DIR := app
+SPARK_CORE_DIR := Submodule-of-SecureSpark
 include $(TOP_DIR)/buildenv.mk
 
 ifeq ($(shell getconf LONG_BIT), 32)
@@ -158,3 +159,4 @@ clean:
 	@rm -f $(App_Name) $(RustEnclave_Name) $(Signed_RustEnclave_Name) enclave/*_t.* $(APP_DIR)/*_u.* lib/*.a
 	@cd enclave && cargo clean && rm -f Cargo.lock
 	@cd $(APP_DIR) && cargo clean && rm -f Cargo.lock
+	@cd $(SPARK_CORE_DIR) && cargo clean && rm -f Cargo.lock

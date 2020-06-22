@@ -4,7 +4,7 @@ use std::sync::{Arc, SgxMutex, Weak};
 use std::time::{Duration, Instant};
 use std::untrusted::time::InstantEx;
 use std::vec::Vec;
-use crate::op::{Context, Op, OpVals};
+use crate::op::{Context, Op, OpBase, OpVals};
 use crate::dependency::{Dependency, OneToOneDependency};
 use crate::basic::{AnyData, Data};
 
@@ -50,19 +50,14 @@ where
     }
 }
 
-impl<T: Data, U: Data, F> Op for Reduced<T, U, F>
+impl<T: Data, U: Data, F> OpBase for Reduced<T, U, F>
 where
     F: Fn(Box<dyn Iterator<Item = T>>) -> Vec<U> + Send + Sync + Clone + 'static,
 {
-    type Item = U;
     fn get_id(&self) -> usize {
         self.prev.get_id()
     }
     
-    fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>> { 
-        Arc::new(self.clone())
-    }
-
     fn get_context(&self) -> Arc<Context> {
         self.prev.get_context()
     }
@@ -75,15 +70,34 @@ where
         self.prev.get_next_deps()
     }
 
-    fn compute_by_id (&self, ser_data: &[u8], ser_data_idx: &[usize], id: usize, is_shuffle: u8) -> (Vec<u8>, Vec<usize>){
-        if id == self.get_id() && is_shuffle == 2 {
+    fn iterator(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
+        self.compute_start(ser_data, ser_data_idx, is_shuffle)
+    }
+}
+
+impl<T: Data, U: Data, F> Op for Reduced<T, U, F>
+where
+    F: Fn(Box<dyn Iterator<Item = T>>) -> Vec<U> + Send + Sync + Clone + 'static,
+{
+    type Item = U;
+    
+    fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>> { 
+        Arc::new(self.clone())
+    }
+    
+    fn get_op_base(&self) -> Arc<dyn OpBase> {
+        Arc::new(self.clone()) as Arc<dyn OpBase>
+    }
+  
+    fn compute_start (&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>){
+        if is_shuffle == 2 {
             let result = self.compute(ser_data, ser_data_idx).collect::<Vec<Self::Item>>();
             let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
             let ser_result_idx: Vec<usize> = vec![ser_result.len()];
             (ser_result, ser_result_idx)
         }
         else {
-            self.prev.compute_by_id(ser_data, ser_data_idx, id, is_shuffle)
+            self.prev.compute_start(ser_data, ser_data_idx, is_shuffle)
         }
     }
 

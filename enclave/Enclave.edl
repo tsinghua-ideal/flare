@@ -29,7 +29,8 @@ enclave {
 				[in, count=idx_len] const size_t* input_idx, 
 				size_t idx_len, 
 				[user_check] uint8_t* output, 
-				[user_check] size_t* output_idx);
+				[user_check] size_t* output_idx,
+				[user_check] uint8_t* captured_vars);
     };
 
 };

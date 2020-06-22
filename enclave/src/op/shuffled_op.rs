@@ -6,7 +6,7 @@ use std::sync::{Arc, SgxMutex, Weak};
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
 use crate::basic::{Data};
-use crate::op::{Context, Op, OpVals};
+use crate::op::{Context, Op, OpBase, OpVals};
 use crate::dependency::{Dependency, ShuffleDependency, ShuffleDependencyTrait};
 use crate::partitioner::Partitioner;
 
@@ -64,15 +64,9 @@ impl<K: Data + Eq + Hash, V: Data, C: Data> Shuffled<K, V, C> {
     }
 }
 
-impl<K: Data + Eq + Hash, V: Data, C: Data> Op for Shuffled<K, V, C> {
-    type Item = (K, C);
-
+impl<K: Data + Eq + Hash, V: Data, C: Data> OpBase for Shuffled<K, V, C> {
     fn get_id(&self) -> usize {
         self.vals.id
-    }
-
-    fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>> {
-        Arc::new(self.clone())
     }
 
     fn get_context(&self) -> Arc<Context> {
@@ -90,75 +84,84 @@ impl<K: Data + Eq + Hash, V: Data, C: Data> Op for Shuffled<K, V, C> {
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
         Some(self.part.clone())
     }
+    
+    fn iterator(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
+        self.compute_start(ser_data, ser_data_idx, is_shuffle)
+    }
+}
 
-    fn compute_by_id(&self, ser_data: &[u8], ser_data_idx: &[usize], id: usize, is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
-        if id == self.get_id() {
-            let next_deps = self.next_deps.lock().unwrap();
-            match is_shuffle == 0 {
-                true => {       //No shuffle later
-                    assert!(ser_data_idx.len()==1 && ser_data.len()==*ser_data_idx.last().unwrap());
-                    let result = self.compute(ser_data, ser_data_idx)
-                        .collect::<Vec<Self::Item>>();
-                    let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
-                    let ser_result_idx: Vec<usize> = vec![ser_result.len()];
-                    (ser_result, ser_result_idx)
-                },
-                false => {      //Shuffle later
-                    let mut combiners: HashMap<K, Option<C>> = HashMap::new();
-                    let aggregator = self.aggregator.clone(); 
-                    let mut data = Vec::<(K, C)>::with_capacity(std::mem::size_of_val(ser_data));
-                    let mut pre_idx: usize = 0;
-                    for idx in ser_data_idx {
-                        let data_bl = bincode::deserialize::<Vec<Vec<(K, C)>>>(&ser_data[pre_idx..*idx]).unwrap(); 
-                        data.append(&mut data_bl.into_iter().flatten().collect());
-                        pre_idx = *idx;
-                    }
-                    for (k, c) in data.into_iter() {
-                        if let Some(old_c) = combiners.get_mut(&k) {
-                            let old = old_c.take().unwrap();
-                            let input = ((old, c),);
-                            let output = aggregator.merge_combiners.call(input);
-                            *old_c = Some(output);
-                        } else {
-                            combiners.insert(k, Some(c));
-                        }
-                    }
-                    let result = combiners.into_iter().map(|(k, v)| (k, v.unwrap())).collect::<Vec<Self::Item>>();
-                    //sub-partition
-                    let len = result.len(); 
-                    //println!("shuffled.rs : result.len() = {:?}", len);
-                    let data_size = std::mem::size_of::<Self::Item>(); //need revising
-                    let block_len = (1 << (5+10+10))/ data_size;
-                    let mut cur = 0;
-                    let mut ser_result: Vec<u8> = Vec::with_capacity(len * data_size);
-                    let mut ser_result_idx: Vec<usize> = Vec::new();
-                    let mut idx: usize = 0;
+impl<K: Data + Eq + Hash, V: Data, C: Data> Op for Shuffled<K, V, C> {
+    type Item = (K, C);
 
-                    while cur < len {
-                        let next = match cur + block_len > len {
-                            true => len,
-                            false => cur + block_len,
-                        };
+    fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>> {
+        Arc::new(self.clone())
+    }
+
+    fn get_op_base(&self) -> Arc<dyn OpBase> {
+        Arc::new(self.clone()) as Arc<dyn OpBase>
+    }
+
+    fn compute_start(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
+        let next_deps = self.next_deps.lock().unwrap();
+        match is_shuffle == 0 {
+            true => {       //No shuffle later
+                assert!(ser_data_idx.len()==1 && ser_data.len()==*ser_data_idx.last().unwrap());
+                let result = self.compute(ser_data, ser_data_idx)
+                    .collect::<Vec<Self::Item>>();
+                let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
+                let ser_result_idx: Vec<usize> = vec![ser_result.len()];
+                (ser_result, ser_result_idx)
+            },
+            false => {      //Shuffle later
+                let mut combiners: HashMap<K, Option<C>> = HashMap::new();
+                let aggregator = self.aggregator.clone(); 
+                let mut data = Vec::<(K, C)>::with_capacity(std::mem::size_of_val(ser_data));
+                let mut pre_idx: usize = 0;
+                for idx in ser_data_idx {
+                    let data_bl = bincode::deserialize::<Vec<Vec<(K, C)>>>(&ser_data[pre_idx..*idx]).unwrap(); 
+                    data.append(&mut data_bl.into_iter().flatten().collect());
+                    pre_idx = *idx;
+                }
+                for (k, c) in data.into_iter() {
+                    if let Some(old_c) = combiners.get_mut(&k) {
+                        let old = old_c.take().unwrap();
+                        let input = ((old, c),);
+                        let output = aggregator.merge_combiners.call(input);
+                        *old_c = Some(output);
+                    } else {
+                        combiners.insert(k, Some(c));
+                    }
+                }
+                let result = combiners.into_iter().map(|(k, v)| (k, v.unwrap())).collect::<Vec<Self::Item>>();
+                //sub-partition
+                let len = result.len(); 
+                //println!("shuffled.rs : result.len() = {:?}", len);
+                let data_size = std::mem::size_of::<Self::Item>(); //need revising
+                let block_len = (1 << (5+10+10))/ data_size;
+                let mut cur = 0;
+                let mut ser_result: Vec<u8> = Vec::with_capacity(len * data_size);
+                let mut ser_result_idx: Vec<usize> = Vec::new();
+                let mut idx: usize = 0;
+
+                while cur < len {
+                    let next = match cur + block_len > len {
+                        true => len,
+                        false => cur + block_len,
+                    };
                         
-                        let ser_result_bl = bincode::serialize(&result[cur..next]).unwrap();
-                        idx += ser_result_bl.len();
-                        ser_result.extend_from_slice(&ser_result_bl);
-                        ser_result_idx.push(idx);
+                    let ser_result_bl = bincode::serialize(&result[cur..next]).unwrap();
+                    idx += ser_result_bl.len();
+                    ser_result.extend_from_slice(&ser_result_bl);
+                    ser_result_idx.push(idx);
 
-                        cur = next;
-                    }
-                    if len == 0 {
-                        ser_result = vec![0; 8];
-                        ser_result_idx = vec![8];
-                    }
-                    (ser_result, ser_result_idx)
-                },
-            }
-        }
-        else if id < self.get_id() {
-            self.parent.compute_by_id(ser_data, ser_data_idx, id, is_shuffle) 
-        } else {
-            panic!("Invalid id")
+                    cur = next;
+                }
+                if len == 0 {
+                    ser_result = vec![0; 8];
+                    ser_result_idx = vec![8];
+                }
+                (ser_result, ser_result_idx)
+            },
         }
     }
 

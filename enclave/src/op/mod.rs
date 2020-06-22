@@ -1,10 +1,11 @@
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc, SgxMutex, Weak,
-};
 use std::boxed::Box;
 use std::collections::HashSet;
+use std::cmp::{Ordering, Reverse};
 use std::vec::Vec;
+use std::sync::{
+    atomic::{self, AtomicUsize},
+    Arc, SgxMutex, Weak,
+};
 use crate::basic::{AnyData, Data, Arc as SerArc};
 use crate::dependency::Dependency;
 use crate::partitioner::Partitioner;
@@ -36,7 +37,7 @@ impl Context {
     }
 
     pub fn new_op_id(self: &Arc<Self>) -> usize {
-        self.next_op_id.fetch_add(1, Ordering::SeqCst)
+        self.next_op_id.fetch_add(1, atomic::Ordering::SeqCst)
     }
 
     pub fn make_op<T: Data>(self: &Arc<Self>) -> SerArc<dyn Op<Item = T>> {
@@ -60,38 +61,8 @@ impl OpVals {
     }
 }
 
-impl<I: Op + ?Sized> Op for SerArc<I> {
-    type Item = I::Item;
-    fn get_id(&self) -> usize {
-        (**self).get_id()
-    }
-    fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>> {
-        (**self).get_op()
-    }    
-    fn get_context(&self) -> Arc<Context> {
-        (**self).get_context()
-    }
-    fn get_deps(&self) -> Vec<Dependency> {
-        (**self).get_deps()
-    }
-    fn get_next_deps(&self) -> Arc<SgxMutex<Vec<Dependency>>> {
-        (**self).get_next_deps()
-    }
-    fn get_prev_ids(&self) -> HashSet<usize> {
-        (**self).get_prev_ids()
-    }
-    fn compute_by_id(&self, ser_data: &[u8], ser_data_idx: &[usize], id: usize, is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
-        (**self).compute_by_id(ser_data, ser_data_idx, id, is_shuffle)
-    }
-    fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>> {
-        (**self).compute(ser_data, ser_data_idx)
-    }
-}
-
-pub trait Op: Send + Sync + 'static {
-    type Item: Data;
+pub trait OpBase: Send + Sync {
     fn get_id(&self) -> usize;
-    fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>>;
     fn get_context(&self) -> Arc<Context>;
     fn get_deps(&self) -> Vec<Dependency>;
     fn get_next_deps(&self) -> Arc<SgxMutex<Vec<Dependency>>>;
@@ -108,7 +79,71 @@ pub trait Op: Send + Sync + 'static {
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
         None
     }
-    fn compute_by_id(&self, ser_data: &[u8], ser_data_idx: &[usize], id: usize, is_shuffle: u8) -> (Vec<u8>, Vec<usize>);
+    fn iterator(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>);
+}
+
+impl PartialOrd for dyn OpBase {
+    fn partial_cmp(&self, other: &dyn OpBase) -> Option<Ordering> {
+        Some(self.get_id().cmp(&other.get_id()))
+    }
+}
+
+impl PartialEq for dyn OpBase {
+    fn eq(&self, other: &dyn OpBase) -> bool {
+        self.get_id() == other.get_id()
+    }
+}
+
+impl Eq for dyn OpBase {}
+
+impl Ord for dyn OpBase {
+    fn cmp(&self, other: &dyn OpBase) -> Ordering {
+        self.get_id().cmp(&other.get_id())
+    }
+}
+
+impl<I: Op + ?Sized> OpBase for SerArc<I> {
+    fn get_id(&self) -> usize {
+        (**self).get_op_base().get_id()
+    }
+    fn get_context(&self) -> Arc<Context> {
+        (**self).get_op_base().get_context()
+    }
+    fn get_deps(&self) -> Vec<Dependency> {
+        (**self).get_op_base().get_deps()
+    }
+    fn get_next_deps(&self) -> Arc<SgxMutex<Vec<Dependency>>> {
+        (**self).get_op_base().get_next_deps()
+    }
+    fn get_prev_ids(&self) -> HashSet<usize> {
+        (**self).get_op_base().get_prev_ids()
+    }
+    fn iterator(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
+        (**self).get_op_base().iterator(ser_data, ser_data_idx, is_shuffle)
+    }
+}
+
+impl<I: Op + ?Sized> Op for SerArc<I> {
+    type Item = I::Item;
+    fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>> {
+        (**self).get_op()
+    } 
+    fn get_op_base(&self) -> Arc<dyn OpBase> {
+        (**self).get_op_base()
+    }
+    fn compute_start(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
+        (**self).compute_start(ser_data, ser_data_idx, is_shuffle)
+    }
+    fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>> {
+        (**self).compute(ser_data, ser_data_idx)
+    }
+}
+
+pub trait Op: OpBase + 'static {
+    type Item: Data;
+    fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>>;
+    fn get_op_base(&self) -> Arc<dyn OpBase>;
+    fn compute_start(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>);
     fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>>;
 
     /// Return a new RDD containing only the elements that satisfy a predicate.
@@ -161,7 +196,6 @@ pub trait Op: Send + Sync + 'static {
     }
 
 }
-
 
 pub trait Reduce<T> {
     fn reduce<F>(self, f: F) -> Option<T>

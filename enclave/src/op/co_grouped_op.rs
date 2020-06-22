@@ -124,15 +124,9 @@ impl<K: Data + Eq + Hash, V: Data, W: Data> CoGrouped<K, V, W> {
     }
 }
 
-impl<K: Data + Eq + Hash, V: Data, W: Data> Op for CoGrouped<K, V, W> {
-    type Item = (K, (Vec<V>, Vec<W>));  
-
+impl<K: Data + Eq + Hash, V: Data, W: Data> OpBase for CoGrouped<K, V, W> {
     fn get_id(&self) -> usize {
         self.vals.id
-    }
-
-    fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>> {
-        Arc::new(self.clone())
     }
 
     fn get_context(&self) -> Arc<Context> {
@@ -151,49 +145,53 @@ impl<K: Data + Eq + Hash, V: Data, W: Data> Op for CoGrouped<K, V, W> {
         let part = self.part.clone() as Box<dyn Partitioner>;
         Some(part)
     }
+    
+    fn iterator(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
+        self.compute_start(ser_data, ser_data_idx, is_shuffle)
+    }
 
-    fn compute_by_id(&self, ser_data: &[u8], ser_data_idx: &[usize], id: usize, is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
-        if id == self.get_id() {
-            let next_deps = self.next_deps.lock().unwrap();
-            match is_shuffle == 0 {
-                true => {       //No shuffle later
-                    assert!(ser_data_idx.len()==1 && ser_data.len()==*ser_data_idx.last().unwrap());
-                    let result = self.compute(ser_data, ser_data_idx)
-                        .collect::<Vec<Self::Item>>();
-                    let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
-                    let ser_result_idx: Vec<usize> = vec![ser_result.len()];
-                    (ser_result, ser_result_idx)
-                },
-                false => {      //Shuffle later
-                    let data: Vec<Self::Item> = bincode::deserialize(ser_data).unwrap();                           let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
-                    let shuf_dep = match &next_deps[0] {
-                        Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
-                        Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
-                    };
-                    let ser_result_set = shuf_dep.do_shuffle_task(iter);                    
-                    let mut ser_result = Vec::<u8>::with_capacity(std::mem::size_of_val(&ser_result_set));
-                    let mut ser_result_idx = Vec::<usize>::with_capacity(ser_result.len());
-                    let mut idx: usize = 0;
-                    for (i, mut ser_result_bl) in ser_result_set.into_iter().enumerate() {
-                        idx += ser_result_bl.len();
-                        ser_result.append(&mut ser_result_bl);
-                        ser_result_idx[i] = idx;
-                    }
-                    (ser_result, ser_result_idx)                
-                },
-            }
-        
-        }
-        else if id < self.get_id() {
-            if self.get_deps()[0].get_prev_ids().contains(&id) {
-                self.op0.compute_by_id(ser_data, ser_data_idx, id, is_shuffle)
-            } else if self.get_deps()[1].get_prev_ids().contains(&id) {
-                self.op1.compute_by_id(ser_data, ser_data_idx, id, is_shuffle)
-            } else {
-                panic!("id not found in deps")
-            }
-        } else {
-            panic!("Invalid id")
+}
+
+impl<K: Data + Eq + Hash, V: Data, W: Data> Op for CoGrouped<K, V, W>{
+    type Item = (K, (Vec<V>, Vec<W>));  
+    
+    fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>> {
+        Arc::new(self.clone())
+    }
+    
+    fn get_op_base(&self) -> Arc<dyn OpBase> {
+        Arc::new(self.clone()) as Arc<dyn OpBase>
+    }
+
+    fn compute_start(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
+        let next_deps = self.next_deps.lock().unwrap();
+        match is_shuffle == 0 {
+            true => {       //No shuffle later
+                assert!(ser_data_idx.len()==1 && ser_data.len()==*ser_data_idx.last().unwrap());
+                let result = self.compute(ser_data, ser_data_idx)
+                    .collect::<Vec<Self::Item>>();
+                let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
+                let ser_result_idx: Vec<usize> = vec![ser_result.len()];
+                (ser_result, ser_result_idx)
+            },
+            false => {      //Shuffle later
+                let data: Vec<Self::Item> = bincode::deserialize(ser_data).unwrap();                           
+                let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
+                let shuf_dep = match &next_deps[0] {
+                    Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
+                    Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
+                };
+                let ser_result_set = shuf_dep.do_shuffle_task(iter);                    
+                let mut ser_result = Vec::<u8>::with_capacity(std::mem::size_of_val(&ser_result_set));
+                let mut ser_result_idx = Vec::<usize>::with_capacity(ser_result.len());
+                let mut idx: usize = 0;
+                for (i, mut ser_result_bl) in ser_result_set.into_iter().enumerate() {
+                    idx += ser_result_bl.len();
+                    ser_result.append(&mut ser_result_bl);
+                    ser_result_idx[i] = idx;
+                }
+                (ser_result, ser_result_idx)                
+            },
         }
     }
 
