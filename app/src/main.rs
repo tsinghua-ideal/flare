@@ -28,7 +28,7 @@ pub struct Point {
 
 
 fn main() -> Result<()> {
-    //group_by
+    /* group_by */
     /*
     let sc = Context::new()?;
    
@@ -45,7 +45,7 @@ fn main() -> Result<()> {
     println!("result: {:?}", res[0]);
     */
     
-    //join
+    /* join */
     /*
     let sc = Context::new()?;
     let col1 = vec![
@@ -69,25 +69,26 @@ fn main() -> Result<()> {
     println!("result: {:?}", res);
     */
 
-    //map
-    
+    /* map */
+    /*
     let sc = Context::new()?;
     let col = sc.make_rdd((0..100).collect::<Vec<_>>(), 1, true);
     //Fn! will make the closures serializable. It is necessary. use serde_closure version 0.1.3.
     let vec_iter = col.map(Fn!(|i| i+1 ));
     let res = vec_iter.collect().unwrap();
     println!("result: {:?}", res.last());
-    
+    */
 
-    //reduce
+    /* reduce */
     /*
     let sc = Context::new()?;
     let nums = sc.make_rdd(vec![1i32, 2, 3, 4], 2, true);
     let res = nums.reduce(Fn!(|x: i32, y: i32| x + y))?;
     println!("result: {:?}", res);
     */
-    //linear regression
-    /*
+
+    /* linear regression */
+    
     let mut rng = rand::thread_rng();
     let point_num = 10000;
     let mut points: Vec<Point> = Vec::with_capacity(point_num);
@@ -100,12 +101,12 @@ fn main() -> Result<()> {
     let mut w = rng.gen::<f32>();
     let iter_num = 1000;
     for i in 0..iter_num {
-        let gradient = points_rdd.map(Fn!(move |p: Point| 
+        let g = points_rdd.map(Fn!(move |p: Point| 
             p.x * (1f32/(1f32+(-p.y * (w * p.x)).exp())-1f32) * p.y
         )).reduce(Fn!(|x, y| x+y)).unwrap();
-        w -= gradient.unwrap();
+        w -= g.unwrap();
     } 
     println!("w = {:?}", w);
-    */ 
+    
     Ok(())
 }

@@ -42,6 +42,8 @@ use serde_derive::{Deserialize, Serialize};
 
 use sgx_types::*;
 use sgx_tcrypto::*;
+use sgx_rand::Rng;
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::slice;
 use std::string::String;
@@ -62,16 +64,40 @@ mod op;
 use crate::basic::{AnyData, Arc as SerArc};
 use crate::op::{Context, Op, OpBase, Pair};
 
+struct Captured {
+    w: f32,
+}
+
 lazy_static! {
-    static ref SC: Arc<Context> = Context::new();
+    static ref sc: Arc<Context> = Context::new();
+    static ref w: f32 = {
+        let mut rng = sgx_rand::thread_rng();
+        let mut _w = rng.gen::<f32>();
+        _w
+    };  
     static ref opmap: HashMap<usize, Arc<dyn OpBase>> = {
         let mut tempHM = HashMap::new();
-        let sc = SC.clone();
         /* map */
+        /*
         let col = sc.make_op::<i32>();
         tempHM.insert(col.get_id(), col.get_op_base());
         let g = col.map(|i| i+1 );
         tempHM.insert(g.get_id(), g.get_op_base()); 
+        */
+
+        /* linear regression */
+        
+        let nums = sc.make_op::<Point>();
+        let iter_num = 1000;
+        for i in 0..iter_num {
+            //make op
+            let g = nums.map(|p: Point|
+                        p.x*(1f32/(1f32+(-p.y*(*w*p.x)).exp())-1f32)*p.y
+                    )
+                .reduce(|x, y| x+y);
+            tempHM.insert(g.get_id(), g.get_op_base());
+        }
+       
         tempHM
     };   
 }
@@ -95,6 +121,21 @@ pub extern "C" fn secure_executing(id: usize,
     //println!("inside enclave id = {:?}, is_shuffle = {:?}", id, is_shuffle);
     let ser_data_idx = unsafe { slice::from_raw_parts(input_idx as *const usize, idx_len)};
     let ser_data = unsafe { slice::from_raw_parts(input as *const u8, ser_data_idx[idx_len-1]) };
+    //get current stage's captured vars
+    let captured_vars = unsafe { (captured_vars as *const HashMap<usize, Vec<u8>>).as_ref() }.unwrap();
+    /*
+    match captured_vars.get(&0) {
+        Some(var) => *w = bincode::deserialize::<f32>(var).unwrap() ,
+        None => (),
+    };
+    */
+    //
+    
+    /* map */
+    /*
+    let col = sc.make_op::<i32>();
+    let g = col.map(|i| i+1 );
+    */
 
     /* join */
     /*
@@ -118,15 +159,6 @@ pub extern "C" fn secure_executing(id: usize,
     let g = nums.reduce(|x, y| x+y);
     */
 
-    /*linear regression */
-    /*let sc = Context::new();
-    let nums = sc.make_op::<f32>();
-    let iter_num = 1000;
-    for i in 0..iter_num {
-        let gradient = nums.map(|p: Point|
-            p.x*(1/(1+(-p.y*(w*p.x)).exp())-1)*p.y
-        ).reduce(|x, y| x+y);
-    */
     let op = match opmap.get(&id) {
         Some(op) => op,
         None => panic!("Invalid op id"),
