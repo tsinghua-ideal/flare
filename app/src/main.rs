@@ -99,12 +99,14 @@ fn main() -> Result<()> {
     let sc = Context::new()?;
     let points_rdd = sc.make_rdd(points, 1, true);
     let mut w = rng.gen::<f32>();
-    let iter_num = 1000;
+    println!("0: w = {:?}", w);
+    let iter_num = 10;
     for i in 0..iter_num {
         let g = points_rdd.map(Fn!(move |p: Point| 
             p.x * (1f32/(1f32+(-p.y * (w * p.x)).exp())-1f32) * p.y
         )).reduce(Fn!(|x, y| x+y)).unwrap();
         w -= g.unwrap();
+        println!("{:?}: w = {:?}", i, w);
     } 
     println!("w = {:?}", w);
     
