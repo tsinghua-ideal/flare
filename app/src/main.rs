@@ -16,9 +16,11 @@
 // under the License..
 #![feature(proc_macro_hygiene)]
 
+use std::time::{Duration, Instant};
 use vega::*;
 use rand::Rng;
 use serde_derive::{Deserialize, Serialize};
+
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Point {
@@ -90,7 +92,7 @@ fn main() -> Result<()> {
     /* linear regression */
     
     let mut rng = rand::thread_rng();
-    let point_num = 10000;
+    let point_num = 20_000_000;
     let mut points: Vec<Point> = Vec::with_capacity(point_num);
     for i in 0..point_num { 
         let point = Point { x: rng.gen(), y: rng.gen() };
@@ -101,6 +103,7 @@ fn main() -> Result<()> {
     let mut w = rng.gen::<f32>();
     println!("0: w = {:?}", w);
     let iter_num = 10;
+    let now = Instant::now();
     for i in 0..iter_num {
         let g = points_rdd.map(Fn!(move |p: Point| 
             p.x * (1f32/(1f32+(-p.y * (w * p.x)).exp())-1f32) * p.y
@@ -108,6 +111,8 @@ fn main() -> Result<()> {
         w -= g.unwrap();
         println!("{:?}: w = {:?}", i, w);
     } 
+    let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+    println!("Total time {:?} s", dur);
     println!("w = {:?}", w);
     
     Ok(())

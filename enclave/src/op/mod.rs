@@ -15,8 +15,12 @@ mod co_grouped_op;
 pub use co_grouped_op::*;
 mod flatmapper_op;
 pub use flatmapper_op::*;
+mod local_file_reader;
+pub use local_file_reader::*;
 mod mapper_op;
 pub use mapper_op::*;
+mod map_partitions_op;
+pub use map_partitions_op::*;
 mod pair_op;
 pub use pair_op::*;
 mod reduced_op;
@@ -43,6 +47,20 @@ impl Context {
     pub fn make_op<T: Data>(self: &Arc<Self>) -> SerArc<dyn Op<Item = T>> {
         SerArc::new(ParallelCollection::new(self.clone()))
     }
+
+    /// Load from a distributed source and turns it into a parallel collection.
+    pub fn read_source<F, C, I: Data, O: Data>(
+        self: &Arc<Self>,
+        config: C,
+        func: F,
+    ) -> impl Op<Item = O>
+    where
+        F: Fn(I) -> O + Clone + Send + Sync + 'static,
+        C: ReaderConfiguration<I>,
+    {
+        config.make_reader(self.clone(), func)
+    }
+
 }
 
 pub(crate) struct OpVals {

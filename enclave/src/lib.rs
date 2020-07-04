@@ -73,6 +73,7 @@ struct Captured {
 lazy_static! {
     static ref sc: Arc<Context> = Context::new();
     static ref w: RwLock<f32> = {
+        // error: TCS policy - bound
         //let mut rng = sgx_rand::thread_rng();
         //let mut _w = rng.gen::<f32>();
         let _w: f32 = 1.0;
