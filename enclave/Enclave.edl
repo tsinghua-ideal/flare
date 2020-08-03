@@ -31,6 +31,7 @@ enclave {
 				[user_check] uint8_t* output, 
 				[user_check] size_t* output_idx,
 				[user_check] uint8_t* captured_vars);
+        public size_t pre_touching(uint8_t zero);
     };
 
 };

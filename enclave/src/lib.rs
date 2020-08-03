@@ -45,7 +45,9 @@ use serde_derive::{Deserialize, Serialize};
 use sgx_types::*;
 use sgx_tcrypto::*;
 use sgx_rand::Rng;
+use std::boxed::Box;
 use std::cell::Cell;
+use std::cmp::min;
 use std::collections::{btree_map::BTreeMap, HashMap};
 use std::slice;
 use std::string::String;
@@ -71,6 +73,7 @@ struct Captured {
 }
 
 lazy_static! {
+    static ref sig: RwLock<i32> = RwLock::new(0);
     static ref sc: Arc<Context> = Context::new();
     static ref w: RwLock<f32> = {
         // error: TCS policy - bound
@@ -88,7 +91,7 @@ lazy_static! {
         let g = col.map(|i| i+1 );
         tempHM.insert(g.get_id(), g.get_op_base()); 
         */
-    
+
         /* join */
         /*
         let col1 = sc.make_op::<(i32, (String, String))>();
@@ -117,7 +120,7 @@ lazy_static! {
 
         /* linear regression */
         let nums = sc.make_op::<Point>();
-        let iter_num = 10;
+        let iter_num = 3;
         for i in 0..iter_num {
             //make op
             let g = nums.map(|p: Point|
@@ -162,12 +165,15 @@ pub extern "C" fn secure_executing(id: usize,
         },
         None => (),
     };
-
+    
+    let now = Instant::now();
     let op = match opmap.iter().find(|&x| x.0>= &id ) {
         Some((k,v)) => v,
         None => panic!("Invalid op id"),
     };
     let (ser_result, ser_result_idx) = op.iterator(ser_data, ser_data_idx, is_shuffle);
+    let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+    println!("in enclave {:?} s", dur);
 
     let out_idx_len = ser_result_idx.len();
     let out_idx = unsafe { slice::from_raw_parts_mut(output_idx as * mut usize, out_idx_len as usize) }; 
@@ -177,4 +183,40 @@ pub extern "C" fn secure_executing(id: usize,
     return out_idx_len
 }
 
+#[no_mangle]
+pub extern "C" fn pre_touching(zero: u8) -> usize 
+{
+    // 4KB per page
+    // 1MB = 1<<8 = 2^8 pages
+    /*
+    let mut p: *mut u8 = std::ptr::null_mut();
+    let mut tmp_p: *mut u8 = std::ptr::null_mut();
+    {
+        // malloc < 256B
+        p = Box::into_raw(Box::new(1)); 
+        //println!("<256B -> {:?}", p);
+    }
+    {
+        // 256B < malloc <256KB, e.g., 4K: one_page
+        tmp_p = Vec::with_capacity(4*1024).as_mut_ptr();
+        //println!("4KB -> {:?}", tmp_p);
+        p = min(tmp_p, p);
+    }
+    {
+        // malloc > 256KB, e.g., 1M
+        tmp_p = Vec::with_capacity(1024 * 1024).as_mut_ptr();
+        //println!("1MB -> {:?}", tmp_p);
+        p = min(tmp_p, p);
+    }
+    unsafe{ *p += zero; }
 
+    for _i in (0..1<<10) {
+        unsafe {
+            p = p.offset(4*1024);
+            *p += zero;
+        }
+    }
+    println!("finish pre_touching");
+    */
+    return 0;
+}

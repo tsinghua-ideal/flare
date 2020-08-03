@@ -74,10 +74,13 @@ fn main() -> Result<()> {
     /* map */
     /*
     let sc = Context::new()?;
-    let col = sc.make_rdd((0..100).collect::<Vec<_>>(), 1, true);
+    let now = Instant::now();
+    let col = sc.make_rdd((0..1_000_000).collect::<Vec<_>>(), 1, true);
     //Fn! will make the closures serializable. It is necessary. use serde_closure version 0.1.3.
     let vec_iter = col.map(Fn!(|i| i+1 ));
     let res = vec_iter.collect().unwrap();
+    let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+    println!("Total time {:?} s", dur);
     println!("result: {:?}", res.last());
     */
 
@@ -90,9 +93,8 @@ fn main() -> Result<()> {
     */
 
     /* linear regression */
-    
     let mut rng = rand::thread_rng();
-    let point_num = 20_000_000;
+    let point_num = 1_000_000;
     let mut points: Vec<Point> = Vec::with_capacity(point_num);
     for i in 0..point_num { 
         let point = Point { x: rng.gen(), y: rng.gen() };
@@ -102,7 +104,7 @@ fn main() -> Result<()> {
     let points_rdd = sc.make_rdd(points, 1, true);
     let mut w = rng.gen::<f32>();
     println!("0: w = {:?}", w);
-    let iter_num = 10;
+    let iter_num = 3;
     let now = Instant::now();
     for i in 0..iter_num {
         let g = points_rdd.map(Fn!(move |p: Point| 
@@ -114,6 +116,6 @@ fn main() -> Result<()> {
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
     println!("w = {:?}", w);
-    
+
     Ok(())
 }

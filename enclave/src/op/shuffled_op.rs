@@ -137,7 +137,7 @@ impl<K: Data + Eq + Hash, V: Data, C: Data> Op for Shuffled<K, V, C> {
                 let len = result.len(); 
                 //println!("shuffled.rs : result.len() = {:?}", len);
                 let data_size = std::mem::size_of::<Self::Item>(); //need revising
-                let block_len = (1 << (5+10+10))/ data_size;
+                let block_len = (1 << (10+10)) / data_size;
                 let mut cur = 0;
                 let mut ser_result: Vec<u8> = Vec::with_capacity(len * data_size);
                 let mut ser_result_idx: Vec<usize> = Vec::new();

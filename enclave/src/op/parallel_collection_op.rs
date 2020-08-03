@@ -103,8 +103,16 @@ impl<T: Data> Op for ParallelCollection<T> {
     }
 
     fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>> {
+        let now = Instant::now();
         let data: Vec<Self::Item> = bincode::deserialize(ser_data).unwrap();
-        Box::new(data.into_iter())
+        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+        println!("data addr = {:?}", data.as_ptr());
+        println!("in enclave deserialize {:?} s", dur);    
+        let now = Instant::now();
+        let b = Box::new(data.into_iter());
+        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+        println!("in enclave into iterator {:?} s", dur);
+        b
     }
 
 }

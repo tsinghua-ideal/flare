@@ -45,6 +45,7 @@ sgx_rand_derive = { path = "../incubator-teaclave-sgx-sdk/sgx_rand_derive" }
 sgx_serialize = { path = "../incubator-teaclave-sgx-sdk/sgx_serialize" }
 sgx_serialize_derive = { path = "../incubator-teaclave-sgx-sdk/sgx_serialize_derive" }
 sgx_serialize_derive_internals = { path = "../incubator-teaclave-sgx-sdk/sgx_serialize_derive_internals" }
+sgx_signal = { path = "../incubator-teaclave-sgx-sdk/sgx_signal" }
 sgx_tcrypto = { path = "../incubator-teaclave-sgx-sdk/sgx_tcrypto" }
 sgx_tcrypto_helper = { path = "../incubator-teaclave-sgx-sdk/sgx_tcrypto_helper" }
 sgx_tdh = { path = "../incubator-teaclave-sgx-sdk/sgx_tdh" }
