@@ -104,6 +104,7 @@ impl<T: Data> Op for ParallelCollection<T> {
 
     fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>> {
         let now = Instant::now();
+        assert!(ser_data_idx.len()==1);
         let data: Vec<Self::Item> = bincode::deserialize(ser_data).unwrap();
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("data addr = {:?}", data.as_ptr());

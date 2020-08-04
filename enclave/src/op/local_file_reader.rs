@@ -27,37 +27,19 @@ impl LocalFsReaderConfig {
     }
 }
 
-impl ReaderConfiguration<Vec<u8>> for LocalFsReaderConfig {
-    fn make_reader<F, U>(self, context: Arc<Context>, decoder: F) -> SerArc<dyn Op<Item = U>>
+impl<I: Data> ReaderConfiguration<I> for LocalFsReaderConfig {
+    fn make_reader<F, O>(self, context: Arc<Context>, decoder: F) -> SerArc<dyn Op<Item = O>>
     where
-        F: Fn(Vec<u8>) -> U + Clone + Send + Sync + 'static,
-        U: Data,
+        O: Data,
+        F: Fn(I) -> O + Clone + Send + Sync + 'static,
     {
-        let reader = LocalFsReader::<BytesReader>::new(self, context);
+        let reader = LocalFsReader::<Vec<u8>>::new(self, context);
         let read_files = 
-            |_part: usize, readers: Box<dyn Iterator<Item = BytesReader>>| {
-                Box::new(readers.into_iter().map(|file| file.into_iter()).flatten())
-                    as Box<dyn Iterator<Item = _>>
-            };
-        let files_per_executor = Arc::new(
-            MapPartitions::new(Arc::new(reader) as Arc<dyn Op<Item = _>>, read_files),
-        );
-        let decoder = Mapper::new(files_per_executor, decoder);
-        SerArc::new(decoder)
-    }
-}
-
-impl ReaderConfiguration<PathBuf> for LocalFsReaderConfig {
-    fn make_reader<F, U>(self, context: Arc<Context>, decoder: F) -> SerArc<dyn Op<Item = U>>
-    where
-        F: Fn(PathBuf) -> U + Clone + Send + Sync + 'static,
-        U: Data,
-    {
-        let reader = LocalFsReader::<FileReader>::new(self, context);
-        let read_files = 
-            |_part: usize, readers: Box<dyn Iterator<Item = FileReader>>| {
-                Box::new(readers.map(|reader| reader.into_iter()).flatten())
-                    as Box<dyn Iterator<Item = _>>
+            |_part: usize, readers: Box<dyn Iterator<Item = Vec<u8>>>| {
+                Box::new(readers.into_iter().map(|file| {
+                        bincode::deserialize::<Vec<I>>(&file).unwrap().into_iter()
+                    }).flatten()) as Box<dyn Iterator<Item = _>>
+                //TODO: decrypt
             };
         let files_per_executor = Arc::new(
             MapPartitions::new(Arc::new(reader) as Arc<dyn Op<Item = _>>, read_files),
@@ -114,11 +96,7 @@ macro_rules! impl_common_lfs_opb_funcs {
     };
 }
 
-impl OpBase for LocalFsReader<BytesReader> {
-    impl_common_lfs_opb_funcs!();
-}
-
-impl OpBase for LocalFsReader<FileReader> {
+impl<T: Data> OpBase for LocalFsReader<T> {
     impl_common_lfs_opb_funcs!();
 }
 
@@ -137,61 +115,31 @@ macro_rules! impl_common_lfs_op_funcs {
     };
 }
 
-impl Op for LocalFsReader<BytesReader> {
-    type Item = BytesReader;
-
-    impl_common_lfs_op_funcs!();
-
-    fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>> {
-        //TODO
-        Box::new(Vec::new().into_iter())
-    }
-
-    fn compute_start(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
-        //TODO
-        (Vec::new(),Vec::new())
-    }
-
-}
-
-impl Op for LocalFsReader<FileReader> {
-    type Item = FileReader;
-
-    impl_common_lfs_op_funcs!();
-
-    fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>> {
-        //TODO
-        Box::new(Vec::new().into_iter())
-    }
-
-    fn compute_start(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
-        //TODO
-        (Vec::new(),Vec::new())
-    }
-
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct BytesReader {
-    files: Vec<PathBuf>,
-}
-
-impl Iterator for BytesReader {
+impl<T: Data> Op for LocalFsReader<T> {
     type Item = Vec<u8>;
-    fn next(&mut self) -> Option<Self::Item> {
+
+    impl_common_lfs_op_funcs!();
+
+    fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>> {
         //TODO
-        None
+        let mut ser_data_: Vec<Vec<u8>> = Vec::with_capacity(std::mem::size_of_val(ser_data)); 
+        let mut pre_idx: usize = 0;
+        for idx in ser_data_idx {
+            ser_data_.push(ser_data[pre_idx..*idx].to_vec());
+            pre_idx = *idx;
+        }
+        Box::new(ser_data_.into_iter())
     }
+
+    fn compute_start(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
+        //suppose no shuffle will happen after this rdd
+        let result = self.compute(ser_data, ser_data_idx)
+            .collect::<Vec<Self::Item>>();
+        let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
+        let ser_result_idx: Vec<usize> = vec![ser_result.len()];
+        (ser_result, ser_result_idx)
+    }
+
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct FileReader {
-    files: Vec<PathBuf>,
-}
 
-impl Iterator for FileReader {
-    type Item = PathBuf;
-    fn next(&mut self) -> Option<Self::Item> {
-        self.files.pop()
-    }
-}
