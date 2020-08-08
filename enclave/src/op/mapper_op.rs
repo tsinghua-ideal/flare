@@ -109,13 +109,14 @@ where
                 let now = Instant::now();
                 let result = self.compute(ser_data, ser_data_idx)
                     .collect::<Vec<Self::Item>>();
-                println!("result addr = {:?}", result.as_ptr());
                 let dur = now.elapsed().as_nanos() as f64 * 1e-9;
                 println!("in enclave compute {:?} s", dur);    
+                println!("result.addr = {:?}", result.as_ptr());
                 let now = Instant::now();
                 let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
                 let dur = now.elapsed().as_nanos() as f64 * 1e-9;
                 println!("in enclave serialize {:?} s", dur);    
+                println!("ser_result.addr = {:?}", ser_result.as_ptr());
                 let ser_result_idx: Vec<usize> = vec![ser_result.len()];
                 (ser_result, ser_result_idx)
             },
@@ -141,11 +142,7 @@ where
     }
 
     fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>> {
-        let now = Instant::now();
-        let b = Box::new(self.prev.compute(ser_data, ser_data_idx).map(self.f.clone()));
-        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("in enclave build mapper {:?} s", dur);
-        b
+        Box::new(self.prev.compute(ser_data, ser_data_idx).map(self.f.clone()))
     }
 
 }

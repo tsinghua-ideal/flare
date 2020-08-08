@@ -103,7 +103,6 @@ fn main() -> Result<()> {
     let sc = Context::new()?;
     let points_rdd = sc.make_rdd(points, 1, true);
     let mut w = rng.gen::<f32>();
-    println!("0: w = {:?}", w);
     let iter_num = 3;
     let now = Instant::now();
     for i in 0..iter_num {

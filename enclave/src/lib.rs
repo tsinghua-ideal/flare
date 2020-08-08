@@ -75,13 +75,17 @@ struct Captured {
 lazy_static! {
     static ref sig: RwLock<i32> = RwLock::new(0);
     static ref sc: Arc<Context> = Context::new();
+    /*
     static ref w: RwLock<f32> = {
         // error: TCS policy - bound
         //let mut rng = sgx_rand::thread_rng();
         //let mut _w = rng.gen::<f32>();
         let _w: f32 = 1.0;
         RwLock::new(_w)
-    };  
+    };
+    */
+    static ref w: AtomicPtr<f32> = AtomicPtr::new(&mut 1.0);  
+   
     static ref opmap: BTreeMap<usize, Arc<dyn OpBase>> = {
         let mut tempHM = BTreeMap::new();
         /* map */
@@ -124,7 +128,7 @@ lazy_static! {
         for i in 0..iter_num {
             //make op
             let g = nums.map(|p: Point|
-                        p.x*(1f32/(1f32+(-p.y*(*w.read().unwrap() *p.x)).exp())-1f32)*p.y
+                        p.x*(1f32/(1f32+(-p.y*(unsafe {*w.load(Ordering::Relaxed)} *p.x)).exp())-1f32)*p.y
                     )
                 .reduce(|x, y| x+y);
             if i == iter_num - 1 {
@@ -160,12 +164,11 @@ pub extern "C" fn secure_executing(id: usize,
     //TODO
     match captured_vars.get(&id) {
         Some(var) =>  {
-            let mut _w = w.write().unwrap();
-            *_w = bincode::deserialize::<f32>(var).unwrap();
+            w.store(&mut bincode::deserialize::<f32>(var).unwrap(), Ordering::Relaxed);
         },
         None => (),
     };
-    
+   
     let now = Instant::now();
     let op = match opmap.iter().find(|&x| x.0>= &id ) {
         Some((k,v)) => v,
@@ -188,7 +191,6 @@ pub extern "C" fn pre_touching(zero: u8) -> usize
 {
     // 4KB per page
     // 1MB = 1<<8 = 2^8 pages
-    /*
     let mut p: *mut u8 = std::ptr::null_mut();
     let mut tmp_p: *mut u8 = std::ptr::null_mut();
     {
@@ -217,6 +219,5 @@ pub extern "C" fn pre_touching(zero: u8) -> usize
         }
     }
     println!("finish pre_touching");
-    */
     return 0;
 }
