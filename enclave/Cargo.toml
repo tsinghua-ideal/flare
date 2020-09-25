@@ -30,6 +30,7 @@ bincode = { git = "https://github.com/mesalock-linux/bincode-sgx" }
 bytes = { git = "https://github.com/mesalock-linux/bytes-sgx" }
 lazy_static = { version = "1.1.0", features = ["spin_no_std"] }
 typetag = { git = "https://github.com/mesalock-linux/typetag-sgx" }
+spin = "0.5.2"
 
 [patch.'https://github.com/apache/teaclave-sgx-sdk.git']
 sgx_alloc = { path = "../incubator-teaclave-sgx-sdk/sgx_alloc" }

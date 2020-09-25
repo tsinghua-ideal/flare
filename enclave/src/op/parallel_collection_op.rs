@@ -1,6 +1,7 @@
 use std::cmp;
 use std::boxed::Box;
 use std::marker::PhantomData;
+use std::mem::{drop, forget};
 use std::sync::{Arc, SgxMutex, Weak};
 use std::time::{Duration, Instant};
 use std::untrusted::time::InstantEx;
@@ -53,8 +54,8 @@ impl<T: Data> OpBase for ParallelCollection<T> {
         self.next_deps.clone()
     }
 
-    fn iterator(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
-        self.compute_start(ser_data, ser_data_idx, is_shuffle)
+    fn iterator(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+        self.compute_start(data_ptr, is_shuffle)
     }
 }
 
@@ -69,46 +70,42 @@ impl<T: Data> Op for ParallelCollection<T> {
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
-        assert!(ser_data_idx.len()==1 && ser_data.len()==*ser_data_idx.last().unwrap());
+    fn compute_start(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         let next_deps = self.next_deps.lock().unwrap();
         match is_shuffle == 0 {  //TODO maybe need to check if shuf_dep not in dep
             true => {       //No shuffle later
-                let result = self.compute(ser_data, ser_data_idx)
+                let result = self.compute(data_ptr)
                     .collect::<Vec<Self::Item>>();
-                let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
-                let ser_result_idx: Vec<usize> = vec![ser_result.len()];
-                (ser_result, ser_result_idx)
+                crate::ALLOCATOR.lock().set_switch(true);
+                let result_enc = result.clone(); // encrypt
+                let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
+                crate::ALLOCATOR.lock().set_switch(false);
+                result_ptr
             },
             false => {      //Shuffle later
-                let data: Vec<Self::Item> = bincode::deserialize(ser_data).unwrap();  
+                let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<Self::Item>) }; 
+                let data = data_enc.clone();
+                crate::ALLOCATOR.lock().set_switch(true);
+                drop(data_enc);
+                crate::ALLOCATOR.lock().set_switch(false);
                 let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
                 let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
                     Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
                     Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
                 };
-                let ser_result_set = shuf_dep.do_shuffle_task(iter);
-                let mut ser_result = Vec::<u8>::with_capacity(std::mem::size_of_val(&ser_result_set));
-                let mut ser_result_idx = Vec::<usize>::with_capacity(cmp::max(ser_result.len(), 1));
-                let mut idx: usize = 0;
-                for (i, mut ser_result_bl) in ser_result_set.into_iter().enumerate() {
-                    let bl_len = ser_result_bl.len();
-                    idx += bl_len;
-                    ser_result.append(&mut ser_result_bl);
-                    ser_result_idx.push(idx); 
-                }
-                (ser_result, ser_result_idx)
+                shuf_dep.do_shuffle_task(iter)
             },
         }
     }
 
-    fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>> {
+    fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
         let now = Instant::now();
-        assert!(ser_data_idx.len()==1);
-        let data: Vec<Self::Item> = bincode::deserialize(ser_data).unwrap();
+        let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<Self::Item>) }; 
+        //TODO decrypt 
+        let data = data_enc.clone();
+        forget(data_enc);
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("in enclave deserialize {:?} s", dur);    
-        println!("data.ptr = {:?}", data.as_ptr());
+        println!("in enclave decrypt {:?} s", dur);    
         Box::new(data.into_iter())
     }
 

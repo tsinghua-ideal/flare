@@ -2,6 +2,7 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::marker::PhantomData;
+use std::mem::{drop, forget};
 use std::sync::{Arc, SgxMutex, Weak};
 use std::vec::Vec;
 
@@ -41,7 +42,6 @@ impl<K: Data + Eq + Hash, V: Data, W: Data> CoGrouped<K, V, W> {
             .partitioner()
             .map_or(false, |p| p.equals(&part as &dyn Any))
         {
-
             deps.push(Dependency::NarrowDependency(
                 Arc::new(OneToOneDependency::new(prev_ids.clone())) as Arc<dyn NarrowDependencyTrait>,
             ));
@@ -146,8 +146,8 @@ impl<K: Data + Eq + Hash, V: Data, W: Data> OpBase for CoGrouped<K, V, W> {
         Some(part)
     }
     
-    fn iterator(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
-        self.compute_start(ser_data, ser_data_idx, is_shuffle)
+    fn iterator(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+        self.compute_start(data_ptr, is_shuffle)
     }
 
 }
@@ -163,103 +163,102 @@ impl<K: Data + Eq + Hash, V: Data, W: Data> Op for CoGrouped<K, V, W>{
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
+    fn compute_start(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         let next_deps = self.next_deps.lock().unwrap();
         match is_shuffle == 0 {
             true => {       //No shuffle later
-                assert!(ser_data_idx.len()==1 && ser_data.len()==*ser_data_idx.last().unwrap());
-                let result = self.compute(ser_data, ser_data_idx)
+                let result = self.compute(data_ptr)
                     .collect::<Vec<Self::Item>>();
-                let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
-                let ser_result_idx: Vec<usize> = vec![ser_result.len()];
-                (ser_result, ser_result_idx)
+                crate::ALLOCATOR.lock().set_switch(true);
+                let result_enc = result.clone(); // encrypt
+                let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
+                crate::ALLOCATOR.lock().set_switch(false);
+                result_ptr
             },
             false => {      //Shuffle later
-                let data: Vec<Self::Item> = bincode::deserialize(ser_data).unwrap();                           
+                let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<Self::Item>) };
+                let data = data_enc.clone();
+                crate::ALLOCATOR.lock().set_switch(true);
+                drop(data_enc);
+                crate::ALLOCATOR.lock().set_switch(false);
                 let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
-                let shuf_dep = match &next_deps[0] {
+                let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
                     Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
                     Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
                 };
-                let ser_result_set = shuf_dep.do_shuffle_task(iter);                    
-                let mut ser_result = Vec::<u8>::with_capacity(std::mem::size_of_val(&ser_result_set));
-                let mut ser_result_idx = Vec::<usize>::with_capacity(ser_result.len());
-                let mut idx: usize = 0;
-                for (i, mut ser_result_bl) in ser_result_set.into_iter().enumerate() {
-                    idx += ser_result_bl.len();
-                    ser_result.append(&mut ser_result_bl);
-                    ser_result_idx[i] = idx;
-                }
-                (ser_result, ser_result_idx)                
+                shuf_dep.do_shuffle_task(iter)
             },
         }
     }
 
-    fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>> {
+    fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
         let mut agg: HashMap<K, (Vec<V>, Vec<W>)> = HashMap::new();
-        let mut array: [u8; 8] = [0; 8];
-        array.clone_from_slice(&ser_data[0..8]);  //get byte len of first rdd
-        let first_len = usize::from_le_bytes(array);
-        let mut first_i = 0;
-        let mut pre_idx = 8;
-        let idx_len = ser_data_idx.len();
+        let data = unsafe{ Box::from_raw(data_ptr as *mut Vec<Vec<usize>>) };
         let deps = self.get_deps();
-        for (i, idx) in ser_data_idx.iter().enumerate() {
-            if *idx == 8 + first_len {
-                first_i = i;
-                break;
-            }
-        }
         match &deps[0] {
             Dependency::NarrowDependency(nar) => {
-                let data0: Vec<(K, V)> = bincode::deserialize(&ser_data[pre_idx..ser_data_idx[first_i]]).unwrap();
-                for i in data0 { 
-                    let (k, v) = i;
-                    agg.entry(k)
-                        .or_insert_with(|| (Vec::new(), Vec::new())).0
-                        .push(v);
+                for block_ptr in &data[0] {
+                    let block_ptr = *block_ptr as *mut u8 as *mut Vec<(K, V)>;
+                    let data0_enc  = unsafe{ Box::from_raw(block_ptr) };
+                    let data0 = data0_enc.clone();
+                    for i in data0.into_iter() { 
+                        let (k, v) = i;
+                        agg.entry(k)
+                            .or_insert_with(|| (Vec::new(), Vec::new())).0
+                            .push(v);
+                    }
+                    forget(data0_enc);
                 }
             },
             Dependency::ShuffleDependency(shuf) => {
-                for idx in &ser_data_idx[1..=first_i] {                            
-                    let data_bl: Vec<Vec<(K, Vec<V>)>>= bincode::deserialize(&ser_data[pre_idx..*idx]).unwrap();
-                    for (k, c) in data_bl.into_iter().flatten() { 
+                for data_ptr in &data[0] {   //cycle == 1
+                    let data_ptr = *data_ptr as *mut u8 as *mut Vec<(K, Vec<V>)>;
+                    let data0_enc = unsafe{ Box::from_raw(data_ptr) };
+                    let data0 = data0_enc.clone();
+                    for (k, c) in data0.into_iter() { 
                         let temp = agg.entry(k)
                             .or_insert_with(|| (Vec::new(), Vec::new()));
                         for v in c {
                             temp.0.push(v);
                         }
                     }
-                    pre_idx = *idx;
+                    forget(data0_enc);
                 }
             },
         };
 
         match &deps[1] {
             Dependency::NarrowDependency(nar) => {
-                let data1: Vec<(K, W)> = bincode::deserialize(&ser_data[pre_idx..]).unwrap();
-                for i in data1 {
-                    let (k, w) = i;
-                    agg.entry(k)
-                        .or_insert_with(|| (Vec::new(), Vec::new())).1
-                        .push(w);
+                for block_ptr in &data[1] {
+                    let block_ptr = *block_ptr as *mut u8 as *mut Vec<(K, W)>;
+                    let data1_enc = unsafe{ Box::from_raw(block_ptr) };
+                    let data1 = data1_enc.clone();
+                    for i in data1.into_iter() {
+                        let (k, w) = i;
+                        agg.entry(k)
+                            .or_insert_with(|| (Vec::new(), Vec::new())).1
+                            .push(w);
+                    }
+                    forget(data1_enc);
                 }
             },
             Dependency::ShuffleDependency(shuf) => {
-                for idx in &ser_data_idx[first_i+1..] {                            
-                    let data_bl: Vec<Vec<(K, Vec<W>)>>= bincode::deserialize(&ser_data[pre_idx..*idx]).unwrap();
-                    for (k, c) in data_bl.into_iter().flatten() { 
+                for data_ptr in &data[1] {   //cycle == 1
+                    let data_ptr = *data_ptr as *mut u8 as *mut Vec<(K, Vec<W>)>;
+                    let data1_enc = unsafe{ Box::from_raw(data_ptr) };
+                    let data1 = data1_enc.clone();
+                    for (k, c) in data1.into_iter() { 
                         let temp = agg.entry(k)
                             .or_insert_with(|| (Vec::new(), Vec::new()));
                         for w in c {
                             temp.1.push(w);
                         }
                     }
-                    pre_idx = *idx;
+                    forget(data1_enc);
                 }
             },
         };
-
+        forget(data);
         Box::new(agg.into_iter())
     }
 }

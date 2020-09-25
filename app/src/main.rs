@@ -21,6 +21,7 @@ use vega::*;
 use rand::Rng;
 use serde_derive::{Deserialize, Serialize};
 
+mod allocator;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Point {
@@ -30,25 +31,60 @@ pub struct Point {
 
 
 fn main() -> Result<()> {
+    /* map */
+    /*
+    let sc = Context::new()?;
+    let now = Instant::now();
+    let col = sc.make_rdd((0..1_000_000).collect::<Vec<_>>(), 1, true);
+    //Fn! will make the closures serializable. It is necessary. use serde_closure version 0.1.3.
+    let vec_iter = col.map(Fn!(|i| i+1 ));
+    let res = vec_iter.collect().unwrap();
+    let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+    println!("Total time {:?} s", dur);
+    println!("result: {:?}", res.last());
+    */
+
     /* group_by */
     /*
     let sc = Context::new()?;
-   
+    let vec = vec![
+        ("x".to_string(), 1),
+        ("x".to_string(), 2),
+        ("x".to_string(), 3),
+        ("x".to_string(), 4),
+        ("x".to_string(), 5),
+        ("x".to_string(), 6),
+        ("x".to_string(), 7),
+        ("y".to_string(), 1),
+        ("y".to_string(), 2),
+        ("y".to_string(), 3),
+        ("y".to_string(), 4),
+        ("y".to_string(), 5),
+        ("y".to_string(), 6),
+        ("y".to_string(), 7),
+        ("y".to_string(), 8),
+    ];
+    let r = sc.make_rdd(vec, 4, true);
+    let g = r.group_by_key(1);
+    let res = g.collect().unwrap();
+    println!("result: {:?}", res);
+    */
+
+    /*
+    let sc = Context::new()?;
     let len = 1_000_000;
     let mut vec: Vec<(i32, i32)> = Vec::with_capacity(len);
     let mut rng = rand::thread_rng();
     for i in (0..len) {
         vec.push((rng.gen(), rng.gen()));
     }
-     
     let r = sc.make_rdd(vec, 1, true);
     let g = r.group_by_key(4);
     let res = g.collect().unwrap();
     println!("result: {:?}", res[0]);
     */
-    
+
     /* join */
-    /*
     let sc = Context::new()?;
     let col1 = vec![
         (1, ("A".to_string(), "B".to_string())),
@@ -66,23 +102,9 @@ fn main() -> Result<()> {
         (3, "C2".to_string()),
     ];
     let col2 = sc.parallelize(col2, 1, true);
-    let inner_joined_rdd = col2.join(col1.clone(), 4);
+    let inner_joined_rdd = col2.join(col1.clone(), 1);
     let res = inner_joined_rdd.collect().unwrap();
     println!("result: {:?}", res);
-    */
-
-    /* map */
-    /*
-    let sc = Context::new()?;
-    let now = Instant::now();
-    let col = sc.make_rdd((0..1_000_000).collect::<Vec<_>>(), 1, true);
-    //Fn! will make the closures serializable. It is necessary. use serde_closure version 0.1.3.
-    let vec_iter = col.map(Fn!(|i| i+1 ));
-    let res = vec_iter.collect().unwrap();
-    let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    println!("Total time {:?} s", dur);
-    println!("result: {:?}", res.last());
-    */
 
     /* reduce */
     /*
@@ -93,6 +115,7 @@ fn main() -> Result<()> {
     */
 
     /* linear regression */
+    /*
     let mut rng = rand::thread_rng();
     let point_num = 1_000_000;
     let mut points: Vec<Point> = Vec::with_capacity(point_num);
@@ -115,6 +138,6 @@ fn main() -> Result<()> {
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
     println!("w = {:?}", w);
-
+    */
     Ok(())
 }

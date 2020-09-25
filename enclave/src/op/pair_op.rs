@@ -1,6 +1,7 @@
 use std::boxed::Box;
 use std::hash::Hash;
 use std::marker::PhantomData;
+use std::mem::{drop, forget};
 use std::sync::{Arc, SgxMutex};
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
@@ -213,10 +214,11 @@ where
         self.next_deps.clone()
     }    
     
-    fn iterator(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
-        self.compute_start(ser_data, ser_data_idx, is_shuffle)
+    fn iterator(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+        self.compute_start(data_ptr, is_shuffle)
     }
 }
+
 
 impl<K: Data, V: Data, U: Data, F> Op for MappedValues<K, V, U, F>
 where
@@ -232,41 +234,38 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start (&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
+    fn compute_start (&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         let next_deps = self.next_deps.lock().unwrap();
         match is_shuffle == 0 {
             true => {       //No shuffle later
-                let result = self.compute(ser_data, ser_data_idx)
+                let result = self.compute(data_ptr)
                     .collect::<Vec<Self::Item>>();
-                let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
-                let ser_result_idx: Vec<usize> = vec![ser_result.len()];
-                (ser_result, ser_result_idx)
+                crate::ALLOCATOR.lock().set_switch(true);
+                let result_enc = result.clone(); // encrypt
+                let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
+                crate::ALLOCATOR.lock().set_switch(false);
+                result_ptr
             },
             false => {      //Shuffle later
-                let data: Vec<Self::Item> = bincode::deserialize(ser_data).unwrap();
+                let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<Self::Item>) };
+                let data = data_enc.clone();
+                crate::ALLOCATOR.lock().set_switch(true);
+                drop(data_enc);
+                crate::ALLOCATOR.lock().set_switch(false);
                 let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
-                let shuf_dep = match &next_deps[0] {
+                let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
                     Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
                     Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
                 };
-                let ser_result_set = shuf_dep.do_shuffle_task(iter);
-                let mut ser_result = Vec::<u8>::with_capacity(std::mem::size_of_val(&ser_result_set));
-                let mut ser_result_idx = Vec::<usize>::with_capacity(ser_result.len());
-                let mut idx: usize = 0;
-                for (i, mut ser_result_bl) in ser_result_set.into_iter().enumerate() {
-                    idx += ser_result_bl.len();
-                    ser_result.append(&mut ser_result_bl);
-                    ser_result_idx[i] = idx;
-                }
-                (ser_result, ser_result_idx)
+                shuf_dep.do_shuffle_task(iter)
             },
         }
     }
     
-    fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>> {
+    fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
         let f = self.f.clone();
         Box::new(
-            self.prev.compute(ser_data, ser_data_idx).map(move |(k, v)| (k, f(v))),
+            self.prev.compute(data_ptr).map(move |(k, v)| (k, f(v))),
         )
     }
 }
@@ -351,8 +350,8 @@ where
         self.next_deps.clone()
     }
     
-    fn iterator(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
-        self.compute_start(ser_data, ser_data_idx, is_shuffle)
+    fn iterator(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+        self.compute_start(data_ptr, is_shuffle)
     }
 }
 
@@ -370,42 +369,39 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start (&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>){
+    fn compute_start (&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         let next_deps = self.next_deps.lock().unwrap();
         match is_shuffle == 0 {
             true => {       //No shuffle later
-                let result = self.compute(ser_data, ser_data_idx)
+                let result = self.compute(data_ptr)
                     .collect::<Vec<Self::Item>>();
-                let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
-                let ser_result_idx: Vec<usize> = vec![ser_result.len()];
-                (ser_result, ser_result_idx)
+                crate::ALLOCATOR.lock().set_switch(true);
+                let result_enc = result.clone(); // encrypt
+                let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
+                crate::ALLOCATOR.lock().set_switch(false);
+                result_ptr
             },
             false => {      //Shuffle later
-                let data: Vec<Self::Item> = bincode::deserialize(ser_data).unwrap();
+                let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<Self::Item>) };
+                let data = data_enc.clone();
+                crate::ALLOCATOR.lock().set_switch(true);
+                drop(data_enc);
+                crate::ALLOCATOR.lock().set_switch(false);
                 let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
-                let shuf_dep = match &next_deps[0] {
+                let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
                     Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
                     Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
                 };
-                let ser_result_set = shuf_dep.do_shuffle_task(iter);
-                let mut ser_result = Vec::<u8>::with_capacity(std::mem::size_of_val(&ser_result_set));
-                let mut ser_result_idx = Vec::<usize>::with_capacity(ser_result.len());
-                let mut idx: usize = 0;
-                for (i, mut ser_result_bl) in ser_result_set.into_iter().enumerate() {
-                    idx += ser_result_bl.len();
-                    ser_result.append(&mut ser_result_bl);
-                    ser_result_idx[i] = idx;
-                }
-                (ser_result, ser_result_idx)
+                shuf_dep.do_shuffle_task(iter)
             },
         }
     }
 
-    fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>> {
+    fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
         let f = self.f.clone();
         Box::new(
             self.prev
-                .compute(ser_data, ser_data_idx)
+                .compute(data_ptr)
                 .flat_map(move |(k, v)| f(v).map(move |x| (k.clone(), x))),
         )
     }

@@ -16,6 +16,8 @@
 // under the License..
 #![crate_name = "sparkenclave"]
 #![crate_type = "staticlib"]
+
+#![feature(allocator_api)]
 #![feature(coerce_unsized)]
 #![feature(fn_traits)]
 #![feature(specialization)]
@@ -52,11 +54,14 @@ use std::collections::{btree_map::BTreeMap, HashMap};
 use std::slice;
 use std::string::String;
 use std::sync::{atomic::{AtomicPtr, Ordering}, Arc, SgxRwLock as RwLock};
+use std::thread;
 use std::time::{Duration, Instant};
 use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use bytes::{Bytes, BytesMut};
 
+mod allocator;
+use allocator::{Allocator, Locked};
 mod aggregator;
 mod basic;
 mod dependency;
@@ -65,8 +70,10 @@ mod dyn_clone;
 mod partitioner;
 mod op;
 
-use crate::basic::{AnyData, Arc as SerArc};
 use crate::op::{Context, Op, OpBase, Pair};
+
+#[global_allocator]
+static ALLOCATOR: Locked<Allocator> = Locked::new(Allocator::new());
 
 struct Captured {
     w: f32,
@@ -96,23 +103,28 @@ lazy_static! {
         tempHM.insert(g.get_id(), g.get_op_base()); 
         */
 
-        /* join */
+        /* group_by */
         /*
-        let col1 = sc.make_op::<(i32, (String, String))>();
-        tempHM.insert(col1.get_id(), col1.get_op_base());
-        let col2 = sc.make_op::<(i32, String)>();
-        tempHM.insert(col2.get_id(), col2.get_op_base());
-        let g = col2.join(col1.clone(), 4);
+        let r = sc.make_op::<(String, i32)>();
+        tempHM.insert(r.get_id(), r.get_op_base());
+        let g = r.group_by_key(1);
         tempHM.insert(g.get_id(), g.get_op_base());
         */
 
-        /* group_by */
         /*
         let r = sc.make_op::<(i32, i32)>();
         tempHM.insert(r.get_id(), r.get_op_base());
         let g = r.group_by_key(4);
         tempHM.insert(g.get_id(), g.get_op_base());
         */
+
+        /* join */
+        let col1 = sc.make_op::<(i32, (String, String))>();
+        tempHM.insert(col1.get_id(), col1.get_op_base());
+        let col2 = sc.make_op::<(i32, String)>();
+        tempHM.insert(col2.get_id(), col2.get_op_base());
+        let g = col2.join(col1.clone(), 1);
+        tempHM.insert(g.get_id(), g.get_op_base());
 
         /* reduce */
         /*
@@ -123,6 +135,7 @@ lazy_static! {
         */
 
         /* linear regression */
+        /*
         let nums = sc.make_op::<Point>();
         let iter_num = 3;
         for i in 0..iter_num {
@@ -135,6 +148,7 @@ lazy_static! {
                 tempHM.insert(g.get_id(), g.get_op_base());
             }
         }
+        */
         tempHM
     };   
 }
@@ -148,47 +162,39 @@ pub struct Point {
 #[no_mangle]
 pub extern "C" fn secure_executing(id: usize, 
                                    is_shuffle: u8, 
-                                   input: *const u8, 
-                                   input_idx: *const usize,
-                                   idx_len: usize, 
-                                   output: *mut u8, 
-                                   output_idx: *mut usize,
+                                   input: *mut u8, 
                                    captured_vars: *const u8) -> usize 
 {
-    //println!("inside enclave id = {:?}, is_shuffle = {:?}", id, is_shuffle);
-    let ser_data_idx = unsafe { slice::from_raw_parts(input_idx as *const usize, idx_len)};
-    let ser_data = unsafe { slice::from_raw_parts(input as *const u8, ser_data_idx[idx_len-1]) };
+    println!("inside enclave id = {:?}, is_shuffle = {:?}, thread_id = {:?}", id, is_shuffle, thread::rsgx_thread_self());
+    println!("0");
     //get current stage's captured vars
     let captured_vars = unsafe { (captured_vars as *const HashMap<usize, Vec<u8>>).as_ref() }.unwrap();
-   
     //TODO
+    println!("1");
     match captured_vars.get(&id) {
         Some(var) =>  {
             w.store(&mut bincode::deserialize::<f32>(var).unwrap(), Ordering::Relaxed);
         },
         None => (),
     };
-   
+    println!("2");
     let now = Instant::now();
     let op = match opmap.iter().find(|&x| x.0>= &id ) {
         Some((k,v)) => v,
         None => panic!("Invalid op id"),
     };
-    let (ser_result, ser_result_idx) = op.iterator(ser_data, ser_data_idx, is_shuffle);
+    println!("3");
+    let result_ptr = op.iterator(input, is_shuffle);
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("in enclave {:?} s", dur);
 
-    let out_idx_len = ser_result_idx.len();
-    let out_idx = unsafe { slice::from_raw_parts_mut(output_idx as * mut usize, out_idx_len as usize) }; 
-    out_idx.copy_from_slice(ser_result_idx.as_slice());
-    let out = unsafe { slice::from_raw_parts_mut(output as * mut u8, out_idx[out_idx_len-1] as usize) }; 
-    out.copy_from_slice(ser_result.as_slice());
-    return out_idx_len
+    return result_ptr as usize
 }
 
 #[no_mangle]
 pub extern "C" fn pre_touching(zero: u8) -> usize 
 {
+    println!("thread_id = {:?}", thread::rsgx_thread_self());
     // 4KB per page
     // 1MB = 1<<8 = 2^8 pages
     let mut p: *mut u8 = std::ptr::null_mut();
@@ -212,7 +218,7 @@ pub extern "C" fn pre_touching(zero: u8) -> usize
     }
     unsafe{ *p += zero; }
 
-    for _i in (0..1<<10) {
+    for _i in 0..1<<10 {
         unsafe {
             p = p.offset(4*1024);
             *p += zero;

@@ -1,12 +1,13 @@
 use std::boxed::Box;
 use std::marker::PhantomData;
+use std::mem::forget;
 use std::sync::{Arc, SgxMutex, Weak};
 use std::time::{Duration, Instant};
 use std::untrusted::time::InstantEx;
 use std::vec::Vec;
-use crate::op::{Context, Op, OpBase, OpVals};
+use crate::op::{Context, Op, OpBase};
 use crate::dependency::{Dependency, OneToOneDependency};
-use crate::basic::{AnyData, Data};
+use crate::basic::{Data};
 
 pub struct Reduced<T: Data, U: Data, F>
 where
@@ -70,8 +71,8 @@ where
         self.prev.get_next_deps()
     }
 
-    fn iterator(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
-        self.compute_start(ser_data, ser_data_idx, is_shuffle)
+    fn iterator(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+        self.compute_start(data_ptr, is_shuffle)
     }
 }
 
@@ -89,20 +90,24 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
   
-    fn compute_start (&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>){
+    fn compute_start (&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8{
         if is_shuffle == 2 {
-            let result = self.compute(ser_data, ser_data_idx).collect::<Vec<Self::Item>>();
-            let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
-            let ser_result_idx: Vec<usize> = vec![ser_result.len()];
-            (ser_result, ser_result_idx)
+            let result = self.compute(data_ptr).collect::<Vec<Self::Item>>();
+            crate::ALLOCATOR.lock().set_switch(true);
+            let result_enc = result.clone(); // encrypt
+            let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8; 
+            crate::ALLOCATOR.lock().set_switch(false);
+            result_ptr
         }
         else {
-            self.prev.compute_start(ser_data, ser_data_idx, is_shuffle)
+            self.prev.compute_start(data_ptr, is_shuffle)
         }
     }
 
-    fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>> {
-        let data: Vec<T> = bincode::deserialize(ser_data).unwrap();
+    fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
+        let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<T>) };
+        let data = data_enc.clone();
+        forget(data_enc);
         Box::new((self.f)(Box::new(data.into_iter())).into_iter())        
     }
 

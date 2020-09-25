@@ -1,5 +1,6 @@
 use std::boxed::Box;
 use std::marker::PhantomData;
+use std::mem::forget;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, SgxMutex};
 use std::vec::Vec;
@@ -90,8 +91,8 @@ macro_rules! impl_common_lfs_opb_funcs {
             Arc::new(SgxMutex::new(Vec::new()))
         }
 
-        fn iterator(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
-            self.compute_start(ser_data, ser_data_idx, is_shuffle)
+        fn iterator(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+            self.compute_start(data_ptr, is_shuffle)
         }
     };
 }
@@ -120,24 +121,18 @@ impl<T: Data> Op for LocalFsReader<T> {
 
     impl_common_lfs_op_funcs!();
 
-    fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>> {
-        //TODO
-        let mut ser_data_: Vec<Vec<u8>> = Vec::with_capacity(std::mem::size_of_val(ser_data)); 
-        let mut pre_idx: usize = 0;
-        for idx in ser_data_idx {
-            ser_data_.push(ser_data[pre_idx..*idx].to_vec());
-            pre_idx = *idx;
-        }
-        Box::new(ser_data_.into_iter())
+    fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
+        //TODO decrypt
+        let data_  = unsafe{ Box::from_raw(data_ptr as *mut Vec<Vec<u8>>) };
+        let data = data_.clone();
+        forget(data_);
+        Box::new(data.into_iter())
     }
 
-    fn compute_start(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
+    fn compute_start(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         //suppose no shuffle will happen after this rdd
-        let result = self.compute(ser_data, ser_data_idx)
-            .collect::<Vec<Self::Item>>();
-        let ser_result: Vec<u8> = bincode::serialize(&result).unwrap();
-        let ser_result_idx: Vec<usize> = vec![ser_result.len()];
-        (ser_result, ser_result_idx)
+        let result = self.compute(data_ptr).collect::<Vec<Self::Item>>();
+        Box::into_raw(Box::new(result)) as *mut u8
     }
 
 }

@@ -97,7 +97,7 @@ pub trait OpBase: Send + Sync {
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
         None
     }
-    fn iterator(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>);
+    fn iterator(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8;
 }
 
 impl PartialOrd for dyn OpBase {
@@ -136,8 +136,8 @@ impl<I: Op + ?Sized> OpBase for SerArc<I> {
     fn get_prev_ids(&self) -> HashSet<usize> {
         (**self).get_op_base().get_prev_ids()
     }
-    fn iterator(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
-        (**self).get_op_base().iterator(ser_data, ser_data_idx, is_shuffle)
+    fn iterator(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+        (**self).get_op_base().iterator(data_ptr, is_shuffle)
     }
 }
 
@@ -149,11 +149,11 @@ impl<I: Op + ?Sized> Op for SerArc<I> {
     fn get_op_base(&self) -> Arc<dyn OpBase> {
         (**self).get_op_base()
     }
-    fn compute_start(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>) {
-        (**self).compute_start(ser_data, ser_data_idx, is_shuffle)
+    fn compute_start(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+        (**self).compute_start(data_ptr, is_shuffle)
     }
-    fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>> {
-        (**self).compute(ser_data, ser_data_idx)
+    fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
+        (**self).compute(data_ptr)
     }
 }
 
@@ -161,8 +161,8 @@ pub trait Op: OpBase + 'static {
     type Item: Data;
     fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>>;
     fn get_op_base(&self) -> Arc<dyn OpBase>;
-    fn compute_start(&self, ser_data: &[u8], ser_data_idx: &[usize], is_shuffle: u8) -> (Vec<u8>, Vec<usize>);
-    fn compute(&self, ser_data: &[u8], ser_data_idx: &[usize]) -> Box<dyn Iterator<Item = Self::Item>>;
+    fn compute_start(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8;
+    fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>>;
 
     /// Return a new RDD containing only the elements that satisfy a predicate.
     /*
