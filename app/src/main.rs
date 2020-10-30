@@ -31,20 +31,62 @@ pub struct Point {
 
 
 fn main() -> Result<()> {
+    //Fn! will make the closures serializable. It is necessary. use serde_closure version 0.1.3.
+
     /* map */
     /*
     let sc = Context::new()?;
     let now = Instant::now();
-    let col = sc.make_rdd((0..1_000_000).collect::<Vec<_>>(), 1, true);
-    //Fn! will make the closures serializable. It is necessary. use serde_closure version 0.1.3.
-    let vec_iter = col.map(Fn!(|i| i+1 ));
-    let res = vec_iter.collect().unwrap();
+    let rdd0 = sc.make_rdd(vec![], vec![(0, 0), (1, 1)] , Fn!(|i| i), Fn!(|i| i), 1);
+    let rdd1 = rdd0.map(Fn!(|i: (i32, i32)| (i.0 + 1, i.1 + 1)), 
+        Fn!(|vp: Vec<(i32, i32)>| -> Vec<(Option<Vec<u8>>, i32)>{
+            let len = vp.len();
+            let mut buf0 = Vec::with_capacity(len);
+            let mut buf1 = Vec::with_capacity(len);
+            for i in vp {
+                buf0.push(i.0);
+                buf1.push(i.1);
+            }
+            //in case of group_by
+            {
+                let mut buf0_tmp = buf0.clone();
+                buf0_tmp.dedup();
+                if buf0_tmp.len() == 1 {
+                    buf0 = buf0_tmp;
+                }
+            }
+            let enc0 = encrypt::<>(bincode::serialize(&buf0).unwrap().as_ref());
+            //let enc1 = encrypt(bincode::serialize(buf1.as_ref()).unwrap().as_ref());
+            let buf0 = divide_ct::<>(enc0, len);
+            //let buf1 = divide_ct::<>(enc1, len);
+            buf0.into_iter().zip(buf1.into_iter()).collect::<Vec<_>>() 
+        }), // the second f should be passed in for encryption
+        Fn!(|ve: Vec<(Option<Vec<u8>>, i32)>| -> Vec<(i32, i32)> {
+            let len = ve.len();
+            let mut buf0 = Vec::with_capacity(len*4); //common length 
+            let mut buf1 = Vec::with_capacity(len*4); 
+            for i in ve {
+                buf0.push(i.0);
+                buf1.push(i.1);
+            }
+            let enc0 = recover_ct::<>(buf0);
+            let mut buf0: Vec<i32> = bincode::deserialize(decrypt::<>(enc0.as_ref()).as_ref()).unwrap(); 
+            //let enc1 = recover_ct::<>(buf1);
+            //let buf1: Vec<i32> = bincode::deserialize(decrypt::<>(enc1.as_ref()).as_ref()).unwrap(); 
+            if buf0.len() == 1 {
+                buf0.resize(buf1.len(), buf0[0].clone());
+            }
+            buf0.into_iter().zip(buf1.into_iter()).collect::<Vec<_>>() 
+        })
+    );  
+    let res = rdd1.secure_collect().unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
-    println!("result: {:?}", res.last());
+    println!("result: {:?}", rdd1.get_fd()(res));
     */
 
     /* group_by */
+    
     /*
     let sc = Context::new()?;
     let vec = vec![
@@ -64,9 +106,9 @@ fn main() -> Result<()> {
         ("y".to_string(), 7),
         ("y".to_string(), 8),
     ];
-    let r = sc.make_rdd(vec, 4, true);
-    let g = r.group_by_key(1);
-    let res = g.collect().unwrap();
+    let rdd0 = sc.make_rdd(vec![], vec, Fn!(|i| i), Fn!(|i| i), 4);
+    let rdd1 = rdd0.group_by_key(4);
+    let res = rdd1.secure_collect().unwrap();
     println!("result: {:?}", res);
     */
 
@@ -85,15 +127,16 @@ fn main() -> Result<()> {
     */
 
     /* join */
+    /*
     let sc = Context::new()?;
-    let col1 = vec![
+    let col0 = vec![
         (1, ("A".to_string(), "B".to_string())),
         (2, ("C".to_string(), "D".to_string())),
         (3, ("E".to_string(), "F".to_string())),
         (4, ("G".to_string(), "H".to_string())),
     ];
-    let col1 = sc.parallelize(col1, 1, true);
-    let col2 = vec![
+    let rdd0 = sc.parallelize(vec![], col0,  Fn!(|i| i), Fn!(|i| i), 1);
+    let col1 = vec![
         (1, "A1".to_string()),
         (1, "A2".to_string()),
         (2, "B1".to_string()),
@@ -101,21 +144,22 @@ fn main() -> Result<()> {
         (3, "C1".to_string()),
         (3, "C2".to_string()),
     ];
-    let col2 = sc.parallelize(col2, 1, true);
-    let inner_joined_rdd = col2.join(col1.clone(), 1);
-    let res = inner_joined_rdd.collect().unwrap();
+    let rdd1 = sc.parallelize(vec![], col1,  Fn!(|i| i), Fn!(|i| i), 1);
+    let rdd2 = rdd1.join(rdd0.clone(), 1);
+    let res = rdd2.secure_collect().unwrap();
     println!("result: {:?}", res);
+    */
 
     /* reduce */
     /*
     let sc = Context::new()?;
-    let nums = sc.make_rdd(vec![1i32, 2, 3, 4], 2, true);
-    let res = nums.reduce(Fn!(|x: i32, y: i32| x + y))?;
+    let rdd0 = sc.make_rdd(vec![], vec![1i32, 2, 3, 4], Fn!(|i| i), Fn!(|i| i), 2);
+    let res = rdd0.secure_reduce(Fn!(|x: i32, y: i32| x + y))?;
     println!("result: {:?}", res);
     */
 
     /* linear regression */
-    /*
+    
     let mut rng = rand::thread_rng();
     let point_num = 1_000_000;
     let mut points: Vec<Point> = Vec::with_capacity(point_num);
@@ -124,20 +168,27 @@ fn main() -> Result<()> {
         points.push(point);
     } 
     let sc = Context::new()?;
-    let points_rdd = sc.make_rdd(points, 1, true);
+    let points_rdd = sc.make_rdd(vec![], points, Fn!(|i| i), Fn!(|i| i), 1);
     let mut w = rng.gen::<f32>();
     let iter_num = 3;
     let now = Instant::now();
     for i in 0..iter_num {
         let g = points_rdd.map(Fn!(move |p: Point| 
-            p.x * (1f32/(1f32+(-p.y * (w * p.x)).exp())-1f32) * p.y
-        )).reduce(Fn!(|x, y| x+y)).unwrap();
+                p.x * (1f32/(1f32+(-p.y * (w * p.x)).exp())-1f32) * p.y
+            ),
+            Fn!(|v: Vec<f32>|
+                v
+            ),
+            Fn!(|v: Vec<f32>|
+                v
+            )
+        ).secure_reduce(Fn!(|x, y| x+y)).unwrap();
         w -= g.unwrap();
         println!("{:?}: w = {:?}", i, w);
     } 
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
     println!("w = {:?}", w);
-    */
+    
     Ok(())
 }

@@ -6,7 +6,11 @@ use std::sync::{
     atomic::{self, AtomicUsize},
     Arc, SgxMutex, Weak,
 };
-use crate::basic::{AnyData, Data, Arc as SerArc};
+
+use aes_gcm::Aes128Gcm;
+use aes_gcm::aead::{Aead, NewAead, generic_array::GenericArray};
+
+use crate::basic::{AnyData, Arc as SerArc, Data, Func, SerFunc};
 use crate::dependency::Dependency;
 use crate::partitioner::Partitioner;
 mod parallel_collection_op;
@@ -28,6 +32,35 @@ pub use reduced_op::*;
 mod shuffled_op;
 pub use shuffled_op::*;
 
+
+#[inline(always)]
+pub fn encrypt(pt: &[u8]) -> Vec<u8> {
+    let key = GenericArray::from_slice(b"abcdefg hijklmn ");
+    let cipher = Aes128Gcm::new(key);
+    let nonce = GenericArray::from_slice(b"unique nonce");
+    cipher.encrypt(nonce, pt).expect("encryption failure")
+}
+
+#[inline(always)]
+pub fn divide_ct(ct: Vec<u8>, len: usize) -> Vec<Option<Vec<u8>>> {
+    let mut ct_div = vec![None; len];
+    ct_div[0] = Some(ct);
+    ct_div
+}
+
+#[inline(always)]
+pub fn decrypt(ct: &[u8]) -> Vec<u8> {
+    let key = GenericArray::from_slice(b"abcdefg hijklmn ");
+    let cipher = Aes128Gcm::new(key);
+    let nonce = GenericArray::from_slice(b"unique nonce");
+    cipher.decrypt(nonce, ct).expect("decryption failure")
+}
+
+#[inline(always)]
+pub fn recover_ct(ct_div: Vec<Option<Vec<u8>>>) -> Vec<u8> {
+    ct_div[0].clone().unwrap()
+}
+
 #[derive(Default)]
 pub struct Context {
     next_op_id: Arc<AtomicUsize>,
@@ -44,21 +77,31 @@ impl Context {
         self.next_op_id.fetch_add(1, atomic::Ordering::SeqCst)
     }
 
-    pub fn make_op<T: Data>(self: &Arc<Self>) -> SerArc<dyn Op<Item = T>> {
-        SerArc::new(ParallelCollection::new(self.clone()))
+    pub fn make_op<T, TE, FE, FD>(self: &Arc<Self>, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = T, ItemE = TE>> 
+    where
+        T: Data,
+        TE: Data,
+        FE: SerFunc(Vec<T>) -> Vec<TE>,
+        FD: SerFunc(Vec<TE>) -> Vec<T>,
+    {
+        SerArc::new(ParallelCollection::new(self.clone(), fe, fd))
     }
 
     /// Load from a distributed source and turns it into a parallel collection.
-    pub fn read_source<F, C, I: Data, O: Data>(
+    pub fn read_source<F, C, FE, FD, I: Data, O: Data, OE: Data>(
         self: &Arc<Self>,
         config: C,
         func: F,
-    ) -> impl Op<Item = O>
+        fe: FE,
+        fd: FD,
+    ) -> impl OpE<Item = O, ItemE = OE>
     where
-        F: Fn(I) -> O + Clone + Send + Sync + 'static,
+        F: SerFunc(I) -> O,
         C: ReaderConfiguration<I>,
+        FE: SerFunc(Vec<O>) -> Vec<OE>,
+        FD: SerFunc(Vec<OE>) -> Vec<O>,
     {
-        config.make_reader(self.clone(), func)
+        config.make_reader(self.clone(), func, fe, fd)
     }
 
 }
@@ -120,7 +163,7 @@ impl Ord for dyn OpBase {
     }
 }
 
-impl<I: Op + ?Sized> OpBase for SerArc<I> {
+impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     fn get_id(&self) -> usize {
         (**self).get_op_base().get_id()
     }
@@ -141,7 +184,7 @@ impl<I: Op + ?Sized> OpBase for SerArc<I> {
     }
 }
 
-impl<I: Op + ?Sized> Op for SerArc<I> {
+impl<I: OpE + ?Sized> Op for SerArc<I> {
     type Item = I::Item;
     fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>> {
         (**self).get_op()
@@ -157,6 +200,22 @@ impl<I: Op + ?Sized> Op for SerArc<I> {
     }
 }
 
+impl<I: OpE + ?Sized> OpE for SerArc<I> {
+    type ItemE = I::ItemE;
+    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
+        (**self).get_ope()
+    }
+
+    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>> {
+        (**self).get_fe()
+    }
+
+    fn get_fd(&self) -> Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>> {
+        (**self).get_fd()
+    }
+}
+
+
 pub trait Op: OpBase + 'static {
     type Item: Data;
     fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>>;
@@ -164,6 +223,41 @@ pub trait Op: OpBase + 'static {
     fn compute_start(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8;
     fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>>;
 
+}
+
+pub trait OpE: Op {
+    type ItemE: Data;
+    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>;
+
+    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>>;
+
+    fn get_fd(&self) -> Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>>;
+
+    fn narrow(&self, data_ptr: *mut u8) -> *mut u8 {
+        let result = self.compute(data_ptr).collect::<Vec<Self::Item>>();
+        let result_enc = self.get_fe()(result.clone()); 
+        //println!("op_id = {:?}, \n result = {:?}, \n result_enc = {:?}", self.get_id(), result, result_enc);
+        crate::ALLOCATOR.lock().set_switch(true);
+        let result = result_enc.clone(); 
+        let result_ptr = Box::into_raw(Box::new(result)) as *mut u8;
+        crate::ALLOCATOR.lock().set_switch(false);
+        result_ptr
+    } 
+
+    fn shuffle(&self, data_ptr: *mut u8) -> *mut u8 {
+        let next_deps = self.get_next_deps().lock().unwrap().clone();
+        let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<Self::ItemE>) };
+        let data = self.get_fd()(*(data_enc.clone())); //need to check security
+        crate::ALLOCATOR.lock().set_switch(true);
+        drop(data_enc);
+        crate::ALLOCATOR.lock().set_switch(false);
+        let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
+        let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
+            Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
+            Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
+        };
+        shuf_dep.do_shuffle_task(iter)
+    }
     /// Return a new RDD containing only the elements that satisfy a predicate.
     /*
     fn filter<F>(&self, predicate: F) -> SerArc<dyn Op<Item = Self::Item>>
@@ -180,26 +274,34 @@ pub trait Op: OpBase + 'static {
     }
     */
 
-    fn map<U: Data, F>(&self, f: F) -> SerArc<dyn Op<Item = U>>
+    fn map<U, UE, F, FE, FD>(&self, f: F, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = U, ItemE = UE>>
     where
-        F: Fn(Self::Item) -> U + Send + Sync + Clone + 'static,
         Self: Sized,
+        U: Data,
+        UE: Data,
+        F: SerFunc(Self::Item) -> U,
+        FE: SerFunc(Vec<U>) -> Vec<UE>,
+        FD: SerFunc(Vec<UE>) -> Vec<U>,
     {
-        SerArc::new(Mapper::new(self.get_op(), f))
+        SerArc::new(Mapper::new(self.get_op(), f, fe, fd))
     }
 
-    fn flat_map<U: Data, F>(&self, f: F) -> SerArc<dyn Op<Item = U>>
+    fn flat_map<U, UE, F, FE, FD>(&self, f: F, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = U, ItemE = UE>>
     where
-        F: Fn(Self::Item) -> Box<dyn Iterator<Item = U>> + Send + Sync + Clone + 'static,
         Self: Sized,
+        U: Data,
+        UE: Data,
+        F: SerFunc(Self::Item) -> Box<dyn Iterator<Item = U>>,
+        FE: SerFunc(Vec<U>) -> Vec<UE>,
+        FD: SerFunc(Vec<UE>) -> Vec<U>,
     {
-        SerArc::new(FlatMapper::new(self.get_op(), f))
+        SerArc::new(FlatMapper::new(self.get_op(), f, fe, fd))
     }
 
-    fn reduce<F>(&self, f: F) -> SerArc<dyn Op<Item = Self::Item>>
+    fn reduce<F>(&self, f: F) -> SerArc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>
     where
         Self: Sized,
-        F: Fn(Self::Item, Self::Item) -> Self::Item + Send + Sync + Clone + 'static,
+        F: SerFunc(Self::Item, Self::Item) -> Self::Item,
     {
         // cloned cause we will use `f` later.
         let cf = f.clone();        
@@ -210,7 +312,7 @@ pub trait Op: OpBase + 'static {
                 Some(e) => vec![e],
             }
         };         
-        SerArc::new(Reduced::new(self.get_op(), reduce_partition)) 
+        SerArc::new(Reduced::new(self.get_op(), reduce_partition, self.get_fe(), self.get_fd())) 
     }
 
 }

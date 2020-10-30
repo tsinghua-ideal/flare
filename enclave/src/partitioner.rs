@@ -3,8 +3,7 @@ use std::hash::{Hash, Hasher};
 use std::any::Any;
 use std::marker::PhantomData;
 use crate::basic::Data;
-use crate::downcast_rs::Downcast;
-use crate::dyn_clone;
+use downcast_rs::Downcast;
 
 pub trait Partitioner: Downcast + dyn_clone::DynClone + Send + Sync {
     fn equals(&self, other: &dyn Any) -> bool;
@@ -12,7 +11,7 @@ pub trait Partitioner: Downcast + dyn_clone::DynClone + Send + Sync {
     fn get_partition(&self, key: &dyn Any) -> usize;
 }
 
-crate::clone_trait_object!(Partitioner);
+dyn_clone::clone_trait_object!(Partitioner);
 
 fn hash<T: Hash>(t: &T) -> u64 {
     let mut s = DefaultHasher::new();

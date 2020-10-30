@@ -4,16 +4,19 @@ use std::mem::forget;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, SgxMutex};
 use std::vec::Vec;
-use crate::basic::{Data, Arc as SerArc};
+use crate::basic::{Data, Arc as SerArc, Func, SerFunc};
 use crate::dependency::Dependency;
-use crate::op::{Context, Op, OpBase, MapPartitions, Mapper};
+use crate::op::{Context, Op, OpE, OpBase, MapPartitions, Mapper, encrypt, decrypt};
 use serde_derive::{Deserialize, Serialize};
 
 pub trait ReaderConfiguration<I: Data> {
-    fn make_reader<F, O>(self, context: Arc<Context>, decoder: F) -> SerArc<dyn Op<Item = O>>
+    fn make_reader<O, OE, F, FE, FD>(self, context: Arc<Context>, decoder: F, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = O, ItemE = OE>>
     where
         O: Data,
-        F: Fn(I) -> O + Clone + Send + Sync + 'static;
+        OE: Data,
+        F: SerFunc(I) -> O,
+        FE: SerFunc(Vec<O>) -> Vec<OE>,
+        FD: SerFunc(Vec<OE>) -> Vec<O>;
 }
 
 pub struct LocalFsReaderConfig {
@@ -28,24 +31,38 @@ impl LocalFsReaderConfig {
     }
 }
 
-impl<I: Data> ReaderConfiguration<I> for LocalFsReaderConfig {
-    fn make_reader<F, O>(self, context: Arc<Context>, decoder: F) -> SerArc<dyn Op<Item = O>>
+impl ReaderConfiguration<Vec<u8>> for LocalFsReaderConfig {
+    fn make_reader<O, OE, F, FE, FD>(self, context: Arc<Context>, decoder: F, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = O, ItemE = OE>>
     where
         O: Data,
-        F: Fn(I) -> O + Clone + Send + Sync + 'static,
+        OE: Data,
+        F: SerFunc(Vec<u8>) -> O,
+        FE: SerFunc(Vec<O>) -> Vec<OE>,
+        FD: SerFunc(Vec<OE>) -> Vec<O>,
     {
         let reader = LocalFsReader::<Vec<u8>>::new(self, context);
         let read_files = 
             |_part: usize, readers: Box<dyn Iterator<Item = Vec<u8>>>| {
-                Box::new(readers.into_iter().map(|file| {
-                        bincode::deserialize::<Vec<I>>(&file).unwrap().into_iter()
-                    }).flatten()) as Box<dyn Iterator<Item = _>>
-                //TODO: decrypt
+                readers
             };
+        let fe_mpp = |v: Vec<Vec<u8>>| {
+            let mut ct = Vec::with_capacity(v.len()); 
+            for pt in v {
+                ct.push(encrypt::<>(pt.as_ref()));
+            }
+            ct
+        };
+        let fd_mpp = |v: Vec<Vec<u8>>| {
+            let mut pt = Vec::with_capacity(v.len());
+            for ct in v {
+                pt.push(decrypt::<>(ct.as_ref()));
+            }
+            pt
+        };
         let files_per_executor = Arc::new(
-            MapPartitions::new(Arc::new(reader) as Arc<dyn Op<Item = _>>, read_files),
+            MapPartitions::new(Arc::new(reader) as Arc<dyn Op<Item = _>>, read_files, fe_mpp, fd_mpp),
         );
-        let decoder = Mapper::new(files_per_executor, decoder);
+        let decoder = Mapper::new(files_per_executor, decoder, fe, fd);
         SerArc::new(decoder)
     }
 }
@@ -123,16 +140,45 @@ impl<T: Data> Op for LocalFsReader<T> {
 
     fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
         //TODO decrypt
-        let data_  = unsafe{ Box::from_raw(data_ptr as *mut Vec<Vec<u8>>) };
-        let data = data_.clone();
-        forget(data_);
+        let data_enc  = unsafe{ Box::from_raw(data_ptr as *mut Vec<Vec<u8>>) };
+        let data = self.get_fd()(*(data_enc.clone()));
+        forget(data_enc);
         Box::new(data.into_iter())
     }
 
     fn compute_start(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         //suppose no shuffle will happen after this rdd
-        let result = self.compute(data_ptr).collect::<Vec<Self::Item>>();
-        Box::into_raw(Box::new(result)) as *mut u8
+        self.narrow(data_ptr)
+    }
+
+}
+
+impl<T: Data> OpE for LocalFsReader<T> {
+    type ItemE = Vec<u8>;
+    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
+        Arc::new(self.clone())
+    }
+
+    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>> {
+        let fe = |v: Vec<Self::Item>| {
+            let mut ct = Vec::with_capacity(v.len()); 
+            for pt in v {
+                ct.push(encrypt::<>(pt.as_ref()));
+            }
+            ct
+        }; 
+        Box::new(fe) as Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>>
+    }
+
+    fn get_fd(&self) -> Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>> {
+        let fd = |v: Vec<Self::ItemE>| {
+            let mut pt = Vec::with_capacity(v.len());
+            for ct in v {
+                pt.push(decrypt::<>(ct.as_ref()));
+            }
+            pt
+        };
+        Box::new(fd) as Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>>
     }
 
 }

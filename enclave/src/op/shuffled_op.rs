@@ -6,21 +6,40 @@ use std::mem::{drop, forget};
 use std::sync::{Arc, SgxMutex};
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
-use crate::basic::{Data};
-use crate::op::{Context, Op, OpBase, OpVals};
+use crate::basic::{Data, Func, SerFunc};
+use crate::op::{Context, Op, OpE, OpBase, OpVals};
 use crate::dependency::{Dependency, ShuffleDependency, ShuffleDependencyTrait};
 use crate::partitioner::Partitioner;
 
-pub struct Shuffled<K: Data + Eq + Hash, V: Data, C: Data> {
+pub struct Shuffled<K, V, C, KE, CE, FE, FD>
+where
+    K: Data + Eq + Hash,
+    V: Data, 
+    C: Data,
+    KE: Data,
+    CE: Data,
+    FE: Func(Vec<(K, C)>) -> Vec<(KE, CE)> + Clone,
+    FD: Func(Vec<(KE, CE)>) -> Vec<(K, C)> + Clone,
+{
     vals: Arc<OpVals>,
     next_deps: Arc<SgxMutex<Vec<Dependency>>>,
     parent: Arc<dyn Op<Item = (K, V)>>,
     aggregator: Arc<Aggregator<K, V, C>>,
     part: Box<dyn Partitioner>,
-    _marker_t: PhantomData<C>
+    fe: FE,
+    fd: FD,
 }
 
-impl<K: Data + Eq + Hash, V: Data, C: Data> Clone for Shuffled<K, V, C> {
+impl<K, V, C, KE, CE, FE, FD> Clone for Shuffled<K, V, C, KE, CE, FE, FD> 
+where 
+    K: Data + Eq + Hash,
+    V: Data, 
+    C: Data,
+    KE: Data,
+    CE: Data,
+    FE: Func(Vec<(K, C)>) -> Vec<(KE, CE)> + Clone,
+    FD: Func(Vec<(KE, CE)>) -> Vec<(K, C)> + Clone,
+{
     fn clone(&self) -> Self {
         Shuffled {
             vals: self.vals.clone(),
@@ -28,16 +47,28 @@ impl<K: Data + Eq + Hash, V: Data, C: Data> Clone for Shuffled<K, V, C> {
             parent: self.parent.clone(),
             aggregator: self.aggregator.clone(),
             part: self.part.clone(),
-            _marker_t: PhantomData,
+            fe: self.fe.clone(),
+            fd: self.fd.clone(),
         }
     }
 }
 
-impl<K: Data + Eq + Hash, V: Data, C: Data> Shuffled<K, V, C> {
+impl<K, V, C, KE, CE, FE, FD> Shuffled<K, V, C, KE, CE, FE, FD> 
+where 
+    K: Data + Eq + Hash,
+    V: Data, 
+    C: Data,
+    KE: Data,
+    CE: Data,
+    FE: Func(Vec<(K, C)>) -> Vec<(KE, CE)> + Clone,
+    FD: Func(Vec<(KE, CE)>) -> Vec<(K, C)> + Clone,
+{
     pub(crate) fn new(
         parent: Arc<dyn Op<Item = (K, V)>>,
         aggregator: Arc<Aggregator<K, V, C>>,
         part: Box<dyn Partitioner>,
+        fe: FE,
+        fd: FD,
     ) -> Self {
         let mut prev_ids = parent.get_prev_ids();
         prev_ids.insert(parent.get_id());
@@ -47,6 +78,8 @@ impl<K: Data + Eq + Hash, V: Data, C: Data> Shuffled<K, V, C> {
                 aggregator.clone(),
                 part.clone(),
                 prev_ids,
+                fe.clone(),
+                fd.clone(),
             ),
         ));
         let ctx = parent.get_context();
@@ -60,12 +93,22 @@ impl<K: Data + Eq + Hash, V: Data, C: Data> Shuffled<K, V, C> {
             parent,
             aggregator,
             part,
-            _marker_t: PhantomData
+            fe,
+            fd,
         }
     }
 }
 
-impl<K: Data + Eq + Hash, V: Data, C: Data> OpBase for Shuffled<K, V, C> {
+impl<K, V, C, KE, CE, FE, FD> OpBase for Shuffled<K, V, C, KE, CE, FE, FD> 
+where 
+    K: Data + Eq + Hash,
+    V: Data, 
+    C: Data,
+    KE: Data,
+    CE: Data,
+    FE: SerFunc(Vec<(K, C)>) -> Vec<(KE, CE)>,
+    FD: SerFunc(Vec<(KE, CE)>) -> Vec<(K, C)>,
+{
     fn get_id(&self) -> usize {
         self.vals.id
     }
@@ -91,7 +134,16 @@ impl<K: Data + Eq + Hash, V: Data, C: Data> OpBase for Shuffled<K, V, C> {
     }
 }
 
-impl<K: Data + Eq + Hash, V: Data, C: Data> Op for Shuffled<K, V, C> {
+impl<K, V, C, KE, CE, FE, FD> Op for Shuffled<K, V, C, KE, CE, FE, FD>
+where
+    K: Data + Eq + Hash,
+    V: Data, 
+    C: Data,
+    KE: Data,
+    CE: Data,
+    FE: SerFunc(Vec<(K, C)>) -> Vec<(KE, CE)>,
+    FD: SerFunc(Vec<(KE, CE)>) -> Vec<(K, C)>, 
+{
     type Item = (K, C);
 
     fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>> {
@@ -106,19 +158,13 @@ impl<K: Data + Eq + Hash, V: Data, C: Data> Op for Shuffled<K, V, C> {
         let next_deps = self.next_deps.lock().unwrap();
         match is_shuffle == 0 {
             true => {       //No shuffle later
-                let result = self.compute(data_ptr)
-                    .collect::<Vec<Self::Item>>();
-                crate::ALLOCATOR.lock().set_switch(true);
-                let result_enc = result.clone(); // encrypt
-                let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8; 
-                crate::ALLOCATOR.lock().set_switch(false);
-                result_ptr
+                self.narrow(data_ptr)
             },
             false => {      //Shuffle later
                 let mut combiners: HashMap<K, Option<C>> = HashMap::new();
                 let aggregator = self.aggregator.clone(); 
-                let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<Self::Item>) };
-                let data = data_enc.clone();
+                let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<(KE, CE)>) };
+                let data = self.get_fd()(*(data_enc.clone())); 
                 forget(data_enc);
                 for (k, c) in data.into_iter() {
                     if let Some(old_c) = combiners.get_mut(&k) {
@@ -131,9 +177,10 @@ impl<K: Data + Eq + Hash, V: Data, C: Data> Op for Shuffled<K, V, C> {
                     }
                 }
                 let result = combiners.into_iter().map(|(k, v)| (k, v.unwrap())).collect::<Vec<Self::Item>>();
+                let result_enc = self.get_fe()(result); 
                 crate::ALLOCATOR.lock().set_switch(true);
-                let result_enc = result.clone(); // encrypt
-                let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8; 
+                let result = result_enc.clone(); // encrypt
+                let result_ptr = Box::into_raw(Box::new(result)) as *mut u8; 
                 crate::ALLOCATOR.lock().set_switch(false);
                 result_ptr
             },
@@ -141,9 +188,33 @@ impl<K: Data + Eq + Hash, V: Data, C: Data> Op for Shuffled<K, V, C> {
     }
 
     fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
-        let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<Self::Item>) };
-        let data = data_enc.clone();
+        let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<(KE, CE)>) };
+        let data = self.get_fd()(*(data_enc.clone()));
         forget(data_enc);
         Box::new(data.into_iter())
+    }
+}
+
+impl<K, V, C, KE, CE, FE, FD> OpE for Shuffled<K, V, C, KE, CE, FE, FD>
+where
+    K: Data + Eq + Hash,
+    V: Data, 
+    C: Data,
+    KE: Data,
+    CE: Data,
+    FE: SerFunc(Vec<(K, C)>) -> Vec<(KE, CE)>,
+    FD: SerFunc(Vec<(KE, CE)>) -> Vec<(K, C)>, 
+{
+    type ItemE = (KE, CE);
+    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
+        Arc::new(self.clone())
+    }
+
+    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>> {
+        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>>
+    }
+
+    fn get_fd(&self) -> Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>> {
+        Box::new(self.fd.clone()) as Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>>
     }
 }

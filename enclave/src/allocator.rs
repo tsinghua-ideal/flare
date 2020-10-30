@@ -1,11 +1,8 @@
 use core::alloc::{
-    AllocInit,
     AllocRef,
     AllocErr,
     GlobalAlloc,
     Layout,
-    MemoryBlock,
-    ReallocPlacement
 };
 use core::ptr;
 use core::sync::atomic::{
@@ -79,12 +76,14 @@ impl Allocator {
     pub fn get_switch(&self) -> bool {
         let cur = thread::rsgx_thread_self();
         let mut rt: sgx_status_t = sgx_status_t::SGX_SUCCESS;
+        /*
         unsafe { 
             ocall_print_id(&mut rt as *mut sgx_status_t, cur); 
             for i in 0..10 {
                 ocall_print_mapper(&mut rt as *mut sgx_status_t, self.mapper[i]);
             }
         }
+        */
         let (cur_idx, _) = self.contain_thread_id(cur);
         let res = (cur_idx != TCSNUM);
         /*
@@ -119,7 +118,7 @@ unsafe impl GlobalAlloc for Locked<Allocator> {
         let bump = self.lock(); // get a mutable reference
         let switch = bump.get_switch();
         let mut rt: sgx_status_t = sgx_status_t::SGX_SUCCESS;
-        ocall_print_usize(&mut rt, switch as usize);
+        //ocall_print_usize(&mut rt, switch as usize);
         if switch {
             let mut rt: usize = 0;
             ocall_alloc(&mut rt as *mut usize,
@@ -135,7 +134,7 @@ unsafe impl GlobalAlloc for Locked<Allocator> {
         let bump = self.lock(); // get a mutable reference
         let switch = bump.get_switch();
         let mut rt: sgx_status_t = sgx_status_t::SGX_SUCCESS;
-        ocall_print_usize(&mut rt, switch as usize);
+        //ocall_print_usize(&mut rt, switch as usize);
         if switch {
             let mut rt: sgx_status_t = sgx_status_t::SGX_SUCCESS;
             ocall_dealloc(&mut rt as *mut sgx_status_t,

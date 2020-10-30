@@ -1,12 +1,14 @@
 use std::boxed::Box;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
-use crate::basic::{AnyData, Data};
-use crate::downcast_rs::DowncastSync;
+use crate::basic::{AnyData, Data, Func};
 use crate::partitioner::Partitioner;
+use downcast_rs::DowncastSync;
+
 
 #[derive(Clone)]
 pub enum Dependency {
@@ -23,8 +25,17 @@ impl Dependency {
     }
 }
 
-impl<K: Data + Eq + Hash, V: Data, C: Data> From<ShuffleDependency<K, V, C>> for Dependency {
-    fn from(shuf_dep: ShuffleDependency<K, V, C>) -> Self {
+impl<K, V, C, KE, CE, FE, FD> From<ShuffleDependency<K, V, C, KE, CE, FE, FD>> for Dependency 
+where
+    K: Data + Eq + Hash, 
+    V: Data, 
+    C: Data,
+    KE: Data,
+    CE: Data,
+    FE: Func(Vec<(K, C)>) -> Vec<(KE, CE)> + Clone,
+    FD: Func(Vec<(KE, CE)>) -> Vec<(K, C)> + Clone,
+{
+    fn from(shuf_dep: ShuffleDependency<K, V, C, KE, CE, FE, FD>) -> Self {
         Dependency::ShuffleDependency(Arc::new(shuf_dep) as Arc<dyn ShuffleDependencyTrait>)
     }
 }
@@ -32,7 +43,7 @@ impl<K: Data + Eq + Hash, V: Data, C: Data> From<ShuffleDependency<K, V, C>> for
 pub trait NarrowDependencyTrait: DowncastSync + Send + Sync {
     fn get_prev_ids(&self) -> HashSet<usize>;
 }
-crate::impl_downcast!(sync NarrowDependencyTrait);
+impl_downcast!(sync NarrowDependencyTrait);
 
 #[derive(Clone)]
 pub struct OneToOneDependency {
@@ -75,32 +86,65 @@ pub trait ShuffleDependencyTrait: DowncastSync + Send + Sync  {
     fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>) -> *mut u8;
     fn get_prev_ids(&self) -> HashSet<usize>;
 }
-crate::impl_downcast!(sync ShuffleDependencyTrait);
+impl_downcast!(sync ShuffleDependencyTrait);
 
-pub struct ShuffleDependency<K: Data, V: Data, C: Data> {
+pub struct ShuffleDependency<K, V, C, KE, CE, FE, FD> 
+where
+    K: Data + Eq + Hash, 
+    V: Data, 
+    C: Data,
+    KE: Data,
+    CE: Data,
+    FE: Func(Vec<(K, C)>) -> Vec<(KE, CE)> + Clone,
+    FD: Func(Vec<(KE, CE)>) -> Vec<(K, C)> + Clone,
+{
     pub is_cogroup: bool,
     pub aggregator: Arc<Aggregator<K, V, C>>,
     pub partitioner: Box<dyn Partitioner>,
     prev_ids: HashSet<usize>,
+    fe: FE,
+    fd: FD,
 }
 
-impl<K: Data + Eq + Hash, V: Data, C: Data> ShuffleDependency<K, V, C> {
+impl<K, V, C, KE, CE, FE, FD> ShuffleDependency<K, V, C, KE, CE, FE, FD> 
+where 
+    K: Data + Eq + Hash, 
+    V: Data, 
+    C: Data,
+    KE: Data,
+    CE: Data,
+    FE: Func(Vec<(K, C)>) -> Vec<(KE, CE)> + Clone,
+    FD: Func(Vec<(KE, CE)>) -> Vec<(K, C)> + Clone,
+{
     pub fn new(
         is_cogroup: bool,
         aggregator: Arc<Aggregator<K, V, C>>,
         partitioner: Box<dyn Partitioner>,
         prev_ids: HashSet<usize>,
+        fe: FE,
+        fd: FD,
     ) -> Self {
         ShuffleDependency {
             is_cogroup,
             aggregator,
             partitioner,
             prev_ids,
+            fe,
+            fd,
         }
     }
 }
 
-impl<K: Data + Eq + Hash, V: Data, C: Data> ShuffleDependencyTrait for ShuffleDependency<K, V, C> {
+impl<K, V, C, KE, CE, FE, FD> ShuffleDependencyTrait for ShuffleDependency<K, V, C, KE, CE, FE, FD>
+where
+    K: Data + Eq + Hash, 
+    V: Data, 
+    C: Data,
+    KE: Data,
+    CE: Data,
+    FE: Func(Vec<(K, C)>) -> Vec<(KE, CE)> + Clone,
+    FD: Func(Vec<(KE, CE)>) -> Vec<(K, C)> + Clone,
+{
     fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>) -> *mut u8 {
         let aggregator = self.aggregator.clone();
         let num_output_splits = self.partitioner.get_num_of_partitions();
@@ -108,59 +152,27 @@ impl<K: Data + Eq + Hash, V: Data, C: Data> ShuffleDependencyTrait for ShuffleDe
         let mut buckets: Vec<HashMap<K, C>> = (0..num_output_splits)
             .map(|_| HashMap::new())
             .collect::<Vec<_>>();
-        /*
-        let mut buckets: Vec<HashMap<K, Vec<Box<dyn AnyData>>>> = (0..num_output_splits)
-            .map(|_| HashMap::new())
-            .collect::<Vec<_>>();
-        */
-        /*
-        let create_combiner = Box::new(|v: Box<dyn AnyData>| vec![v]);
-        fn merge_value(
-            mut buf: Vec<Box<dyn AnyData>>,
-            v: Box<dyn AnyData>,
-        ) -> Vec<Box<dyn AnyData>> {
-            buf.push(v);
-            buf
-        }
-        let merge_value = Box::new(|(buf, v)| merge_value(buf, v));
-        fn merge_combiners(
-            mut b1: Vec<Box<dyn AnyData>>,
-            mut b2: Vec<Box<dyn AnyData>>,
-        ) -> Vec<Box<dyn AnyData>> {
-            b1.append(&mut b2);
-            b1
-        }
-        let merge_combiners = Box::new(|(b1, b2)| merge_combiners(b1, b2));
-        */
 
         for (count, i) in iter.enumerate() {
             let b = i.into_any().downcast::<(K, V)>().unwrap();
             let (k, v) = *b;
-            //let (k, v_) = *b;
-            //let v = Box::new(v_) as Box<dyn AnyData>;
             let bucket_id = partitioner.get_partition(&k);
             let bucket = &mut buckets[bucket_id];
             if let Some(old_v) = bucket.get_mut(&k) {
                 let input = ((old_v.clone(), v),);
                 let output = aggregator.merge_value.call(input);
-                //let output = merge_value.call(input);
                 *old_v = output;
             } else {
                 bucket.insert(k, aggregator.create_combiner.call((v,)));
-                //bucket.insert(k, create_combiner.call((v,)));
             }
         }
         let result = buckets.into_iter()
-            .map(|bucket| bucket.into_iter().collect::<Vec<_>>())
+            .map(|bucket| {
+                (self.fe)(bucket.into_iter().collect::<Vec<_>>())    //may need to sub-partition
+            })
             .collect::<Vec<_>>();  //HashMap to Vec
         println!("result = {:?}", result);
-        /*
-        let r = buckets_c.into_iter()
-            .map(|bucket| bucket.into_iter()
-                 .map(|(k, c)| (k, c.into_iter().map(|v| Box::new(v) as Box<dyn AnyData>).collect::<Vec<_>>()))
-                 .collect::<Vec<_>>())
-            .collect::<Vec<_>>();
-        */
+
         crate::ALLOCATOR.lock().set_switch(true);
         let result_enc = result.clone();
         let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;

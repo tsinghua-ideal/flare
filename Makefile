@@ -75,7 +75,7 @@ Enclave_EDL_Files := enclave/Enclave_t.c enclave/Enclave_t.h $(APP_DIR)/Enclave_
 
 #App_Rust_Flags := --release
 App_Rust_Flags := 
-App_SRC_Files := $(shell find $(APP_DIR)/ -type f -name '*.rs') $(shell find $(APP_DIR)/ -type f -name 'Cargo.toml')
+App_SRC_Files := $(shell find $(APP_DIR)/ -type f -name '*.rs') $(shell find $(APP_DIR)/ -type f -name 'Cargo.toml') $(shell find $(SPARK_CORE_DIR)/ -type f -name '*.rs')
 App_Include_Paths := -I $(APP_DIR) -I./include -I$(SGX_SDK)/include -I$(CUSTOM_EDL_PATH)
 App_C_Flags := $(SGX_COMMON_CFLAGS) -fPIC -Wno-attributes $(App_Include_Paths)
 

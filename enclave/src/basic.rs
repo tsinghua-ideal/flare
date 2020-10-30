@@ -28,7 +28,7 @@ impl<
 }
 
 pub trait AnyData:
-    crate::dyn_clone::DynClone + any::Any + Send + Sync + fmt::Debug + 'static
+    dyn_clone::DynClone + any::Any + Send + Sync + fmt::Debug + 'static
 {
     fn as_any(&self) -> &dyn any::Any;
     /// Convert to a `&mut std::any::Any`.
@@ -43,11 +43,11 @@ pub trait AnyData:
     fn into_any_send_sync(self: boxed::Box<Self>) -> boxed::Box<dyn any::Any + Send + Sync>;
 }
 
-crate::clone_trait_object!(AnyData);
+dyn_clone::clone_trait_object!(AnyData);
 
 // Automatically implementing the Data trait for all types which implements the required traits
 impl<
-        T: crate::dyn_clone::DynClone
+        T: dyn_clone::DynClone
             + any::Any
             + Send
             + Sync
@@ -71,6 +71,188 @@ impl<
         self
     }
     fn into_any_send_sync(self: boxed::Box<Self>) -> boxed::Box<dyn any::Any + Send + Sync> {
+        self
+    }
+}
+
+#[derive(Clone, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Box<T: ?Sized>(boxed::Box<T>);
+
+impl<T> Box<T> {
+    // Create a new Box wrapper
+    pub fn new(t: T) -> Self {
+        Self(boxed::Box::new(t))
+    }
+}
+
+impl<T: ?Sized> Box<T> {
+    // Convert to a regular `std::Boxed::Box<T>`. Coherence rules prevent currently prevent `impl Into<std::boxed::Box<T>> for Box<T>`.
+    pub fn into_box(self) -> boxed::Box<T> {
+        self.0
+    }
+}
+
+impl Box<dyn AnyData> {
+    // Convert into a `std::boxed::Box<dyn std::any::Any>`.
+    pub fn into_any(self) -> boxed::Box<dyn any::Any> {
+        self.0.into_any()
+    }
+}
+
+impl<T: ?Sized + marker::Unsize<U>, U: ?Sized> ops::CoerceUnsized<Box<U>> for Box<T> {}
+
+impl<T: ?Sized> Deref for Box<T> {
+    type Target = boxed::Box<T>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<T: ?Sized> DerefMut for Box<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<T: ?Sized> AsRef<boxed::Box<T>> for Box<T> {
+    fn as_ref(&self) -> &boxed::Box<T> {
+        &self.0
+    }
+}
+
+impl<T: ?Sized> AsMut<boxed::Box<T>> for Box<T> {
+    fn as_mut(&mut self) -> &mut boxed::Box<T> {
+        &mut self.0
+    }
+}
+
+impl<T: ?Sized> AsRef<T> for Box<T> {
+    fn as_ref(&self) -> &T {
+        &*self.0
+    }
+}
+
+impl<T: ?Sized> AsMut<T> for Box<T> {
+    fn as_mut(&mut self) -> &mut T {
+        &mut *self.0
+    }
+}
+
+impl<T: ?Sized> Borrow<T> for Box<T> {
+    fn borrow(&self) -> &T {
+        &*self.0
+    }
+}
+
+impl<T: ?Sized> BorrowMut<T> for Box<T> {
+    fn borrow_mut(&mut self) -> &mut T {
+        &mut *self.0
+    }
+}
+
+impl<T: ?Sized> From<boxed::Box<T>> for Box<T> {
+    fn from(t: boxed::Box<T>) -> Self {
+        Self(t)
+    }
+}
+
+impl<T> From<T> for Box<T> {
+    fn from(t: T) -> Self {
+        Self(boxed::Box::new(t))
+    }
+}
+
+impl<T: error::Error> error::Error for Box<T> {
+    fn description(&self) -> &str {
+        error::Error::description(&**self)
+    }
+    #[allow(deprecated)]
+    fn cause(&self) -> Option<&dyn error::Error> {
+        error::Error::cause(&**self)
+    }
+    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+        error::Error::source(&**self)
+    }
+}
+
+impl<T: fmt::Debug + ?Sized> fmt::Debug for Box<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        self.0.fmt(f)
+    }
+}
+
+impl<T: fmt::Display + ?Sized> fmt::Display for Box<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        self.0.fmt(f)
+    }
+}
+
+impl<A, F: ?Sized> ops::FnOnce<A> for Box<F>
+where
+    F: FnOnce<A>,
+{
+    type Output = F::Output;
+    extern "rust-call" fn call_once(self, args: A) -> Self::Output {
+        self.0.call_once(args)
+    }
+}
+
+impl<A, F: ?Sized> ops::FnMut<A> for Box<F>
+where
+    F: FnMut<A>,
+{
+    extern "rust-call" fn call_mut(&mut self, args: A) -> Self::Output {
+        self.0.call_mut(args)
+    }
+}
+
+impl<A, F: ?Sized> ops::Fn<A> for Box<F>
+where
+    F: Func<A>,
+{
+    extern "rust-call" fn call(&self, args: A) -> Self::Output {
+        self.0.call(args)
+    }
+}
+
+pub trait SerFunc<Args>:
+    Fn<Args>
+    + Send
+    + Sync
+    + Clone
+    + 'static
+{
+}
+
+impl<Args, T> SerFunc<Args> for T where
+    T: Fn<Args>
+        + Send
+        + Sync
+        + Clone
+        + 'static
+{
+}
+
+pub trait Func<Args>:
+    ops::Fn<Args> + Send + Sync + 'static + dyn_clone::DynClone
+{
+}
+
+impl<T: ?Sized, Args> Func<Args> for T where
+    T: ops::Fn<Args> + Send + Sync + 'static + dyn_clone::DynClone
+{
+}
+
+impl<Args: 'static, Output: 'static> std::clone::Clone
+    for boxed::Box<dyn Func<Args, Output = Output>>
+{
+    fn clone(&self) -> Self {
+        dyn_clone::clone_box(&**self)
+    }
+}
+
+impl<'a, Args, Output> AsRef<Self> for dyn Func<Args, Output = Output> + 'a {
+    fn as_ref(&self) -> &Self {
         self
     }
 }

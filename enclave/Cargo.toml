@@ -24,13 +24,17 @@ sgx_libc = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
 sgx_signal = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
 
 [dependencies]
+aes-gcm = "0.8.0"
+bincode = { git = "https://github.com/mesalock-linux/bincode-sgx" }
+# bytes = { git = "https://github.com/mesalock-linux/bytes-sgx" }
+downcast-rs = { version = "1.2.0", default-features = false }
+dyn-clone = "1.0.3"
+lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
+# typetag = { git = "https://github.com/mesalock-linux/typetag-sgx" }
 serde = { git = "https://github.com/mesalock-linux/serde-sgx" }
 serde_derive = { git = "https://github.com/mesalock-linux/serde-sgx" }
-bincode = { git = "https://github.com/mesalock-linux/bincode-sgx" }
-bytes = { git = "https://github.com/mesalock-linux/bytes-sgx" }
-lazy_static = { version = "1.1.0", features = ["spin_no_std"] }
-typetag = { git = "https://github.com/mesalock-linux/typetag-sgx" }
 spin = "0.5.2"
+
 
 [patch.'https://github.com/apache/teaclave-sgx-sdk.git']
 sgx_alloc = { path = "../incubator-teaclave-sgx-sdk/sgx_alloc" }

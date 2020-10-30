@@ -1,28 +1,30 @@
 use std::boxed::Box;
 use std::marker::PhantomData;
-use std::mem::{drop, forget};
-use std::sync::{Arc, SgxMutex, Weak};
-use std::time::{Duration, Instant};
-use std::untrusted::time::InstantEx;
+use std::sync::{Arc, SgxMutex};
 use std::vec::Vec;
-use crate::op::{Context, Op, OpBase, OpVals};
+use crate::op::{Context, Op, OpE, OpBase, OpVals};
 use crate::dependency::{Dependency, OneToOneDependency};
-use crate::basic::{AnyData, Data};
+use crate::basic::{AnyData, Data, Func, SerFunc};
 
-pub struct Mapper<T: Data, U: Data, F>
+pub struct Mapper<T: Data, U: Data, UE: Data, F, FE, FD>
 where
-    F: Fn(T) -> U + Clone,
+    F: Func(T) -> U + Clone,
+    FE: Func(Vec<U>) -> Vec<UE> + Clone,
+    FD: Func(Vec<UE>) -> Vec<U> + Clone,
 {
     vals: Arc<OpVals>,
     next_deps: Arc<SgxMutex<Vec<Dependency>>>,
     prev: Arc<dyn Op<Item = T>>,
     f: F,
-    _marker_t: PhantomData<T>,
+    fe: FE,
+    fd: FD,
 }
 
-impl<T: Data, U: Data, F> Clone for Mapper<T, U, F>
+impl<T: Data, U: Data, UE: Data, F, FE, FD> Clone for Mapper<T, U, UE, F, FE, FD>
 where
-    F: Fn(T) -> U + Clone,
+    F: Func(T) -> U + Clone,
+    FE: Func(Vec<U>) -> Vec<UE> + Clone,
+    FD: Func(Vec<UE>) -> Vec<U> + Clone,
 {
     fn clone(&self) -> Self {
         Mapper {
@@ -30,16 +32,19 @@ where
             next_deps: self.next_deps.clone(),
             prev: self.prev.clone(),
             f: self.f.clone(),
-            _marker_t: PhantomData,
+            fe: self.fe.clone(),
+            fd: self.fd.clone(),
         }
     }
 }
 
-impl<T: Data, U: Data, F> Mapper<T, U, F>
+impl<T: Data, U: Data, UE: Data, F, FE, FD> Mapper<T, U, UE, F, FE, FD>
 where
-    F: Fn(T) -> U + Clone,
+    F: Func(T) -> U + Clone,
+    FE: Func(Vec<U>) -> Vec<UE> + Clone,
+    FD: Func(Vec<UE>) -> Vec<U> + Clone,
 {
-    pub(crate) fn new(prev: Arc<dyn Op<Item = T>>, f: F) -> Self {
+    pub(crate) fn new(prev: Arc<dyn Op<Item = T>>, f: F, fe: FE, fd: FD) -> Self {
         let mut vals = OpVals::new(prev.get_context());
         let mut prev_ids = prev.get_prev_ids();
         prev_ids.insert(prev.get_id()); 
@@ -58,14 +63,17 @@ where
             next_deps: Arc::new(SgxMutex::new(Vec::<Dependency>::new())),
             prev,
             f,
-            _marker_t: PhantomData,
+            fe,
+            fd,
         }
     }
 }
 
-impl<T: Data, U: Data, F> OpBase for Mapper<T, U, F>
+impl<T: Data, U: Data, UE: Data, F, FE, FD> OpBase for Mapper<T, U, UE, F, FE, FD>
 where
-    F: Fn(T) -> U + Send + Sync + Clone + 'static,
+    F: SerFunc(T) -> U,
+    FE: SerFunc(Vec<U>) -> Vec<UE>,
+    FD: SerFunc(Vec<UE>) -> Vec<U>,
 {
     fn get_id(&self) -> usize {
         self.vals.id
@@ -88,9 +96,11 @@ where
     }
 }
 
-impl<T: Data, U: Data, F> Op for Mapper<T, U, F>
+impl<T: Data, U: Data, UE: Data, F, FE, FD> Op for Mapper<T, U, UE, F, FE, FD>
 where
-    F: Fn(T) -> U + Send + Sync + Clone + 'static,
+    F: SerFunc(T) -> U,
+    FE: SerFunc(Vec<U>) -> Vec<UE>,
+    FD: SerFunc(Vec<UE>) -> Vec<U>,
 {
     type Item = U;
         
@@ -106,28 +116,12 @@ where
         let next_deps = self.next_deps.lock().unwrap();
         match is_shuffle == 0 {
             true => {       //No shuffle later
-                let result = self.compute(data_ptr)
-                    .collect::<Vec<Self::Item>>();
-                crate::ALLOCATOR.lock().set_switch(true);
-                let result_enc = result.clone(); // encrypt
-                let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
-                crate::ALLOCATOR.lock().set_switch(false);
-                result_ptr
+                self.narrow(data_ptr)
             },
             false => {      //Shuffle later
-                let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<Self::Item>) };
-                let data = data_enc.clone();
-                crate::ALLOCATOR.lock().set_switch(true);
-                drop(data_enc);
-                crate::ALLOCATOR.lock().set_switch(false);
-                let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
-                let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
-                    Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
-                    Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
-                };
-                shuf_dep.do_shuffle_task(iter)
+                self.shuffle(data_ptr)
             },
-        } 
+        }
     }
 
     fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
@@ -135,3 +129,25 @@ where
     }
 
 }
+
+impl<T: Data, U: Data, UE: Data, F, FE, FD> OpE for Mapper<T, U, UE, F, FE, FD>
+where
+    F: SerFunc(T) -> U,
+    FE: SerFunc(Vec<U>) -> Vec<UE>,
+    FD: SerFunc(Vec<UE>) -> Vec<U>,
+{
+    type ItemE = UE;
+    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
+        Arc::new(self.clone())
+    }
+
+    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>> {
+        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>>
+    }
+
+    fn get_fd(&self) -> Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>> {
+        Box::new(self.fd.clone()) as Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>>
+    }
+}
+
+
