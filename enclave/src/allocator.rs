@@ -75,8 +75,8 @@ impl Allocator {
     
     pub fn get_switch(&self) -> bool {
         let cur = thread::rsgx_thread_self();
-        let mut rt: sgx_status_t = sgx_status_t::SGX_SUCCESS;
         /*
+        let mut rt: sgx_status_t = sgx_status_t::SGX_SUCCESS;
         unsafe { 
             ocall_print_id(&mut rt as *mut sgx_status_t, cur); 
             for i in 0..10 {
@@ -117,7 +117,7 @@ unsafe impl GlobalAlloc for Locked<Allocator> {
     unsafe fn  alloc(&self, layout: Layout) -> *mut u8 {
         let bump = self.lock(); // get a mutable reference
         let switch = bump.get_switch();
-        let mut rt: sgx_status_t = sgx_status_t::SGX_SUCCESS;
+        //let mut rt: sgx_status_t = sgx_status_t::SGX_SUCCESS;
         //ocall_print_usize(&mut rt, switch as usize);
         if switch {
             let mut rt: usize = 0;
@@ -133,7 +133,7 @@ unsafe impl GlobalAlloc for Locked<Allocator> {
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         let bump = self.lock(); // get a mutable reference
         let switch = bump.get_switch();
-        let mut rt: sgx_status_t = sgx_status_t::SGX_SUCCESS;
+        //let mut rt: sgx_status_t = sgx_status_t::SGX_SUCCESS;
         //ocall_print_usize(&mut rt, switch as usize);
         if switch {
             let mut rt: sgx_status_t = sgx_status_t::SGX_SUCCESS;

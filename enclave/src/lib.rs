@@ -54,21 +54,23 @@ use std::cell::Cell;
 use std::cmp::min;
 use std::collections::{btree_map::BTreeMap, HashMap};
 use std::string::String;
-use std::sync::{atomic::{AtomicPtr, Ordering}, Arc, SgxRwLock as RwLock};
+use std::sync::{atomic::Ordering, Arc, SgxRwLock as RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 
+mod aggregator;
 mod allocator;
 use allocator::{Allocator, Locked};
-mod aggregator;
+mod atomicptr_wrapper;
+use atomicptr_wrapper::AtomicPtrWrapper;
 mod basic;
 mod dependency;
 mod partitioner;
 mod op;
 
-use crate::op::{Context, Op, OpE, OpBase, Pair, encrypt, decrypt, divide_ct, recover_ct};
+use crate::op::{Context, Op, OpE, OpBase, Pair, encrypt, decrypt, divide_ct, recover_ct, map_id, load_opmap};
 
 #[global_allocator]
 static ALLOCATOR: Locked<Allocator> = Locked::new(Allocator::new());
@@ -78,7 +80,9 @@ struct Captured {
 }
 
 lazy_static! {
-    static ref sig: RwLock<i32> = RwLock::new(0);
+    /// loop boundary: (lower bound after maping, upper bound after mapping, iteration number)
+    static ref lp_boundary: AtomicPtrWrapper<Vec<(usize, usize, usize)>> = AtomicPtrWrapper::new(Box::into_raw(Box::new(Vec::new()))); 
+    static ref opmap: AtomicPtrWrapper<BTreeMap<usize, Arc<dyn OpBase>>> = AtomicPtrWrapper::new(Box::into_raw(Box::new(BTreeMap::new())));
     static ref sc: Arc<Context> = Context::new();
     /*
     static ref w: RwLock<f32> = {
@@ -89,14 +93,11 @@ lazy_static! {
         RwLock::new(_w)
     };
     */
-    static ref w: AtomicPtr<f32> = AtomicPtr::new(&mut 1.0);  
-   
-    static ref opmap: BTreeMap<usize, Arc<dyn OpBase>> = {
-        let mut tempHM = BTreeMap::new();
+    static ref w: AtomicPtrWrapper<f32> = AtomicPtrWrapper::new(Box::into_raw(Box::new(1.0)));  
+    static ref final_id: usize = {
         /* map */
         /*
         let rdd0 = sc.make_op(Box::new(|i: Vec<(i32, i32)>| i), Box::new(|i: Vec<(i32, i32)>| i));
-        tempHM.insert(rdd0.get_id(), rdd0.get_op_base());
         let rdd1 = rdd0.map(Box::new(|i: (i32, i32)| (i.0 + 1, i.1 + 1)), 
             Box::new(|vp: Vec<(i32, i32)>| -> Vec<(Option<Vec<u8>>, i32)>{
                 let len = vp.len();
@@ -138,56 +139,54 @@ lazy_static! {
                 buf0.into_iter().zip(buf1.into_iter()).collect::<Vec<_>>() 
             })
         );
-        tempHM.insert(rdd1.get_id(), rdd1.get_op_base()); 
+        rdd1.get_id()
         */
 
         /* group_by */
         
         /*
         let rdd0 = sc.make_op(Box::new(|i: Vec<(String, i32)>| i), Box::new(|i: Vec<(String, i32)>| i));
-        tempHM.insert(rdd0.get_id(), rdd0.get_op_base());
         let rdd1 = rdd0.group_by_key(4);
-        tempHM.insert(rdd1.get_id(), rdd1.get_op_base());
+        rdd1.get_id()
         */
 
         /* join */
-        /*
+        
         let rdd0 = sc.make_op(Box::new(|i: Vec<(i32, (String, String))>| i), Box::new(|i: Vec<(i32, (String, String))>| i));
-        tempHM.insert(rdd0.get_id(), rdd0.get_op_base());
         let rdd1 = sc.make_op(Box::new(|i: Vec<(i32, String)>| i), Box::new(|i: Vec<(i32, String)>| i));
-        tempHM.insert(rdd1.get_id(), rdd1.get_op_base());
         let rdd2 = rdd1.join(rdd0.clone(), 1);
-        tempHM.insert(rdd2.get_id(), rdd2.get_op_base());
-        */
+        rdd2.get_id()
+        
 
         /* reduce */
         /*
         let rdd0 = sc.make_op(Box::new(|i: Vec<i32>| i), Box::new(|i: Vec<i32>| i));
-        tempHM.insert(rdd0.get_id(), rdd0.get_op_base());
         let rdd1 = rdd0.reduce(Box::new(|x, y| x+y));
-        tempHM.insert(rdd1.get_id(), rdd1.get_op_base());
+        rdd1.get_id()
         */
 
         /* linear regression */
-        
+        /*
         let nums = sc.make_op(Box::new(|v: Vec<Point>| v), Box::new(|v: Vec<Point>| v));
-        let iter_num = 3;
-        for i in 0..iter_num {
-            //make op
-            let g = nums.map(Box::new(|p: Point|
-                            p.x*(1f32/(1f32+(-p.y*(unsafe {*w.load(Ordering::Relaxed)} *p.x)).exp())-1f32)*p.y
-                        ),
-                        Box::new(|v: Vec<f32>| v),
-                        Box::new(|v: Vec<f32>| v),
-                    )
-                .reduce(Box::new(|x, y| x+y));
-            if i == iter_num - 1 {
-                tempHM.insert(g.get_id(), g.get_op_base());
-            }
-        }
-        
-        tempHM
-    };   
+        //loop 0 boundary
+        let iter_num = 3;   //need to manually change now
+        let lower_bound = nums.get_id();  //0 
+        let g = nums.map(Box::new(|p: Point|
+                        p.x*(1f32/(1f32+(-p.y*(unsafe {*w.load(Ordering::Relaxed)} *p.x)).exp())-1f32)*p.y
+                    ),
+                    Box::new(|v: Vec<f32>| v),
+                    Box::new(|v: Vec<f32>| v),
+                )
+            .reduce(Box::new(|x, y| x+y));
+        let upper_bound =g.get_id();   //1
+        unsafe{ lp_boundary.load(Ordering::Relaxed).as_mut()}
+            .unwrap()
+            .push((lower_bound, upper_bound, iter_num));
+        //loop 0 boundary
+        g.get_id()
+        */
+
+    };
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -203,6 +202,7 @@ pub extern "C" fn secure_executing(id: usize,
                                    captured_vars: *const u8) -> usize 
 {
     println!("inside enclave id = {:?}, is_shuffle = {:?}, thread_id = {:?}", id, is_shuffle, thread::rsgx_thread_self());
+    let _final_id = *final_id; //this is necessary to let it accually execute
     //get current stage's captured vars
     let captured_vars = unsafe { (captured_vars as *const HashMap<usize, Vec<u8>>).as_ref() }.unwrap();
     //TODO
@@ -213,10 +213,10 @@ pub extern "C" fn secure_executing(id: usize,
         None => (),
     };
     let now = Instant::now();
-    let op = match opmap.iter().find(|&x| x.0>= &id ) {
-        Some((k,v)) => v,
-        None => panic!("Invalid op id"),
-    };
+    let mapped_id = map_id(id);
+    println!("mapped_id = {:?}", mapped_id);
+    println!("opmap = {:?}", load_opmap().len());
+    let op = load_opmap().get(&mapped_id).unwrap();
     let result_ptr = op.iterator(input, is_shuffle);
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("in enclave {:?} s", dur);

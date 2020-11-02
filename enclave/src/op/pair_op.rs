@@ -1,7 +1,5 @@
 use std::boxed::Box;
 use std::hash::Hash;
-use std::marker::PhantomData;
-use std::mem::{drop, forget};
 use std::sync::{Arc, SgxMutex};
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
@@ -29,13 +27,15 @@ where
         FE: SerFunc(Vec<(K, C)>) -> Vec<(KE2, CE)>, 
         FD: SerFunc(Vec<(KE2, CE)>) -> Vec<(K, C)>,
     {
-        SerArc::new(Shuffled::new(
+        let new_op = SerArc::new(Shuffled::new(
             self.get_op(),
             Arc::new(aggregator),
             partitioner,
             fe,
             fd,
-        ))
+        ));
+        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        new_op
     }
 
     fn group_by_key(&self, num_splits: usize) -> SerArc<dyn OpE<Item = (K, Vec<V>), ItemE = (KE, Vec<VE>)>>
@@ -139,7 +139,9 @@ where
         FE: SerFunc(Vec<(K, U)>) -> Vec<(KE, UE)>, 
         FD: SerFunc(Vec<(KE, UE)>) -> Vec<(K, U)>,
     {
-        SerArc::new(MappedValues::new(self.get_op(), f, fe, fd))
+        let new_op = SerArc::new(MappedValues::new(self.get_op(), f, fe, fd));
+        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        new_op
     }
 
     fn flat_map_values<U, UE, F, FE, FD>(
@@ -156,7 +158,9 @@ where
         FE: SerFunc(Vec<(K, U)>) -> Vec<(KE, UE)>, 
         FD: SerFunc(Vec<(KE, UE)>) -> Vec<(K, U)>,
     {
-        SerArc::new(FlatMappedValues::new(self.get_op(), f, fe, fd))
+        let new_op = SerArc::new(FlatMappedValues::new(self.get_op(), f, fe, fd));
+        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        new_op
     }
 
     fn join<W: Data, WE: Data>(
@@ -210,11 +214,13 @@ where
                 .map(|((pt_k, pt_v), (_, pt_w))| (pt_k, (pt_v, pt_w)))
                 .collect::<Vec<_>>()
         };
-        self.cogroup(
+        let new_op = self.cogroup(
             other,
             Box::new(HashPartitioner::<K>::new(num_splits)) as Box<dyn Partitioner>,
         )
-        .flat_map_values(Box::new(f), fe, fd)
+        .flat_map_values(Box::new(f), fe, fd);
+        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        new_op
     }
 
     fn cogroup<W: Data, WE: Data>(
@@ -264,7 +270,9 @@ where
             }
             pt
         };
-        SerArc::new(CoGrouped::new(self.get_ope(), other.get_ope(), fe, fd, partitioner))
+        let new_op = SerArc::new(CoGrouped::new(self.get_ope(), other.get_ope(), fe, fd, partitioner));
+        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        new_op
     }
 
 }
@@ -421,14 +429,14 @@ where
     }
 
     fn compute_start (&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-        let next_deps = self.next_deps.lock().unwrap();
-        match is_shuffle == 0 {
-            true => {       //No shuffle later
+        match is_shuffle {
+            0 => {       //No shuffle later
                 self.narrow(data_ptr)
             },
-            false => {      //Shuffle later
+            1 => {      //Shuffle write
                 self.shuffle(data_ptr)
             },
+            _ => panic!("Invalid is_shuffle")
         }
     }
     
@@ -597,14 +605,14 @@ where
     }
 
     fn compute_start (&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-        let next_deps = self.next_deps.lock().unwrap();
-        match is_shuffle == 0 {
-            true => {       //No shuffle later
+        match is_shuffle {
+            0 => {       //No shuffle later
                 self.narrow(data_ptr)
             },
-            false => {      //Shuffle later
+            1 => {      //Shuffle write
                 self.shuffle(data_ptr)
             },
+            _ => panic!("Invalid is_shuffle")
         }
     }
 

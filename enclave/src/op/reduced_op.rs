@@ -1,5 +1,4 @@
 use std::boxed::Box;
-use std::marker::PhantomData;
 use std::mem::forget;
 use std::sync::{Arc, SgxMutex};
 use std::time::{Duration, Instant};
@@ -114,7 +113,8 @@ where
     }
   
     fn compute_start (&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8{
-        if is_shuffle == 2 {
+        //3 is only for reduce
+        if is_shuffle == 3 {
             self.narrow(data_ptr)
         }
         else {

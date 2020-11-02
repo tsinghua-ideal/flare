@@ -1,8 +1,7 @@
 use std::boxed::Box;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::marker::PhantomData;
-use std::mem::{drop, forget};
+use std::mem::forget;
 use std::sync::{Arc, SgxMutex};
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
@@ -156,11 +155,14 @@ where
 
     fn compute_start(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         let next_deps = self.next_deps.lock().unwrap();
-        match is_shuffle == 0 {
-            true => {       //No shuffle later
+        match is_shuffle {
+            0 => {      //No shuffle
                 self.narrow(data_ptr)
             },
-            false => {      //Shuffle later
+            1 => {      //Shuffle write
+                self.shuffle(data_ptr)
+            }
+            2 => {      //Shuffle read
                 let mut combiners: HashMap<K, Option<C>> = HashMap::new();
                 let aggregator = self.aggregator.clone(); 
                 let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<(KE, CE)>) };
@@ -184,6 +186,7 @@ where
                 crate::ALLOCATOR.lock().set_switch(false);
                 result_ptr
             },
+            _ => panic!("Invalid is_shuffle"),
         }
     }
 

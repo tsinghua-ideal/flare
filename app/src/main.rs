@@ -127,7 +127,7 @@ fn main() -> Result<()> {
     */
 
     /* join */
-    /*
+    
     let sc = Context::new()?;
     let col0 = vec![
         (1, ("A".to_string(), "B".to_string())),
@@ -148,7 +148,7 @@ fn main() -> Result<()> {
     let rdd2 = rdd1.join(rdd0.clone(), 1);
     let res = rdd2.secure_collect().unwrap();
     println!("result: {:?}", res);
-    */
+    
 
     /* reduce */
     /*
@@ -159,7 +159,7 @@ fn main() -> Result<()> {
     */
 
     /* linear regression */
-    
+    /*
     let mut rng = rand::thread_rng();
     let point_num = 1_000_000;
     let mut points: Vec<Point> = Vec::with_capacity(point_num);
@@ -189,6 +189,7 @@ fn main() -> Result<()> {
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
     println!("w = {:?}", w);
-    
+    */
+
     Ok(())
 }

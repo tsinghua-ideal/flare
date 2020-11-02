@@ -1,15 +1,16 @@
 use std::boxed::Box;
-use std::collections::HashSet;
+use std::collections::{btree_map::BTreeMap, HashSet};
 use std::cmp::{Ordering, Reverse};
 use std::vec::Vec;
 use std::sync::{
-    atomic::{self, AtomicUsize},
+    atomic::{self, AtomicPtr, AtomicUsize},
     Arc, SgxMutex, Weak,
 };
 
 use aes_gcm::Aes128Gcm;
 use aes_gcm::aead::{Aead, NewAead, generic_array::GenericArray};
 
+use crate::{lp_boundary, opmap};
 use crate::basic::{AnyData, Arc as SerArc, Data, Func, SerFunc};
 use crate::dependency::Dependency;
 use crate::partitioner::Partitioner;
@@ -32,6 +33,37 @@ pub use reduced_op::*;
 mod shuffled_op;
 pub use shuffled_op::*;
 
+pub fn map_id(id: usize) -> usize {
+    let lp_bd = unsafe{ lp_boundary.load(atomic::Ordering::Relaxed).as_ref()}.unwrap();
+    if lp_bd.len() == 0 {
+        return id;
+    }
+    let mut sum_rep = 0;
+    for i in lp_bd {
+        let lower_bound = i.0 + sum_rep;
+        let upper_bound = lower_bound + i.2 * (i.1 - i.0);
+        if id <= lower_bound {   //outside loop
+            return id - sum_rep;
+        } else if id > lower_bound && id <= upper_bound { //inside loop
+            let dedup_id = id - sum_rep;
+            return  (dedup_id + i.1 - 2 * i.0 - 1) % (i.1 - i.0) + i.0 + 1;
+        }
+        sum_rep += (i.2 - 1) * (i.1 - i.0);
+    }
+    return id - sum_rep;
+}
+
+pub fn load_opmap() -> &'static mut BTreeMap<usize, Arc<dyn OpBase>> {
+    unsafe { 
+        opmap.load(atomic::Ordering::Relaxed)
+            .as_mut()
+    }.unwrap()
+}
+
+pub fn insert_opmap(op_id: usize, op_base: Arc<dyn OpBase>) {
+    let op_map = load_opmap();
+    op_map.insert(op_id, op_base);
+}
 
 #[inline(always)]
 pub fn encrypt(pt: &[u8]) -> Vec<u8> {
@@ -84,7 +116,9 @@ impl Context {
         FE: SerFunc(Vec<T>) -> Vec<TE>,
         FD: SerFunc(Vec<TE>) -> Vec<T>,
     {
-        SerArc::new(ParallelCollection::new(self.clone(), fe, fd))
+        let new_op = SerArc::new(ParallelCollection::new(self.clone(), fe, fd));
+        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        new_op
     }
 
     /// Load from a distributed source and turns it into a parallel collection.
@@ -101,6 +135,7 @@ impl Context {
         FE: SerFunc(Vec<O>) -> Vec<OE>,
         FD: SerFunc(Vec<OE>) -> Vec<O>,
     {
+        //need to do insert opmap
         config.make_reader(self.clone(), func, fe, fd)
     }
 
@@ -283,7 +318,9 @@ pub trait OpE: Op {
         FE: SerFunc(Vec<U>) -> Vec<UE>,
         FD: SerFunc(Vec<UE>) -> Vec<U>,
     {
-        SerArc::new(Mapper::new(self.get_op(), f, fe, fd))
+        let new_op = SerArc::new(Mapper::new(self.get_op(), f, fe, fd));
+        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        new_op
     }
 
     fn flat_map<U, UE, F, FE, FD>(&self, f: F, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = U, ItemE = UE>>
@@ -295,7 +332,9 @@ pub trait OpE: Op {
         FE: SerFunc(Vec<U>) -> Vec<UE>,
         FD: SerFunc(Vec<UE>) -> Vec<U>,
     {
-        SerArc::new(FlatMapper::new(self.get_op(), f, fe, fd))
+        let new_op = SerArc::new(FlatMapper::new(self.get_op(), f, fe, fd));
+        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        new_op
     }
 
     fn reduce<F>(&self, f: F) -> SerArc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>
@@ -312,7 +351,9 @@ pub trait OpE: Op {
                 Some(e) => vec![e],
             }
         };         
-        SerArc::new(Reduced::new(self.get_op(), reduce_partition, self.get_fe(), self.get_fd())) 
+        let new_op = SerArc::new(Reduced::new(self.get_op(), reduce_partition, self.get_fe(), self.get_fd()));
+        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        new_op
     }
 
 }

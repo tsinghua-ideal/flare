@@ -1,8 +1,7 @@
 use std::any::Any;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::marker::PhantomData;
-use std::mem::{drop, forget};
+use std::mem::forget;
 use std::sync::{Arc, SgxMutex};
 use std::vec::Vec;
 
@@ -58,7 +57,7 @@ where
         let mut deps = Vec::new();
              
         let mut prev_ids = op0.get_prev_ids();
-        prev_ids.insert(op0.get_id());       
+        prev_ids.insert(op0.get_id()); 
         if op0
             .partitioner()
             .map_or(false, |p| p.equals(&part as &dyn Any))
@@ -244,7 +243,8 @@ where
         Some(part)
     }
     
-    fn iterator(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+    fn iterator(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8{
+        println!("co_grouped iterator");
         self.compute_start(data_ptr, is_shuffle)
     }
 
@@ -272,108 +272,124 @@ where
     }
 
     fn compute_start(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-        let next_deps = self.next_deps.lock().unwrap();
-        match is_shuffle == 0 {
-            true => {       //No shuffle later
+        match is_shuffle {
+            0 => {       //No shuffle
                 self.narrow(data_ptr)
             },
-            false => {      //Shuffle later
+            1 => {      //Shuffle write
                 self.shuffle(data_ptr)
             },
+            2 => {      //shuffle read
+                let mut agg: HashMap<K, (Vec<V>, Vec<W>)> = HashMap::new();
+                let data = unsafe{ Box::from_raw(data_ptr as *mut Vec<Vec<usize>>) };
+                let deps = self.get_deps();
+                match &deps[0] {
+                    Dependency::NarrowDependency(_nar) => {
+                        for block_ptr in &data[0] {
+                            let block_ptr = *block_ptr as *mut u8 as *mut Vec<(KE, VE)>;
+                            let data0_enc  = unsafe{ Box::from_raw(block_ptr) };
+                            let data0 = self.op0.get_fd()(*(data0_enc.clone()));
+                            for i in data0.into_iter() { 
+                                let (k, v) = i;
+                                agg.entry(k)
+                                    .or_insert_with(|| (Vec::new(), Vec::new())).0
+                                    .push(v);
+                            }
+                            forget(data0_enc);
+                        }
+                    },
+                    Dependency::ShuffleDependency(_shuf) => {
+                        for data_ptr in &data[0] {   //cycle == 1
+                            let data_ptr = *data_ptr as *mut u8 as *mut Vec<(KE, Vec<VE>)>;
+                            let data0_enc = unsafe{ Box::from_raw(data_ptr) };
+                            //decrypt
+                            let mut pt = Vec::with_capacity(data0_enc.len());
+                            for (x, vy) in *(data0_enc.clone()) {
+                                let (pt_x, pt_y): (Vec<K>, Vec<V>) = self.op0.get_fd()(vy
+                                    .into_iter()
+                                    .map(|y| (x.clone(), y))
+                                    .collect::<Vec<_>>())
+                                    .into_iter()
+                                    .unzip();
+                                pt.push((pt_x[0].clone(), pt_y));
+                            }
+                            let data0 = pt;
+                            for (k, c) in data0.into_iter() { 
+                                let temp = agg.entry(k)
+                                    .or_insert_with(|| (Vec::new(), Vec::new()));
+                                for v in c {
+                                    temp.0.push(v);
+                                }
+                            }
+                            forget(data0_enc);
+                        }
+                    },
+                };
+        
+                match &deps[1] {
+                    Dependency::NarrowDependency(_nar) => {
+                        for block_ptr in &data[1] {
+                            let block_ptr = *block_ptr as *mut u8 as *mut Vec<(KE, WE)>;
+                            let data1_enc = unsafe{ Box::from_raw(block_ptr) };
+                            let data1 = self.op1.get_fd()(*(data1_enc.clone())); //need to check security
+                            for i in data1.into_iter() {
+                                let (k, w) = i;
+                                agg.entry(k)
+                                    .or_insert_with(|| (Vec::new(), Vec::new())).1
+                                    .push(w);
+                            }
+                            forget(data1_enc);
+                        }
+                    },
+                    Dependency::ShuffleDependency(_shuf) => {
+                        for data_ptr in &data[1] { 
+                            let data_ptr = *data_ptr as *mut u8 as *mut Vec<(KE, Vec<WE>)>;
+                            let data1_enc = unsafe{ Box::from_raw(data_ptr) };
+                            //decrypt
+                            let mut pt = Vec::with_capacity(data1_enc.len());
+                            for (x, vy) in *(data1_enc.clone()) {
+                                let (pt_x, pt_y): (Vec<K>, Vec<W>) = self.op1.get_fd()(vy
+                                    .into_iter()
+                                    .map(|y| (x.clone(), y))
+                                    .collect::<Vec<_>>())
+                                    .into_iter()
+                                    .unzip();
+                                pt.push((pt_x[0].clone(), pt_y));
+                            }
+                            let data1 = pt;
+                            for (k, c) in data1.into_iter() { 
+                                let temp = agg.entry(k)
+                                    .or_insert_with(|| (Vec::new(), Vec::new()));
+                                for w in c {
+                                    temp.1.push(w);
+                                }
+                            }
+                            forget(data1_enc);
+                        }
+                    },
+                };
+                forget(data);
+                let result = agg.into_iter()
+                    .filter(|(k, (v, w))| v.len() != 0 && w.len() != 0)
+                    .collect::<Vec<_>>();
+                println!("result = {:?}", result);
+                let result_enc = self.get_fe()(result.clone()); 
+                //println!("op_id = {:?}, \n result = {:?}, \n result_enc = {:?}", self.get_id(), result, result_enc);
+                crate::ALLOCATOR.lock().set_switch(true);
+                let result = result_enc.clone(); 
+                let result_ptr = Box::into_raw(Box::new(result)) as *mut u8;
+                crate::ALLOCATOR.lock().set_switch(false);
+                result_ptr
+            },
+            _ => panic!("Invalid is_shuffle")
         }
     }
 
     fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
-        let mut agg: HashMap<K, (Vec<V>, Vec<W>)> = HashMap::new();
-        let data = unsafe{ Box::from_raw(data_ptr as *mut Vec<Vec<usize>>) };
-        let deps = self.get_deps();
-        match &deps[0] {
-            Dependency::NarrowDependency(nar) => {
-                for block_ptr in &data[0] {
-                    let block_ptr = *block_ptr as *mut u8 as *mut Vec<(KE, VE)>;
-                    let data0_enc  = unsafe{ Box::from_raw(block_ptr) };
-                    let data0 = self.op0.get_fd()(*(data0_enc.clone()));
-                    for i in data0.into_iter() { 
-                        let (k, v) = i;
-                        agg.entry(k)
-                            .or_insert_with(|| (Vec::new(), Vec::new())).0
-                            .push(v);
-                    }
-                    forget(data0_enc);
-                }
-            },
-            Dependency::ShuffleDependency(shuf) => {
-                for data_ptr in &data[0] {   //cycle == 1
-                    let data_ptr = *data_ptr as *mut u8 as *mut Vec<(KE, Vec<VE>)>;
-                    let data0_enc = unsafe{ Box::from_raw(data_ptr) };
-                    //decrypt
-                    let mut pt = Vec::with_capacity(data0_enc.len());
-                    for (x, vy) in *(data0_enc.clone()) {
-                        let (pt_x, pt_y): (Vec<K>, Vec<V>) = self.op0.get_fd()(vy
-                            .into_iter()
-                            .map(|y| (x.clone(), y))
-                            .collect::<Vec<_>>())
-                            .into_iter()
-                            .unzip();
-                        pt.push((pt_x[0].clone(), pt_y));
-                    }
-                    let data0 = pt;
-                    for (k, c) in data0.into_iter() { 
-                        let temp = agg.entry(k)
-                            .or_insert_with(|| (Vec::new(), Vec::new()));
-                        for v in c {
-                            temp.0.push(v);
-                        }
-                    }
-                    forget(data0_enc);
-                }
-            },
-        };
-
-        match &deps[1] {
-            Dependency::NarrowDependency(nar) => {
-                for block_ptr in &data[1] {
-                    let block_ptr = *block_ptr as *mut u8 as *mut Vec<(KE, WE)>;
-                    let data1_enc = unsafe{ Box::from_raw(block_ptr) };
-                    let data1 = self.op1.get_fd()(*(data1_enc.clone())); //need to check security
-                    for i in data1.into_iter() {
-                        let (k, w) = i;
-                        agg.entry(k)
-                            .or_insert_with(|| (Vec::new(), Vec::new())).1
-                            .push(w);
-                    }
-                    forget(data1_enc);
-                }
-            },
-            Dependency::ShuffleDependency(shuf) => {
-                for data_ptr in &data[1] {   //cycle == 1
-                    let data_ptr = *data_ptr as *mut u8 as *mut Vec<(KE, Vec<WE>)>;
-                    let data1_enc = unsafe{ Box::from_raw(data_ptr) };
-                    //decrypt
-                    let mut pt = Vec::with_capacity(data1_enc.len());
-                    for (x, vy) in *(data1_enc.clone()) {
-                        let (pt_x, pt_y): (Vec<K>, Vec<W>) = self.op1.get_fd()(vy
-                            .into_iter()
-                            .map(|y| (x.clone(), y))
-                            .collect::<Vec<_>>())
-                            .into_iter()
-                            .unzip();
-                        pt.push((pt_x[0].clone(), pt_y));
-                    }
-                    let data1 = pt;
-                    for (k, c) in data1.into_iter() { 
-                        let temp = agg.entry(k)
-                            .or_insert_with(|| (Vec::new(), Vec::new()));
-                        for w in c {
-                            temp.1.push(w);
-                        }
-                    }
-                    forget(data1_enc);
-                }
-            },
-        };
-        forget(data);
-        Box::new(agg.into_iter())
+        let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<(KE, (Vec<VE>, Vec<WE>))>) };
+        let data = self.get_fd()(*(data_enc.clone()));
+        forget(data_enc);
+        Box::new(data.into_iter())
     }
 }
 
@@ -401,4 +417,6 @@ where
         Box::new(self.fd.clone()) as Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>>
     }
 
+
+    
 }

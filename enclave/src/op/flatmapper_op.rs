@@ -1,5 +1,4 @@
 use std::boxed::Box;
-use std::marker::PhantomData;
 use std::sync::{Arc, SgxMutex};
 use std::vec::Vec;
 use crate::op::{Context, Op, OpE, OpBase, OpVals};
@@ -113,14 +112,15 @@ where
     }
   
     fn compute_start (&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-        match is_shuffle == 0 {
-            true => {       //No shuffle later
+        match is_shuffle {
+            0 => {       //No shuffle later
                 self.narrow(data_ptr)
             },
-            false => {      //Shuffle later
+            1 => {      //Shuffle write
                 self.shuffle(data_ptr)
             },
-        } 
+            _ => panic!("Invalid is_shuffle")
+        }
     }
 
     fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {

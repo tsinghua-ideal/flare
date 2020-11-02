@@ -1,7 +1,6 @@
-use std::cmp;
 use std::boxed::Box;
 use std::marker::PhantomData;
-use std::mem::{drop, forget};
+use std::mem::forget;
 use std::sync::{Arc, SgxMutex, Weak};
 use std::time::{Duration, Instant};
 use std::untrusted::time::InstantEx;
@@ -110,13 +109,14 @@ where
     }
 
     fn compute_start(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-        match is_shuffle == 0 {  //TODO maybe need to check if shuf_dep not in dep
-            true => {       //No shuffle later
+        match is_shuffle {
+            0 => {       //No shuffle later
                 self.narrow(data_ptr)
             },
-            false => {      //Shuffle later
+            1 => {      //Shuffle write
                 self.shuffle(data_ptr)
             },
+            _ => panic!("Invalid is_shuffle")
         }
     }
 
