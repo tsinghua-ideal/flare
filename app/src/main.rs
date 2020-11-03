@@ -47,7 +47,7 @@ fn main() -> Result<()> {
                 buf0.push(i.0);
                 buf1.push(i.1);
             }
-            //in case of group_by
+            /// in case of group_by
             {
                 let mut buf0_tmp = buf0.clone();
                 buf0_tmp.dedup();
@@ -56,7 +56,7 @@ fn main() -> Result<()> {
                 }
             }
             let enc0 = encrypt::<>(bincode::serialize(&buf0).unwrap().as_ref());
-            //let enc1 = encrypt(bincode::serialize(buf1.as_ref()).unwrap().as_ref());
+            //let enc1 = encrypt(bincode::serialize(&buf1).unwrap().as_ref());
             let buf0 = divide_ct::<>(enc0, len);
             //let buf1 = divide_ct::<>(enc1, len);
             buf0.into_iter().zip(buf1.into_iter()).collect::<Vec<_>>() 
@@ -73,6 +73,7 @@ fn main() -> Result<()> {
             let mut buf0: Vec<i32> = bincode::deserialize(decrypt::<>(enc0.as_ref()).as_ref()).unwrap(); 
             //let enc1 = recover_ct::<>(buf1);
             //let buf1: Vec<i32> = bincode::deserialize(decrypt::<>(enc1.as_ref()).as_ref()).unwrap(); 
+            /// in case of group_by
             if buf0.len() == 1 {
                 buf0.resize(buf1.len(), buf0[0].clone());
             }
@@ -135,7 +136,55 @@ fn main() -> Result<()> {
         (3, ("E".to_string(), "F".to_string())),
         (4, ("G".to_string(), "H".to_string())),
     ];
-    let rdd0 = sc.parallelize(vec![], col0,  Fn!(|i| i), Fn!(|i| i), 1);
+    //encrypt first for carrying out experiment
+    let rdd0_fe = Fn!(|vp: Vec<(i32, (String, String))>| -> Vec<(Option<Vec<u8>>, Option<Vec<u8>>)>{
+        let len = vp.len();
+        let mut buf0 = Vec::with_capacity(len);
+        let mut buf1 = Vec::with_capacity(len);
+        for i in vp {
+            buf0.push(i.0);
+            buf1.push(i.1);
+        }
+        /// in case of group_by
+        {
+            let mut buf0_tmp = buf0.clone();
+            buf0_tmp.dedup();
+            if buf0_tmp.len() == 1 {
+                buf0 = buf0_tmp;
+            }
+        }
+        let enc0 = encrypt::<>(bincode::serialize(&buf0).unwrap().as_ref());
+        let enc1 = encrypt(bincode::serialize(&buf1).unwrap().as_ref());
+        let buf0 = divide_ct::<>(enc0, len);
+        let buf1 = divide_ct::<>(enc1, len);
+        buf0.into_iter().zip(buf1.into_iter()).collect::<Vec<_>>() 
+    });
+
+    let rdd0_fd = Fn!(|ve: Vec<(Option<Vec<u8>>, Option<Vec<u8>>)>| -> Vec<(i32, (String, String))> {
+        let len = ve.len();
+        let mut buf0 = Vec::with_capacity(len*4); //common length 
+        let mut buf1 = Vec::with_capacity(len*4); 
+        for i in ve {
+            buf0.push(i.0);
+            buf1.push(i.1);
+        }
+        let enc0 = recover_ct::<>(buf0);
+        let mut buf0: Vec<i32> = bincode::deserialize(decrypt::<>(enc0.as_ref()).as_ref()).unwrap(); 
+        let enc1 = recover_ct::<>(buf1);
+        let buf1: Vec<(String, String)> = bincode::deserialize(decrypt::<>(enc1.as_ref()).as_ref()).unwrap(); 
+        /// in case of group_by
+        if buf0.len() == 1 {
+            buf0.resize(buf1.len(), buf0[0].clone());
+        }
+        buf0.into_iter().zip(buf1.into_iter()).collect::<Vec<_>>() 
+    });
+    let col0_enc = rdd0_fe(col0);
+
+    let rdd0 = sc.parallelize(vec![], 
+        col0_enc,
+        rdd0_fe,
+        rdd0_fd,
+        1);
     let col1 = vec![
         (1, "A1".to_string()),
         (1, "A2".to_string()),
@@ -144,10 +193,59 @@ fn main() -> Result<()> {
         (3, "C1".to_string()),
         (3, "C2".to_string()),
     ];
-    let rdd1 = sc.parallelize(vec![], col1,  Fn!(|i| i), Fn!(|i| i), 1);
+
+    let rdd1_fe = Fn!(|vp: Vec<(i32, String)>| -> Vec<(Option<Vec<u8>>, Option<Vec<u8>>)>{
+        let len = vp.len();
+        let mut buf0 = Vec::with_capacity(len);
+        let mut buf1 = Vec::with_capacity(len);
+        for i in vp {
+            buf0.push(i.0);
+            buf1.push(i.1);
+        }
+        /// in case of group_by
+        {
+            let mut buf0_tmp = buf0.clone();
+            buf0_tmp.dedup();
+            if buf0_tmp.len() == 1 {
+                buf0 = buf0_tmp;
+            }
+        }
+        let enc0 = encrypt::<>(bincode::serialize(&buf0).unwrap().as_ref());
+        let enc1 = encrypt(bincode::serialize(&buf1).unwrap().as_ref());
+        let buf0 = divide_ct::<>(enc0, len);
+        let buf1 = divide_ct::<>(enc1, len);
+        buf0.into_iter().zip(buf1.into_iter()).collect::<Vec<_>>() 
+    });
+
+    let rdd1_fd = Fn!(|ve: Vec<(Option<Vec<u8>>, Option<Vec<u8>>)>| -> Vec<(i32, String)> {
+        let len = ve.len();
+        let mut buf0 = Vec::with_capacity(len*4); //common length 
+        let mut buf1 = Vec::with_capacity(len*4); 
+        for i in ve {
+            buf0.push(i.0);
+            buf1.push(i.1);
+        }
+        let enc0 = recover_ct::<>(buf0);
+        let mut buf0: Vec<i32> = bincode::deserialize(decrypt::<>(enc0.as_ref()).as_ref()).unwrap(); 
+        let enc1 = recover_ct::<>(buf1);
+        let buf1: Vec<String> = bincode::deserialize(decrypt::<>(enc1.as_ref()).as_ref()).unwrap(); 
+        /// in case of group_by
+        if buf0.len() == 1 {
+            buf0.resize(buf1.len(), buf0[0].clone());
+        }
+        buf0.into_iter().zip(buf1.into_iter()).collect::<Vec<_>>() 
+    });
+
+    let col1_enc = rdd1_fe(col1);
+
+    let rdd1 = sc.parallelize(vec![], 
+        col1_enc,  
+        rdd1_fe,
+        rdd1_fd,
+        1);
     let rdd2 = rdd1.join(rdd0.clone(), 1);
     let res = rdd2.secure_collect().unwrap();
-    println!("result: {:?}", res);
+    println!("result: {:?}", rdd2.get_fd()(res));
     
 
     /* reduce */

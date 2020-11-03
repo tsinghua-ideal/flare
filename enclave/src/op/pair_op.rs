@@ -12,7 +12,7 @@ pub trait Pair<K, V, KE, VE>: OpE<Item = (K, V), ItemE = (KE, VE)> + Send + Sync
 where 
     K: Data + Eq + Hash, 
     V: Data, 
-    KE: Data, 
+    KE: Data + Eq + Hash, 
     VE: Data,
 {
     fn combine_by_key<KE2: Data, C: Data, CE: Data, FE, FD>(
@@ -167,7 +167,8 @@ where
         &self,
         other: SerArc<dyn OpE<Item = (K, W), ItemE = (KE, WE)>>,
         num_splits: usize,
-    ) -> SerArc<dyn OpE<Item = (K, (V, W)), ItemE = (KE, (VE, WE))>> {
+    ) -> SerArc<dyn OpE<Item = (K, (V, W)), ItemE = (KE, (VE, WE))>>   
+    {
         let f = |v: (Vec<V>, Vec<W>)| {
             let (vs, ws) = v;
             let combine = vs
@@ -227,7 +228,8 @@ where
         &self,
         other: SerArc<dyn OpE<Item = (K, W), ItemE = (KE, WE)>>,
         partitioner: Box<dyn Partitioner>,
-    ) -> SerArc<dyn OpE<Item = (K, (Vec<V>, Vec<W>)), ItemE = (KE, (Vec<VE>, Vec<WE>))>> {
+    ) -> SerArc<dyn OpE<Item = (K, (Vec<V>, Vec<W>)), ItemE = (KE, (Vec<VE>, Vec<WE>))>> 
+    {
         let fe0 = self.get_fe();
         let fd0 = self.get_fd();
         let fe1 = other.get_fe();
@@ -283,7 +285,7 @@ where
     T: OpE<Item = (K, V), ItemE = (KE, VE)>,
     K: Data + Eq + Hash, 
     V: Data, 
-    KE: Data, 
+    KE: Data + Eq + Hash, 
     VE: Data,
 {}
 
@@ -292,7 +294,7 @@ where
     T: OpE<Item = (K, V), ItemE = (KE, VE)>,
     K: Data + Eq + Hash, 
     V: Data, 
-    KE: Data, 
+    KE: Data + Eq + Hash, 
     VE: Data,
 {}
 
