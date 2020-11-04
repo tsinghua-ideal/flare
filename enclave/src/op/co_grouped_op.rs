@@ -290,7 +290,7 @@ where
                             let ptr_per_subpart = *block_ptr as *mut u8 as *mut Vec<(KE, VE)>;
                             let data0_enc  = unsafe{ Box::from_raw(ptr_per_subpart) };
                             // batch decrypt
-                            let data0 = self.op0.get_fd()(*data0_enc.clone());
+                            let data0 = self.op0.batch_decrypt(&data0_enc);
                             // individual encrypt
                             let mut data0_t = Vec::with_capacity(data0.len()); 
                             for i in data0 {
@@ -322,7 +322,7 @@ where
                             let ptr_per_subpart = *block_ptr as *mut u8 as *mut Vec<(KE, WE)>;
                             let data1_enc  = unsafe{ Box::from_raw(ptr_per_subpart) };
                             // batch decrypt
-                            let data1 = self.op1.get_fd()(*data1_enc.clone());
+                            let data1 = self.op1.batch_decrypt(&data1_enc);
                             // individual encrypt
                             let mut data1_t = Vec::with_capacity(data1.len()); 
                             for i in data1 {
@@ -359,6 +359,7 @@ where
     }
 
     fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
+        //encryption block size: 1
         let agg = unsafe{ Box::from_raw(data_ptr as *mut Vec<(KE, (Vec<Vec<VE>>, Vec<Vec<WE>>))>) };
         let data = agg.iter()
             .map(|(ke, (vve, vwe))| {
@@ -386,6 +387,7 @@ where
                 (k, (v, w))
             }).collect::<Vec<_>>();
         forget(agg);
+        //println!("data = {:?}", data);
         Box::new(data.into_iter())
     }
 }

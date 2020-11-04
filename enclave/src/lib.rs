@@ -151,7 +151,7 @@ lazy_static! {
         */
 
         /* join */
-        
+        /*
         let rdd0_fe = Box::new(|vp: Vec<(i32, (String, String))>| -> Vec<(Option<Vec<u8>>, Option<Vec<u8>>)>{
             let len = vp.len();
             let mut buf0 = Vec::with_capacity(len);
@@ -160,7 +160,7 @@ lazy_static! {
                 buf0.push(i.0);
                 buf1.push(i.1);
             }
-            /// in case of group_by
+            // in case of group_by
             {
                 let mut buf0_tmp = buf0.clone();
                 buf0_tmp.dedup();
@@ -187,7 +187,7 @@ lazy_static! {
             let mut buf0: Vec<i32> = bincode::deserialize(decrypt::<>(enc0.as_ref()).as_ref()).unwrap(); 
             let enc1 = recover_ct::<>(buf1);
             let buf1: Vec<(String, String)> = bincode::deserialize(decrypt::<>(enc1.as_ref()).as_ref()).unwrap(); 
-            /// in case of group_by
+            // in case of group_by
             if buf0.len() == 1 {
                 buf0.resize(buf1.len(), buf0[0].clone());
             }
@@ -204,7 +204,7 @@ lazy_static! {
                 buf0.push(i.0);
                 buf1.push(i.1);
             }
-            /// in case of group_by
+            // in case of group_by
             {
                 let mut buf0_tmp = buf0.clone();
                 buf0_tmp.dedup();
@@ -231,7 +231,7 @@ lazy_static! {
             let mut buf0: Vec<i32> = bincode::deserialize(decrypt::<>(enc0.as_ref()).as_ref()).unwrap(); 
             let enc1 = recover_ct::<>(buf1);
             let buf1: Vec<String> = bincode::deserialize(decrypt::<>(enc1.as_ref()).as_ref()).unwrap(); 
-            /// in case of group_by
+            // in case of group_by
             if buf0.len() == 1 {
                 buf0.resize(buf1.len(), buf0[0].clone());
             }
@@ -241,8 +241,55 @@ lazy_static! {
         let rdd1 = sc.make_op(rdd1_fe, rdd1_fd);
         let rdd2 = rdd1.join(rdd0.clone(), 1);
         rdd2.get_id()
-        
+        */
 
+        let fe = Box::new(|vp: Vec<(i32, i32)>| -> Vec<(Option<Vec<u8>>, Option<Vec<u8>>)>{
+            let len = vp.len();
+            let mut buf0 = Vec::with_capacity(len);
+            let mut buf1 = Vec::with_capacity(len);
+            for i in vp {
+                buf0.push(i.0);
+                buf1.push(i.1);
+            }
+            // in case of group_by
+            {
+                let mut buf0_tmp = buf0.clone();
+                buf0_tmp.dedup();
+                if buf0_tmp.len() == 1 {
+                    buf0 = buf0_tmp;
+                }
+            }
+            let enc0 = encrypt::<>(bincode::serialize(&buf0).unwrap().as_ref());
+            let enc1 = encrypt::<>(bincode::serialize(&buf1).unwrap().as_ref());
+            let buf0 = divide_ct::<>(enc0, len);
+            let buf1 = divide_ct::<>(enc1, len);
+            buf0.into_iter().zip(buf1.into_iter()).collect::<Vec<_>>() 
+        });
+
+        let fd = Box::new(|ve: Vec<(Option<Vec<u8>>, Option<Vec<u8>>)>| -> Vec<(i32, i32)> {
+            let len = ve.len();
+            let mut buf0 = Vec::with_capacity(len*4); //common length 
+            let mut buf1 = Vec::with_capacity(len*4); 
+            for i in ve {
+                buf0.push(i.0);
+                buf1.push(i.1);
+            }
+            let enc0 = recover_ct::<>(buf0);
+            let mut buf0: Vec<i32> = bincode::deserialize(decrypt::<>(enc0.as_ref()).as_ref()).unwrap(); 
+            let enc1 = recover_ct::<>(buf1);
+            let buf1: Vec<i32> = bincode::deserialize(decrypt::<>(enc1.as_ref()).as_ref()).unwrap(); 
+            // in case of group_by
+            if buf0.len() == 1 {
+                buf0.resize(buf1.len(), buf0[0].clone());
+            }
+            buf0.into_iter().zip(buf1.into_iter()).collect::<Vec<_>>() 
+        });
+
+        let rdd0 = sc.make_op(fe.clone(), fd.clone());
+        let rdd1 = sc.make_op(fe.clone(), fd.clone());
+        let rdd2 = rdd1.join(rdd0.clone(), 1);
+        rdd2.get_id()
+        
         /* reduce */
         /*
         let rdd0 = sc.make_op(Box::new(|i: Vec<i32>| i), Box::new(|i: Vec<i32>| i));

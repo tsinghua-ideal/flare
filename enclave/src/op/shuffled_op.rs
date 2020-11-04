@@ -154,7 +154,6 @@ where
     }
 
     fn compute_start(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-        let next_deps = self.next_deps.lock().unwrap();
         match is_shuffle {
             0 => {      //No shuffle
                 self.narrow(data_ptr)
@@ -166,6 +165,7 @@ where
                 let mut combiners: HashMap<K, Option<C>> = HashMap::new();
                 let aggregator = self.aggregator.clone(); 
                 let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<(KE, CE)>) };
+                // encryption block size: 1
                 let data = self.get_fd()(*(data_enc.clone())); 
                 forget(data_enc);
                 for (k, c) in data.into_iter() {
@@ -179,6 +179,7 @@ where
                     }
                 }
                 let result = combiners.into_iter().map(|(k, v)| (k, v.unwrap())).collect::<Vec<Self::Item>>();
+                // encryption block size: 1
                 let result_enc = self.get_fe()(result); 
                 crate::ALLOCATOR.lock().set_switch(true);
                 let result = result_enc.clone(); // encrypt
@@ -192,6 +193,7 @@ where
 
     fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
         let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<(KE, CE)>) };
+        // for group_by, self.fd naturally encrypt/decrypt per row, that is, encryption block size = 1
         let data = self.get_fd()(*(data_enc.clone()));
         forget(data_enc);
         Box::new(data.into_iter())

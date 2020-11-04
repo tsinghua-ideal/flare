@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::sync::Arc;
+use std::time::Instant;
+use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
 use crate::basic::{AnyData, Data, Func};
@@ -166,12 +168,15 @@ where
                 bucket.insert(k, aggregator.create_combiner.call((v,)));
             }
         }
+
+        let now = Instant::now();
         let result = buckets.into_iter()
             .map(|bucket| {
                 (self.fe)(bucket.into_iter().collect::<Vec<_>>())    //may need to sub-partition
             })
             .collect::<Vec<_>>();  //HashMap to Vec
-        println!("result = {:?}", result);
+        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+        println!("in enclave encrypt {:?} s", dur); 
 
         crate::ALLOCATOR.lock().set_switch(true);
         let result_enc = result.clone();

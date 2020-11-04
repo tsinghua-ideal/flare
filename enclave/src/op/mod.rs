@@ -2,8 +2,10 @@ use std::boxed::Box;
 use std::collections::{btree_map::BTreeMap, HashSet};
 use std::cmp::{Ordering, Reverse};
 use std::vec::Vec;
+use std::time::Instant;
+use std::untrusted::time::InstantEx;
 use std::sync::{
-    atomic::{self, AtomicPtr, AtomicUsize},
+    atomic::{self, AtomicUsize},
     Arc, SgxMutex, Weak,
 };
 
@@ -32,6 +34,8 @@ mod reduced_op;
 pub use reduced_op::*;
 mod shuffled_op;
 pub use shuffled_op::*;
+
+pub const MAX_ENC_BL: usize = 1000;
 
 pub fn map_id(id: usize) -> usize {
     let lp_bd = unsafe{ lp_boundary.load(atomic::Ordering::Relaxed).as_ref()}.unwrap();
@@ -90,7 +94,14 @@ pub fn decrypt(ct: &[u8]) -> Vec<u8> {
 
 #[inline(always)]
 pub fn recover_ct(ct_div: Vec<Option<Vec<u8>>>) -> Vec<u8> {
-    ct_div[0].clone().unwrap()
+    if ct_div.len() > 0 {
+        match ct_div[0].clone() {
+            Some(s) => return s,
+            None => panic!("invalid ciphertext vector"),
+        }
+    } else {
+        return vec![]
+    }
 }
 
 #[derive(Default)]
@@ -268,9 +279,42 @@ pub trait OpE: Op {
 
     fn get_fd(&self) -> Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>>;
 
+    fn batch_encrypt(&self, data: &Vec<Self::Item>) -> Vec<Self::ItemE> {
+        let len = data.len();
+        let mut data_enc = Vec::with_capacity(len);
+        let mut cur = 0;
+        while cur < len {
+            let next = match cur + MAX_ENC_BL > len {
+                true => len,
+                false => cur + MAX_ENC_BL ,
+            };
+            data_enc.append(&mut self.get_fe()((data[cur..next]).to_vec())); //need to check security
+            cur = next;
+        }
+        data_enc
+    }
+
+    fn batch_decrypt(&self, data_enc: &Vec<Self::ItemE>) -> Vec<Self::Item> {
+        let len = data_enc.len();
+        let mut data = Vec::with_capacity(len);
+        let mut cur = 0;
+        while cur < len {
+            let next = match cur + MAX_ENC_BL > len {
+                true => len,
+                false => cur + MAX_ENC_BL ,
+            };
+            data.append(&mut self.get_fd()((data_enc[cur..next]).to_vec())); //need to check security
+            cur = next;
+        }
+        data
+    }
+
     fn narrow(&self, data_ptr: *mut u8) -> *mut u8 {
         let result = self.compute(data_ptr).collect::<Vec<Self::Item>>();
-        let result_enc = self.get_fe()(result.clone()); 
+        let now = Instant::now();
+        let result_enc = self.batch_encrypt(&result); 
+        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+        println!("in enclave encrypt {:?} s", dur);   
         //println!("op_id = {:?}, \n result = {:?}, \n result_enc = {:?}", self.get_id(), result, result_enc);
         crate::ALLOCATOR.lock().set_switch(true);
         let result = result_enc.clone(); 
@@ -282,7 +326,10 @@ pub trait OpE: Op {
     fn shuffle(&self, data_ptr: *mut u8) -> *mut u8 {
         let next_deps = self.get_next_deps().lock().unwrap().clone();
         let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<Self::ItemE>) };
-        let data = self.get_fd()(*(data_enc.clone())); //need to check security
+        let now = Instant::now();
+        let data = self.batch_decrypt(&data_enc);
+        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+        println!("in enclave decrypt {:?} s", dur);   
         crate::ALLOCATOR.lock().set_switch(true);
         drop(data_enc);
         crate::ALLOCATOR.lock().set_switch(false);
@@ -293,6 +340,7 @@ pub trait OpE: Op {
         };
         shuf_dep.do_shuffle_task(iter)
     }
+
     /// Return a new RDD containing only the elements that satisfy a predicate.
     /*
     fn filter<F>(&self, predicate: F) -> SerArc<dyn Op<Item = Self::Item>>

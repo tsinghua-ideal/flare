@@ -2,7 +2,7 @@ use std::boxed::Box;
 use std::marker::PhantomData;
 use std::mem::forget;
 use std::sync::{Arc, SgxMutex, Weak};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::op::{Context, Op, OpE, OpBase, OpVals};
@@ -123,7 +123,7 @@ where
     fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
         let now = Instant::now();
         let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<TE>) }; 
-        let data = self.get_fd()(*(data_enc.clone())); //need to check security
+        let data = self.batch_decrypt(&data_enc);
         forget(data_enc);
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("in enclave decrypt {:?} s", dur);    

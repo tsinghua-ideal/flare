@@ -1,14 +1,6 @@
 use core::alloc::{
-    AllocRef,
-    AllocErr,
     GlobalAlloc,
     Layout,
-};
-use core::ptr;
-use core::sync::atomic::{
-    AtomicUsize,
-    AtomicPtr,
-    Ordering
 };
 use sgx_alloc::System;
 use sgx_types::*;

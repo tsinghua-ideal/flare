@@ -124,7 +124,7 @@ where
 
     fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
         let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<TE>) };
-        let data = self.get_fd()(*(data_enc.clone())); //need to check security
+        let data = self.batch_decrypt(&data_enc); //need to check security
         forget(data_enc);
         Box::new((self.f)(Box::new(data.into_iter())).into_iter())        
     }
