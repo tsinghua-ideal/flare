@@ -303,28 +303,37 @@ pub trait OpE: Op {
                 true => len,
                 false => cur + MAX_ENC_BL ,
             };
-            data.append(&mut self.get_fd()((data_enc[cur..next]).to_vec())); //need to check security
-            cur = next;
+            let mut pt = self.get_fd()((data_enc[cur..next]).to_vec());
+            cur += pt.len();
+            data.append(&mut pt); //need to check security
         }
         data
     }
 
     fn narrow(&self, data_ptr: *mut u8) -> *mut u8 {
         let result = self.compute(data_ptr).collect::<Vec<Self::Item>>();
-        let now = Instant::now();
-        let result_enc = self.batch_encrypt(&result); 
-        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("in enclave encrypt {:?} s", dur);   
-        //println!("op_id = {:?}, \n result = {:?}, \n result_enc = {:?}", self.get_id(), result, result_enc);
-        crate::ALLOCATOR.lock().set_switch(true);
-        let result = result_enc.clone(); 
-        let result_ptr = Box::into_raw(Box::new(result)) as *mut u8;
-        crate::ALLOCATOR.lock().set_switch(false);
-        result_ptr
+        let need_encryption = self.get_next_deps().lock().unwrap().is_empty();
+        if need_encryption {
+            let now = Instant::now();
+            let result_enc = self.batch_encrypt(&result); 
+            let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+            println!("in enclave encrypt {:?} s", dur);  
+            let now = Instant::now();
+            crate::ALLOCATOR.lock().set_switch(true);
+            let result = result_enc.clone(); 
+            let result_ptr = Box::into_raw(Box::new(result)) as *mut u8;
+            crate::ALLOCATOR.lock().set_switch(false);
+            let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+            println!("in enclave copy out {:?} s", dur);
+            return result_ptr;  
+        } else {
+            return Box::into_raw(Box::new(result)) as *mut u8;
+        }
     } 
 
     fn shuffle(&self, data_ptr: *mut u8) -> *mut u8 {
         let next_deps = self.get_next_deps().lock().unwrap().clone();
+        /*
         let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<Self::ItemE>) };
         let now = Instant::now();
         let data = self.batch_decrypt(&data_enc);
@@ -333,6 +342,9 @@ pub trait OpE: Op {
         crate::ALLOCATOR.lock().set_switch(true);
         drop(data_enc);
         crate::ALLOCATOR.lock().set_switch(false);
+        */
+        //The data of last rdd is not encrypted
+        let data = unsafe{ Box::from_raw(data_ptr as *mut Vec<Self::Item>) };
         let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
         let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
             Dependency::ShuffleDependency(shuf_dep) => shuf_dep,

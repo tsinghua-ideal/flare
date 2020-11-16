@@ -178,10 +178,14 @@ where
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("in enclave encrypt {:?} s", dur); 
 
+        let now = Instant::now();
         crate::ALLOCATOR.lock().set_switch(true);
         let result_enc = result.clone();
         let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
         crate::ALLOCATOR.lock().set_switch(false);
+        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+        println!("in enclave copy out {:?} s", dur); 
+
         result_ptr
     }
     

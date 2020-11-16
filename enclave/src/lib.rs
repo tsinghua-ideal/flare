@@ -243,6 +243,7 @@ lazy_static! {
         rdd2.get_id()
         */
 
+        
         let fe = Box::new(|vp: Vec<(i32, i32)>| -> Vec<(Option<Vec<u8>>, Option<Vec<u8>>)>{
             let len = vp.len();
             let mut buf0 = Vec::with_capacity(len);
@@ -290,12 +291,13 @@ lazy_static! {
         let rdd2 = rdd1.join(rdd0.clone(), 1);
         rdd2.get_id()
         
+
         /* reduce */
         /*
         let rdd0 = sc.make_op(Box::new(|i: Vec<i32>| i), Box::new(|i: Vec<i32>| i));
         let rdd1 = rdd0.reduce(Box::new(|x, y| x+y));
         rdd1.get_id()
-        */
+        */        
 
         /* linear regression */
         /*

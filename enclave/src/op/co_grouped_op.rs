@@ -360,6 +360,7 @@ where
 
     fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
         //encryption block size: 1
+        let now = Instant::now();
         let agg = unsafe{ Box::from_raw(data_ptr as *mut Vec<(KE, (Vec<Vec<VE>>, Vec<Vec<WE>>))>) };
         let data = agg.iter()
             .map(|(ke, (vve, vwe))| {
@@ -387,6 +388,8 @@ where
                 (k, (v, w))
             }).collect::<Vec<_>>();
         forget(agg);
+        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+        println!("in enclave decrypt {:?} s", dur);
         //println!("data = {:?}", data);
         Box::new(data.into_iter())
     }

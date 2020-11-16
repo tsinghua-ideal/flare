@@ -51,11 +51,13 @@ where
     pub(crate) fn new(prev: Arc<dyn Op<Item = T>>, f: F, fe: FE, fd: FD) -> Self {
         let mut prev_ids = prev.get_prev_ids();
         prev_ids.insert(prev.get_id()); 
+        /*
         prev.get_next_deps().lock().unwrap().push(
             Dependency::NarrowDependency(
                 Arc::new(OneToOneDependency::new(prev_ids))
             )
         );
+        */
         Reduced {
             prev,
             f,

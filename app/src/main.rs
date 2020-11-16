@@ -248,6 +248,7 @@ fn main() -> Result<()> {
     println!("result: {:?}", rdd2.get_fd()(res));
     */
 
+    
     let sc = Context::new()?;
     let len = 1_0000;
     let mut vec0: Vec<(i32, i32)> = Vec::with_capacity(len);
@@ -328,9 +329,10 @@ fn main() -> Result<()> {
     let rdd0 = sc.parallelize(vec![], vec0_enc, fe.clone(), fd.clone(), 1);
     let rdd1 = sc.parallelize(vec![], vec1_enc, fe.clone(), fd.clone(), 1);
     let rdd2 = rdd1.join(rdd0.clone(), 1);
-    let res = rdd2.secure_collect().unwrap();
-    //println!("result: {:?}", rdd2.batch_decrypt(&res).len());
-    //println!("result: {:?}", rdd2.batch_decrypt(&res));
+    let _res = rdd2.secure_collect().unwrap();
+    println!("result: {:?}", rdd2.batch_decrypt(&_res).len());
+    //println!("result: {:?}", rdd2.batch_decrypt(&_res));
+    
 
     /* reduce */
     /*
