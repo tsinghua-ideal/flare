@@ -17,7 +17,6 @@
 #![crate_name = "sparkenclave"]
 #![crate_type = "staticlib"]
 
-#![feature(allocator_api)]
 #![feature(coerce_unsized)]
 #![feature(fn_traits)]
 #![feature(specialization)]
@@ -48,9 +47,7 @@ use serde_derive::{Deserialize, Serialize};
 
 use sgx_types::*;
 use sgx_tcrypto::*;
-use sgx_rand::Rng;
 use std::boxed::Box;
-use std::cell::Cell;
 use std::cmp::min;
 use std::collections::{btree_map::BTreeMap, HashMap};
 use std::string::String;
@@ -61,19 +58,14 @@ use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 
 mod aggregator;
-mod allocator;
-use allocator::{Allocator, Locked};
 mod atomicptr_wrapper;
 use atomicptr_wrapper::AtomicPtrWrapper;
 mod basic;
 mod dependency;
 mod partitioner;
 mod op;
-
-use crate::op::{Context, Op, OpE, OpBase, Pair, encrypt, decrypt, divide_ct, recover_ct, map_id, load_opmap};
-
-#[global_allocator]
-static ALLOCATOR: Locked<Allocator> = Locked::new(Allocator::new());
+use op::*;
+mod serialization_free;
 
 struct Captured {
     w: f32,
@@ -356,6 +348,28 @@ pub extern "C" fn secure_executing(id: usize,
     println!("in enclave {:?} s", dur);
 
     return result_ptr as usize
+}
+
+#[no_mangle]
+pub extern "C" fn get_sketch(id: usize, 
+                            is_shuffle: u8, 
+                            p_buf: *mut u8, 
+                            p_data_enc: *mut u8)
+{
+    let mapped_id = map_id(id);
+    let op = load_opmap().get(&mapped_id).unwrap();
+    op.build_enc_data_sketch(p_buf, p_data_enc, is_shuffle);
+}
+
+#[no_mangle]
+pub extern "C" fn clone_out(id: usize, 
+                            is_shuffle: u8,
+                            p_out: usize, 
+                            p_data_enc: *mut u8)
+{
+    let mapped_id = map_id(id);
+    let op = load_opmap().get(&mapped_id).unwrap();
+    op.clone_enc_data_out(p_out, p_data_enc, is_shuffle);
 }
 
 #[no_mangle]

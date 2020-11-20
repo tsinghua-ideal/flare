@@ -21,8 +21,6 @@ use vega::*;
 use rand::Rng;
 use serde_derive::{Deserialize, Serialize};
 
-mod allocator;
-
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Point {
     x: f32,

@@ -169,6 +169,8 @@ impl OpVals {
 }
 
 pub trait OpBase: Send + Sync {
+    fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8);
+    fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8);
     fn get_id(&self) -> usize;
     fn get_context(&self) -> Arc<Context>;
     fn get_deps(&self) -> Vec<Dependency>;
@@ -210,6 +212,14 @@ impl Ord for dyn OpBase {
 }
 
 impl<I: OpE + ?Sized> OpBase for SerArc<I> {
+    //need to avoid freeing the encrypted data for subsequent "clone_enc_data_out"
+    fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
+        (**self).build_enc_data_sketch(p_buf, p_data_enc, is_shuffle);
+    }
+    //need to free the encrypted data. But how to deal with task failure?
+    fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8) {
+        (**self).clone_enc_data_out(p_out, p_data_enc, is_shuffle);
+    }
     fn get_id(&self) -> usize {
         (**self).get_op_base().get_id()
     }
@@ -317,14 +327,14 @@ pub trait OpE: Op {
             let now = Instant::now();
             let result_enc = self.batch_encrypt(&result); 
             let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-            println!("in enclave encrypt {:?} s", dur);  
-            let now = Instant::now();
+            println!("in enclave encrypt {:?} s", dur); 
+            /* 
             crate::ALLOCATOR.lock().set_switch(true);
             let result = result_enc.clone(); 
             let result_ptr = Box::into_raw(Box::new(result)) as *mut u8;
             crate::ALLOCATOR.lock().set_switch(false);
-            let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-            println!("in enclave copy out {:?} s", dur);
+            */
+            let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
             return result_ptr;  
         } else {
             return Box::into_raw(Box::new(result)) as *mut u8;

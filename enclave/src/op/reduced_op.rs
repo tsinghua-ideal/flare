@@ -4,9 +4,10 @@ use std::sync::{Arc, SgxMutex};
 use std::time::{Duration, Instant};
 use std::untrusted::time::InstantEx;
 use std::vec::Vec;
-use crate::op::{Context, Op, OpE, OpBase};
-use crate::dependency::{Dependency, OneToOneDependency};
 use crate::basic::{Data, Func, SerFunc};
+use crate::dependency::{Dependency, OneToOneDependency};
+use crate::op::{Context, Op, OpE, OpBase};
+use crate::serialization_free::{Construct, Idx, SizeBuf};
 
 pub struct Reduced<T, TE, F, FE, FD>
 where
@@ -75,6 +76,40 @@ where
     FE: SerFunc(Vec<T>) -> Vec<TE>,
     FD: SerFunc(Vec<TE>) -> Vec<T>,
 {
+    fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
+        
+        match is_shuffle {
+            3 => {
+                let mut buf = unsafe{ Box::from_raw(p_buf as *mut SizeBuf) };
+                let mut idx = Idx::new();
+                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<TE>) };
+                data_enc.send(&mut buf, &mut idx);
+                forget(data_enc);
+                forget(buf);
+            }, 
+            _ => {
+                self.prev.build_enc_data_sketch(p_buf, p_data_enc, is_shuffle);
+            },
+        } 
+
+        
+    }
+
+    fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8) {
+        match is_shuffle {
+            3 => {
+                let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<TE>) };
+                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<TE>) };
+                v_out.clone_in_place(&data_enc);
+                forget(v_out);
+            }, 
+            _ => {
+                self.prev.clone_enc_data_out(p_out, p_data_enc, is_shuffle);
+            },
+        } 
+        
+    }
+
     fn get_id(&self) -> usize {
         self.prev.get_id()
     }

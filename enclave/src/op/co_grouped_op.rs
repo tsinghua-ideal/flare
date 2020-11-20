@@ -6,13 +6,14 @@ use std::sync::{Arc, SgxMutex};
 use std::vec::Vec;
 
 use crate::aggregator::Aggregator;
-use crate::basic::{Arc as SerArc, AnyData, Data};
-use crate::op::*;
+use crate::basic::{AnyData, Data, Func, SerFunc };
 use crate::dependency::{
     Dependency, NarrowDependencyTrait, OneToOneDependency, ShuffleDependency,
     ShuffleDependencyTrait,
 };
+use crate::op::*;
 use crate::partitioner::Partitioner;
+use crate::serialization_free::{Construct, Idx, SizeBuf};
 
 #[derive(Clone)]
 pub struct CoGrouped<K, V, W, KE, VE, WE, FE, FD> 
@@ -222,6 +223,105 @@ where
     FE: SerFunc(Vec<(K, (Vec<V>, Vec<W>))>) -> Vec<(KE, (Vec<VE>, Vec<WE>))>, 
     FD: SerFunc(Vec<(KE, (Vec<VE>, Vec<WE>))>) -> Vec<(K, (Vec<V>, Vec<W>))>, 
 {
+    fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
+        let mut buf = unsafe{ Box::from_raw(p_buf as *mut SizeBuf) };
+        match is_shuffle {
+            0 | 2  => {
+                let encrypted = self.get_next_deps().lock().unwrap().is_empty();
+                if encrypted {
+                    let mut idx = Idx::new();
+                    let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<(KE, (Vec<VE>, Vec<WE>))>) };
+                    data_enc.send(&mut buf, &mut idx);
+                    forget(data_enc);
+                } else {
+                    let mut idx = Idx::new();
+                    let data = unsafe{ Box::from_raw(p_data_enc as *mut Vec<(K, (Vec<V>, Vec<W>))>) };
+                    let data_enc = self.batch_encrypt(&data);
+                    data_enc.send(&mut buf, &mut idx);
+                    forget(data);
+                }
+            }, 
+            1 => {
+                let next_deps = self.get_next_deps().lock().unwrap().clone();
+                let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
+                    Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
+                    Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
+                };
+                shuf_dep.send_sketch(&mut buf, p_data_enc);
+            },
+            20 => {
+                let mut idx = Idx::new();
+                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<(KE, Vec<VE>)>) };
+                data_enc.send(&mut buf, &mut idx);
+                println!("buf = {:?}", buf);
+                forget(data_enc);
+            },
+            21 => {
+                let mut idx = Idx::new();
+                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<(KE,  Vec<WE>)>) };
+                data_enc.send(&mut buf, &mut idx);
+                println!("buf = {:?}", buf);
+                forget(data_enc);
+            },
+            22 => {
+                let mut idx = Idx::new();
+                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Vec<usize>>) };
+                data_enc.send(&mut buf, &mut idx);
+                forget(data_enc);
+            },
+            _ => panic!("invalid is_shuffle"),
+        } 
+
+        forget(buf);
+    }
+
+    fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8) {
+        match is_shuffle {
+            0 | 2 => {
+                let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<(KE, (Vec<VE>, Vec<WE>))>) };
+                let encrypted = self.get_next_deps().lock().unwrap().is_empty();
+                if encrypted {
+                    let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<(KE, (Vec<VE>, Vec<WE>))>) };
+                    v_out.clone_in_place(&data_enc);
+                } else {
+                    let data = unsafe{ Box::from_raw(p_data_enc as *mut Vec<(K, (Vec<V>, Vec<W>))>) };
+                    let data_enc = Box::new(self.batch_encrypt(&data));
+                    v_out.clone_in_place(&data_enc);
+                    forget(data); //data may be used later
+                }
+                forget(v_out);
+            }, 
+            1 => {
+                let next_deps = self.get_next_deps().lock().unwrap().clone();
+                let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
+                    Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
+                    Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
+                };
+                shuf_dep.send_enc_data(p_out, p_data_enc);
+            },
+            20 => {
+                let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<(KE, Vec<VE>)>) };
+                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<(KE, Vec<VE>)>) };
+                v_out.clone_in_place(&data_enc);
+                forget(v_out);
+            },
+            21 => {
+                let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<(KE, Vec<WE>)>) };
+                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<(KE, Vec<WE>)>) };
+                v_out.clone_in_place(&data_enc);
+                forget(v_out);
+            },
+            22 => {
+                let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<Vec<usize>>) };
+                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Vec<usize>>) };
+                v_out.clone_in_place(&data_enc);
+                forget(v_out);
+            },
+            _ => panic!("invalid is_shuffle"),
+        } 
+        
+    }
+
     fn get_id(&self) -> usize {
         self.vals.id
     }
@@ -301,11 +401,13 @@ where
                                         .collect::<Vec<_>>()
                                 );
                             }
-                            //copy out
+                            /*
                             crate::ALLOCATOR.lock().set_switch(true);
                             let result = data0_t.clone(); 
                             let result_ptr = Box::into_raw(Box::new(result)) as *mut u8 as usize;
                             crate::ALLOCATOR.lock().set_switch(false);
+                            */
+                            let result_ptr = Box::into_raw(Box::new(data0_t)) as *mut u8 as usize;
                             forget(data0_enc);
                             ptr_per_part.push(result_ptr);
                         }
@@ -333,11 +435,13 @@ where
                                     .collect::<Vec<_>>()
                                 );
                             }
-                            //copy out
+                            /*
                             crate::ALLOCATOR.lock().set_switch(true);
                             let result = data1_t.clone(); 
                             let result_ptr = Box::into_raw(Box::new(result)) as *mut u8 as usize;
                             crate::ALLOCATOR.lock().set_switch(false);
+                            */
+                            let result_ptr = Box::into_raw(Box::new(data1_t)) as *mut u8 as usize;
                             forget(data1_enc);
                             ptr_per_part.push(result_ptr);
                         }
@@ -348,10 +452,13 @@ where
                     },
                 };
                 forget(data);
+                /*
                 crate::ALLOCATOR.lock().set_switch(true);
                 let result = data_t_ptr.clone(); 
                 let result_ptr = Box::into_raw(Box::new(result)) as *mut u8;
                 crate::ALLOCATOR.lock().set_switch(false);
+                */
+                let result_ptr = Box::into_raw(Box::new(data_t_ptr)) as *mut u8;
                 result_ptr
             },
             _ => panic!("Invalid is_shuffle")

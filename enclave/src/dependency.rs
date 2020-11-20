@@ -1,7 +1,7 @@
 use std::boxed::Box;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
-use std::marker::PhantomData;
+use std::mem::forget;
 use std::sync::Arc;
 use std::time::Instant;
 use std::untrusted::time::InstantEx;
@@ -9,6 +9,7 @@ use std::vec::Vec;
 use crate::aggregator::Aggregator;
 use crate::basic::{AnyData, Data, Func};
 use crate::partitioner::Partitioner;
+use crate::serialization_free::{Construct, Idx, SizeBuf};
 use downcast_rs::DowncastSync;
 
 
@@ -86,6 +87,8 @@ impl NarrowDependencyTrait for RangeDependency {
 
 pub trait ShuffleDependencyTrait: DowncastSync + Send + Sync  { 
     fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>) -> *mut u8;
+    fn send_sketch(&self, buf: &mut SizeBuf, p_data_enc: *mut u8);
+    fn send_enc_data(&self, p_out: usize, p_data_enc: *mut u8);
     fn get_prev_ids(&self) -> HashSet<usize>;
 }
 impl_downcast!(sync ShuffleDependencyTrait);
@@ -178,17 +181,32 @@ where
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("in enclave encrypt {:?} s", dur); 
 
-        let now = Instant::now();
+        /*
         crate::ALLOCATOR.lock().set_switch(true);
         let result_enc = result.clone();
         let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
         crate::ALLOCATOR.lock().set_switch(false);
-        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("in enclave copy out {:?} s", dur); 
+        */
+        let result_ptr = Box::into_raw(Box::new(result)) as *mut u8;
 
         result_ptr
     }
+
+    fn send_sketch(&self, buf: &mut SizeBuf, p_data_enc: *mut u8){
+        let mut idx = Idx::new();
+        let buckets_enc = unsafe { Box::from_raw(p_data_enc as *mut Vec<Vec<(KE, CE)>>) };
+        buckets_enc.send(buf, &mut idx);
+        forget(buckets_enc);
+    }
     
+    fn send_enc_data(&self, p_out: usize, p_data_enc: *mut u8) {
+        let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<Vec<(KE, CE)>>) };
+        let buckets_enc = unsafe { Box::from_raw(p_data_enc as *mut Vec<Vec<(KE, CE)>>) };
+        v_out.clone_in_place(&buckets_enc);
+        forget(v_out);
+        //and free encrypted buckets
+    }
+
     fn get_prev_ids(&self) -> HashSet<usize> {
         self.prev_ids.clone()
     }

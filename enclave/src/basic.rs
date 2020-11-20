@@ -5,6 +5,7 @@ use std::{
 pub trait Data:
     Clone
     + any::Any
+    + Default
     + Send
     + Sync
     + fmt::Debug
@@ -17,6 +18,7 @@ pub trait Data:
 impl<
         T: Clone
         + any::Any
+        + Default
         + Send
         + Sync
         + fmt::Debug

@@ -24,18 +24,18 @@ enclave {
         /* define ECALLs here. */
 
         public size_t secure_executing(size_t id, 
-				uint8_t is_shuffle, 
-				[user_check] uint8_t* input, 
-				[user_check] uint8_t* captured_vars);
+                uint8_t is_shuffle, 
+		[user_check] uint8_t* input, 
+		[user_check] uint8_t* captured_vars);
+        public void get_sketch(size_t id,
+                uint8_t is_shuffle,
+                [user_check] uint8_t* p_buf,
+                [user_check] uint8_t* p_data_enc);
+        public void clone_out(size_t id,
+                uint8_t is_shuffle,
+                size_t p_out,
+                [user_check] uint8_t* p_data_enc);
         public size_t pre_touching(uint8_t zero);
-    };
-
-    untrusted {
-        size_t ocall_alloc(size_t size, size_t align);
-        sgx_status_t ocall_dealloc(size_t ptr, size_t size, size_t align);
-        sgx_status_t ocall_print_id(size_t id);
-        sgx_status_t ocall_print_usize(size_t i);
-        sgx_status_t ocall_print_mapper(size_t arr);
     };
 
 };
