@@ -19,6 +19,7 @@
 
 #![feature(coerce_unsized)]
 #![feature(fn_traits)]
+#![feature(map_first_last)]
 #![feature(specialization)]
 #![feature(unboxed_closures)]
 #![feature(unsize)]
@@ -51,7 +52,7 @@ use std::boxed::Box;
 use std::cmp::min;
 use std::collections::{btree_map::BTreeMap, HashMap};
 use std::string::String;
-use std::sync::{atomic::Ordering, Arc, SgxRwLock as RwLock};
+use std::sync::{atomic::Ordering, Arc, SgxMutex as Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use std::untrusted::time::InstantEx;
@@ -72,19 +73,11 @@ struct Captured {
 }
 
 lazy_static! {
+    static ref CAVE: Arc<Mutex<HashMap<u64, usize>>> = Arc::new(Mutex::new(HashMap::new()));
     /// loop boundary: (lower bound after maping, upper bound after mapping, iteration number)
     static ref lp_boundary: AtomicPtrWrapper<Vec<(usize, usize, usize)>> = AtomicPtrWrapper::new(Box::into_raw(Box::new(Vec::new()))); 
     static ref opmap: AtomicPtrWrapper<BTreeMap<usize, Arc<dyn OpBase>>> = AtomicPtrWrapper::new(Box::into_raw(Box::new(BTreeMap::new())));
     static ref sc: Arc<Context> = Context::new();
-    /*
-    static ref w: RwLock<f32> = {
-        // error: TCS policy - bound
-        //let mut rng = sgx_rand::thread_rng();
-        //let mut _w = rng.gen::<f32>();
-        let _w: f32 = 1.0;
-        RwLock::new(_w)
-    };
-    */
     static ref w: AtomicPtrWrapper<f32> = AtomicPtrWrapper::new(Box::into_raw(Box::new(1.0)));  
     static ref final_id: usize = {
         /* map */
@@ -234,7 +227,6 @@ lazy_static! {
         let rdd2 = rdd1.join(rdd0.clone(), 1);
         rdd2.get_id()
         */
-
         
         let fe = Box::new(|vp: Vec<(i32, i32)>| -> Vec<(Option<Vec<u8>>, Option<Vec<u8>>)>{
             let len = vp.len();
@@ -322,7 +314,8 @@ pub struct Point {
 }
 
 #[no_mangle]
-pub extern "C" fn secure_executing(id: usize, 
+pub extern "C" fn secure_executing(id: usize,
+                                   tid: u64,
                                    is_shuffle: u8, 
                                    input: *mut u8, 
                                    captured_vars: *const u8) -> usize 
@@ -343,7 +336,7 @@ pub extern "C" fn secure_executing(id: usize,
     println!("mapped_id = {:?}", mapped_id);
     println!("opmap = {:?}", load_opmap().len());
     let op = load_opmap().get(&mapped_id).unwrap();
-    let result_ptr = op.iterator(input, is_shuffle);
+    let result_ptr = op.iterator(tid, input, is_shuffle);
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("in enclave {:?} s", dur);
 

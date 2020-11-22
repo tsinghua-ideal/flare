@@ -1,9 +1,13 @@
 use std::boxed::Box;
-use std::collections::HashMap;
+use std::cmp::Ordering;
+use std::cmp::Reverse;
+use std::collections::BTreeMap;
 use std::hash::Hash;
 use std::mem::forget;
 use std::sync::{Arc, SgxMutex};
 use std::vec::Vec;
+
+use crate::CAVE;
 use crate::aggregator::Aggregator;
 use crate::basic::{Data, Func, SerFunc};
 use crate::dependency::{Dependency, ShuffleDependency, ShuffleDependencyTrait};
@@ -11,9 +15,10 @@ use crate::op::{Context, Op, OpE, OpBase, OpVals};
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 
+
 pub struct Shuffled<K, V, C, KE, CE, FE, FD>
 where
-    K: Data + Eq + Hash,
+    K: Data + Eq + Hash + Ord,
     V: Data, 
     C: Data,
     KE: Data,
@@ -32,7 +37,7 @@ where
 
 impl<K, V, C, KE, CE, FE, FD> Clone for Shuffled<K, V, C, KE, CE, FE, FD> 
 where 
-    K: Data + Eq + Hash,
+    K: Data + Eq + Hash + Ord,
     V: Data, 
     C: Data,
     KE: Data,
@@ -55,7 +60,7 @@ where
 
 impl<K, V, C, KE, CE, FE, FD> Shuffled<K, V, C, KE, CE, FE, FD> 
 where 
-    K: Data + Eq + Hash,
+    K: Data + Eq + Hash + Ord,
     V: Data, 
     C: Data,
     KE: Data,
@@ -101,7 +106,7 @@ where
 
 impl<K, V, C, KE, CE, FE, FD> OpBase for Shuffled<K, V, C, KE, CE, FE, FD> 
 where 
-    K: Data + Eq + Hash,
+    K: Data + Eq + Hash + Ord,
     V: Data, 
     C: Data,
     KE: Data,
@@ -190,14 +195,14 @@ where
         Some(self.part.clone())
     }
     
-    fn iterator(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-        self.compute_start(data_ptr, is_shuffle)
+    fn iterator(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+        self.compute_start(tid, data_ptr, is_shuffle)
     }
 }
 
 impl<K, V, C, KE, CE, FE, FD> Op for Shuffled<K, V, C, KE, CE, FE, FD>
 where
-    K: Data + Eq + Hash,
+    K: Data + Eq + Hash + Ord,
     V: Data, 
     C: Data,
     KE: Data,
@@ -215,7 +220,7 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+    fn compute_start(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         match is_shuffle {
             0 => {      //No shuffle
                 self.narrow(data_ptr)
@@ -224,32 +229,51 @@ where
                 self.shuffle(data_ptr)
             }
             2 => {      //Shuffle read
-                let mut combiners: HashMap<K, Option<C>> = HashMap::new();
                 let aggregator = self.aggregator.clone(); 
-                let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<(KE, CE)>) };
+                let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<Vec<(KE, CE)>>) };
                 // encryption block size: 1
-                let data = self.get_fd()(*(data_enc.clone())); 
+                let data = data_enc.clone()
+                    .into_iter()
+                    .map(|v |
+                        self.get_fd()(v)
+                    ).collect::<Vec<_>>();
                 forget(data_enc);
-                for (k, c) in data.into_iter() {
-                    if let Some(old_c) = combiners.get_mut(&k) {
-                        let old = old_c.take().unwrap();
-                        let input = ((old, c),);
-                        let output = aggregator.merge_combiners.call(input);
-                        *old_c = Some(output);
-                    } else {
-                        combiners.insert(k, Some(c));
+                let remained_ptr = CAVE.lock().unwrap().remove(&tid);
+                let mut combiners: BTreeMap<K, Option<C>> = match remained_ptr {
+                    Some(ptr) => *unsafe { Box::from_raw(ptr as *mut u8 as *mut BTreeMap<K, Option<C>>) },
+                    None => BTreeMap::new(),
+                };
+                if data.len() > 0 {    
+                    let mut min_max_kv = data[0].last().unwrap(); 
+                    for idx in 1..data.len() {
+                        let cand = data[idx].last().unwrap();
+                        if min_max_kv.0 > cand.0 {
+                            min_max_kv = cand;
+                        }
                     }
+                    let min_max_k = min_max_kv.0.clone();
+
+                    for (k, c) in data.into_iter().flatten() {
+                        if let Some(old_c) = combiners.get_mut(&k) {
+                            let old = old_c.take().unwrap();
+                            let input = ((old, c),);
+                            let output = aggregator.merge_combiners.call(input);
+                            *old_c = Some(output);
+                        } else {
+                            combiners.insert(k, Some(c));
+                        }
+                    }
+                    let remained = combiners.split_off(&min_max_k);
+                    //Temporary stored for next computation
+                    CAVE.lock().unwrap().insert(tid, Box::into_raw(Box::new(remained)) as *mut u8 as usize);
                 }
                 let result = combiners.into_iter().map(|(k, v)| (k, v.unwrap())).collect::<Vec<Self::Item>>();
                 // encryption block size: 1
-                let result_enc = self.get_fe()(result); 
                 /*
-                crate::ALLOCATOR.lock().set_switch(true);
-                let result = result_enc.clone(); // encrypt
-                let result_ptr = Box::into_raw(Box::new(result)) as *mut u8; 
-                crate::ALLOCATOR.lock().set_switch(false);
-                */
+                let result_enc = self.get_fe()(result); 
                 let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8; 
+                */
+                let result_ptr = Box::into_raw(Box::new(result)) as *mut u8; 
                 result_ptr
             },
             _ => panic!("Invalid is_shuffle"),
@@ -257,17 +281,20 @@ where
     }
 
     fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
+        /*
         let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<(KE, CE)>) };
         // for group_by, self.fd naturally encrypt/decrypt per row, that is, encryption block size = 1
         let data = self.get_fd()(*(data_enc.clone()));
         forget(data_enc);
+        */
+        let data = unsafe{ Box::from_raw(data_ptr as *mut Vec<(K, C)>) };
         Box::new(data.into_iter())
     }
 }
 
 impl<K, V, C, KE, CE, FE, FD> OpE for Shuffled<K, V, C, KE, CE, FE, FD>
 where
-    K: Data + Eq + Hash,
+    K: Data + Eq + Hash + Ord,
     V: Data, 
     C: Data,
     KE: Data,

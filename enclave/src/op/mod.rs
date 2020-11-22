@@ -1,12 +1,12 @@
 use std::boxed::Box;
-use std::collections::{btree_map::BTreeMap, HashSet};
+use std::collections::{btree_map::BTreeMap, HashMap, HashSet};
 use std::cmp::{Ordering, Reverse};
 use std::vec::Vec;
 use std::time::Instant;
 use std::untrusted::time::InstantEx;
 use std::sync::{
     atomic::{self, AtomicUsize},
-    Arc, SgxMutex, Weak,
+    Arc, SgxMutex as Mutex, Weak,
 };
 
 use aes_gcm::Aes128Gcm;
@@ -174,7 +174,7 @@ pub trait OpBase: Send + Sync {
     fn get_id(&self) -> usize;
     fn get_context(&self) -> Arc<Context>;
     fn get_deps(&self) -> Vec<Dependency>;
-    fn get_next_deps(&self) -> Arc<SgxMutex<Vec<Dependency>>>;
+    fn get_next_deps(&self) -> Arc<Mutex<Vec<Dependency>>>;
     fn get_prev_ids(&self) -> HashSet<usize> {
         let deps = self.get_deps();
         let mut set = HashSet::new();
@@ -188,7 +188,7 @@ pub trait OpBase: Send + Sync {
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
         None
     }
-    fn iterator(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8;
+    fn iterator(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8;
 }
 
 impl PartialOrd for dyn OpBase {
@@ -229,14 +229,14 @@ impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     fn get_deps(&self) -> Vec<Dependency> {
         (**self).get_op_base().get_deps()
     }
-    fn get_next_deps(&self) -> Arc<SgxMutex<Vec<Dependency>>> {
+    fn get_next_deps(&self) -> Arc<Mutex<Vec<Dependency>>> {
         (**self).get_op_base().get_next_deps()
     }
     fn get_prev_ids(&self) -> HashSet<usize> {
         (**self).get_op_base().get_prev_ids()
     }
-    fn iterator(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-        (**self).get_op_base().iterator(data_ptr, is_shuffle)
+    fn iterator(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+        (**self).get_op_base().iterator(tid, data_ptr, is_shuffle)
     }
 }
 
@@ -248,8 +248,8 @@ impl<I: OpE + ?Sized> Op for SerArc<I> {
     fn get_op_base(&self) -> Arc<dyn OpBase> {
         (**self).get_op_base()
     }
-    fn compute_start(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-        (**self).compute_start(data_ptr, is_shuffle)
+    fn compute_start(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+        (**self).compute_start(tid, data_ptr, is_shuffle)
     }
     fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
         (**self).compute(data_ptr)
@@ -276,7 +276,7 @@ pub trait Op: OpBase + 'static {
     type Item: Data;
     fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>>;
     fn get_op_base(&self) -> Arc<dyn OpBase>;
-    fn compute_start(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8;
+    fn compute_start(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8;
     fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>>;
 
 }
@@ -322,39 +322,17 @@ pub trait OpE: Op {
 
     fn narrow(&self, data_ptr: *mut u8) -> *mut u8 {
         let result = self.compute(data_ptr).collect::<Vec<Self::Item>>();
-        let need_encryption = self.get_next_deps().lock().unwrap().is_empty();
-        if need_encryption {
-            let now = Instant::now();
-            let result_enc = self.batch_encrypt(&result); 
-            let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-            println!("in enclave encrypt {:?} s", dur); 
-            /* 
-            crate::ALLOCATOR.lock().set_switch(true);
-            let result = result_enc.clone(); 
-            let result_ptr = Box::into_raw(Box::new(result)) as *mut u8;
-            crate::ALLOCATOR.lock().set_switch(false);
-            */
-            let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
-            return result_ptr;  
-        } else {
-            return Box::into_raw(Box::new(result)) as *mut u8;
-        }
+        let now = Instant::now();
+        let result_enc = self.batch_encrypt(&result); 
+        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+        println!("in enclave encrypt {:?} s", dur); 
+        let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
+        return result_ptr;  
     } 
 
     fn shuffle(&self, data_ptr: *mut u8) -> *mut u8 {
+        let data = self.compute(data_ptr).collect::<Vec<Self::Item>>();
         let next_deps = self.get_next_deps().lock().unwrap().clone();
-        /*
-        let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<Self::ItemE>) };
-        let now = Instant::now();
-        let data = self.batch_decrypt(&data_enc);
-        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("in enclave decrypt {:?} s", dur);   
-        crate::ALLOCATOR.lock().set_switch(true);
-        drop(data_enc);
-        crate::ALLOCATOR.lock().set_switch(false);
-        */
-        //The data of last rdd is not encrypted
-        let data = unsafe{ Box::from_raw(data_ptr as *mut Vec<Self::Item>) };
         let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
         let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
             Dependency::ShuffleDependency(shuf_dep) => shuf_dep,

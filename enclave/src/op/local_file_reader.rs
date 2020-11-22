@@ -170,8 +170,8 @@ macro_rules! impl_common_lfs_opb_funcs {
             Arc::new(SgxMutex::new(Vec::new()))
         }
 
-        fn iterator(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-            self.compute_start(data_ptr, is_shuffle)
+        fn iterator(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+            self.compute_start(tid, data_ptr, is_shuffle)
         }
     };
 }
@@ -208,7 +208,7 @@ impl<T: Data> Op for LocalFsReader<T> {
         Box::new(data.into_iter())
     }
 
-    fn compute_start(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+    fn compute_start(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         //suppose no shuffle will happen after this rdd
         self.narrow(data_ptr)
     }

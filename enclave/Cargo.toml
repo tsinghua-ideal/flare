@@ -29,6 +29,7 @@ bincode = { git = "https://github.com/mesalock-linux/bincode-sgx" }
 # bytes = { git = "https://github.com/mesalock-linux/bytes-sgx" }
 downcast-rs = { version = "1.2.0", default-features = false }
 dyn-clone = "1.0.3"
+itertools = { git = "https://github.com/mesalock-linux/rust-itertools-sgx" }
 lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
 # typetag = { git = "https://github.com/mesalock-linux/typetag-sgx" }
 serde = { git = "https://github.com/mesalock-linux/serde-sgx" }

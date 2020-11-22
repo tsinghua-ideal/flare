@@ -1,10 +1,11 @@
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 use std::mem::forget;
 use std::sync::{Arc, SgxMutex};
 use std::vec::Vec;
 
+use crate::CAVE;
 use crate::aggregator::Aggregator;
 use crate::basic::{AnyData, Data, Func, SerFunc };
 use crate::dependency::{
@@ -18,10 +19,10 @@ use crate::serialization_free::{Construct, Idx, SizeBuf};
 #[derive(Clone)]
 pub struct CoGrouped<K, V, W, KE, VE, WE, FE, FD> 
 where
-    K: Data + Eq + Hash,
+    K: Data + Eq + Hash + Ord,
     V: Data,
     W: Data,
-    KE: Data + Eq + Hash,
+    KE: Data + Eq + Hash + Ord,
     VE: Data,
     WE: Data,
     FE: Func(Vec<(K, (Vec<V>, Vec<W>))>) -> Vec<(KE, (Vec<VE>, Vec<WE>))> + Clone, 
@@ -38,10 +39,10 @@ where
 
 impl<K, V, W, KE, VE, WE, FE, FD> CoGrouped<K, V, W, KE, VE, WE, FE, FD> 
 where
-    K: Data + Eq + Hash,
+    K: Data + Eq + Hash + Ord,
     V: Data,
     W: Data,
-    KE: Data + Eq + Hash,
+    KE: Data + Eq + Hash + Ord,
     VE: Data,
     WE: Data,
     FE: Func(Vec<(K, (Vec<V>, Vec<W>))>) -> Vec<(KE, (Vec<VE>, Vec<WE>))> + Clone, 
@@ -214,10 +215,10 @@ where
 
 impl<K, V, W, KE, VE, WE, FE, FD> OpBase for CoGrouped<K, V, W, KE, VE, WE, FE, FD> 
 where 
-    K: Data + Eq + Hash,
+    K: Data + Eq + Hash + Ord,
     V: Data,
     W: Data,
-    KE: Data + Eq + Hash,
+    KE: Data + Eq + Hash + Ord,
     VE: Data,
     WE: Data,
     FE: SerFunc(Vec<(K, (Vec<V>, Vec<W>))>) -> Vec<(KE, (Vec<VE>, Vec<WE>))>, 
@@ -343,19 +344,19 @@ where
         Some(part)
     }
     
-    fn iterator(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8{
+    fn iterator(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8{
         println!("co_grouped iterator");
-        self.compute_start(data_ptr, is_shuffle)
+        self.compute_start(tid, data_ptr, is_shuffle)
     }
 
 }
 
 impl<K, V, W, KE, VE, WE, FE, FD> Op for CoGrouped<K, V, W, KE, VE, WE, FE, FD>
 where 
-    K: Data + Eq + Hash,
+    K: Data + Eq + Hash + Ord,
     V: Data,
     W: Data,
-    KE: Data + Eq + Hash,
+    KE: Data + Eq + Hash + Ord,
     VE: Data,
     WE: Data,
     FE: SerFunc(Vec<(K, (Vec<V>, Vec<W>))>) -> Vec<(KE, (Vec<VE>, Vec<WE>))>, 
@@ -371,7 +372,7 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+    fn compute_start(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         match is_shuffle {
             0 => {       //No shuffle
                 self.narrow(data_ptr)
@@ -380,86 +381,126 @@ where
                 self.shuffle(data_ptr)
             },
             2 => {      //shuffle read
-                let data = unsafe{ Box::from_raw(data_ptr as *mut Vec<Vec<usize>>) };
-                let mut data_t_ptr = Vec::new();
+                let mut dur_sum = 0.0;
+                let data_enc = unsafe{ 
+                    Box::from_raw(data_ptr as *mut (
+                        Vec<Vec<(KE, VE)>>, 
+                        Vec<Vec<(KE, Vec<VE>)>>, 
+                        Vec<Vec<(KE, WE)>>, 
+                        Vec<Vec<(KE, Vec<WE>)>>
+                    ))
+                };
+                let remained_ptr = CAVE.lock().unwrap().remove(&tid);
+                let mut agg: BTreeMap<K, (Vec<V>, Vec<W>)> = match remained_ptr {
+                    Some(ptr) => *unsafe { Box::from_raw(ptr as *mut u8 as *mut BTreeMap<K, (Vec<V>, Vec<W>)>) },
+                    None => BTreeMap::new(),
+                };
                 let deps = self.get_deps();
+                let mut min_max_k_tree: BTreeSet<K> = BTreeSet::new();
                 match &deps[0] {
                     Dependency::NarrowDependency(_nar) => {
-                        let mut ptr_per_part = Vec::new();
-                        for block_ptr in &data[0] {
-                            let ptr_per_subpart = *block_ptr as *mut u8 as *mut Vec<(KE, VE)>;
-                            let data0_enc  = unsafe{ Box::from_raw(ptr_per_subpart) };
-                            // batch decrypt
-                            let data0 = self.op0.batch_decrypt(&data0_enc);
-                            // individual encrypt
-                            let mut data0_t = Vec::with_capacity(data0.len()); 
-                            for i in data0 {
-                                data0_t.append(
-                                    &mut self.op0.get_fe()(vec![i])
-                                        .into_iter()
-                                        .map(|(ke, ve)| (ke, vec![ve]))
-                                        .collect::<Vec<_>>()
-                                );
+                        for sub_data_enc in data_enc.0.clone() {
+                            let data0 = self.op0.get_fd()(sub_data_enc);
+                            match data0.last() {
+                                Some(v) => min_max_k_tree.insert(v.0.clone()),
+                                None => false,
+                            };
+                            for i in data0.into_iter() { 
+                                let (k, v) = i;
+                                agg.entry(k)
+                                    .or_insert_with(|| (Vec::new(), Vec::new())).0
+                                    .push(v);
                             }
-                            /*
-                            crate::ALLOCATOR.lock().set_switch(true);
-                            let result = data0_t.clone(); 
-                            let result_ptr = Box::into_raw(Box::new(result)) as *mut u8 as usize;
-                            crate::ALLOCATOR.lock().set_switch(false);
-                            */
-                            let result_ptr = Box::into_raw(Box::new(data0_t)) as *mut u8 as usize;
-                            forget(data0_enc);
-                            ptr_per_part.push(result_ptr);
                         }
-                        data_t_ptr.push(ptr_per_part);
                     },
                     Dependency::ShuffleDependency(_shuf) => {
-                        data_t_ptr.push(data[0].clone());
+                        for sub_data_enc in data_enc.1.clone() {  
+                            let now = Instant::now();
+                            let mut pt = Vec::with_capacity(sub_data_enc.len());
+                            for (x, vy) in sub_data_enc {
+                                let (pt_x, pt_y): (Vec<K>, Vec<V>) = self.op0.get_fd()(vy
+                                    .into_iter()
+                                    .map(|y| (x.clone(), y))
+                                    .collect::<Vec<_>>())
+                                    .into_iter()
+                                    .unzip();
+                                pt.push((pt_x[0].clone(), pt_y));
+                            }
+                            let data0 = pt;
+                            let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+                            dur_sum += dur;  
+                            match data0.last() {
+                                Some(v) => min_max_k_tree.insert(v.0.clone()),
+                                None => false,
+                            };
+                            for (k, c) in data0.into_iter() { 
+                                let temp = agg.entry(k)
+                                    .or_insert_with(|| (Vec::new(), Vec::new()));
+                                for v in c {
+                                    temp.0.push(v);
+                                }
+                            }
+                        }
                     },
                 };
+        
                 match &deps[1] {
                     Dependency::NarrowDependency(_nar) => {
-                        let mut ptr_per_part = Vec::new();
-                        for block_ptr in &data[1] {
-                            let ptr_per_subpart = *block_ptr as *mut u8 as *mut Vec<(KE, WE)>;
-                            let data1_enc  = unsafe{ Box::from_raw(ptr_per_subpart) };
-                            // batch decrypt
-                            let data1 = self.op1.batch_decrypt(&data1_enc);
-                            // individual encrypt
-                            let mut data1_t = Vec::with_capacity(data1.len()); 
-                            for i in data1 {
-                                data1_t.append(
-                                    &mut self.op1.get_fe()(vec![i])
-                                    .into_iter()
-                                    .map(|(ke, we)| (ke, vec![we]))
-                                    .collect::<Vec<_>>()
-                                );
+                        for sub_data_enc in data_enc.2.clone() {
+                            let data1 = self.op1.get_fd()(sub_data_enc); //need to check security
+                            match data1.last() {
+                                Some(v) => min_max_k_tree.insert(v.0.clone()),
+                                None => false,
+                            };
+                            for i in data1.into_iter() {
+                                let (k, w) = i;
+                                agg.entry(k)
+                                    .or_insert_with(|| (Vec::new(), Vec::new())).1
+                                    .push(w);
                             }
-                            /*
-                            crate::ALLOCATOR.lock().set_switch(true);
-                            let result = data1_t.clone(); 
-                            let result_ptr = Box::into_raw(Box::new(result)) as *mut u8 as usize;
-                            crate::ALLOCATOR.lock().set_switch(false);
-                            */
-                            let result_ptr = Box::into_raw(Box::new(data1_t)) as *mut u8 as usize;
-                            forget(data1_enc);
-                            ptr_per_part.push(result_ptr);
                         }
-                        data_t_ptr.push(ptr_per_part);
                     },
                     Dependency::ShuffleDependency(_shuf) => {
-                        data_t_ptr.push(data[1].clone());
+                        for sub_data_enc in data_enc.3.clone() { 
+                            let now = Instant::now();
+                            let mut pt = Vec::with_capacity(sub_data_enc.len());
+                            for (x, vy) in sub_data_enc {
+                                let (pt_x, pt_y): (Vec<K>, Vec<W>) = self.op1.get_fd()(vy
+                                    .into_iter()
+                                    .map(|y| (x.clone(), y))
+                                    .collect::<Vec<_>>())
+                                    .into_iter()
+                                    .unzip();
+                                pt.push((pt_x[0].clone(), pt_y));
+                            }
+                            let data1 = pt;
+                            let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+                            dur_sum += dur;
+                            match data1.last() {
+                                Some(v) => min_max_k_tree.insert(v.0.clone()),
+                                None => false,
+                            };
+                            for (k, c) in data1.into_iter() { 
+                                let temp = agg.entry(k)
+                                    .or_insert_with(|| (Vec::new(), Vec::new()));
+                                for w in c {
+                                    temp.1.push(w);
+                                }
+                            }
+                        }
                     },
                 };
-                forget(data);
-                /*
-                crate::ALLOCATOR.lock().set_switch(true);
-                let result = data_t_ptr.clone(); 
-                let result_ptr = Box::into_raw(Box::new(result)) as *mut u8;
-                crate::ALLOCATOR.lock().set_switch(false);
-                */
-                let result_ptr = Box::into_raw(Box::new(data_t_ptr)) as *mut u8;
-                result_ptr
+                forget(data_enc);
+                println!("in enclave decrypt {:?}", dur_sum);  
+                let min_max_k = min_max_k_tree.first();
+                if min_max_k.is_some() {
+                    let remained = agg.split_off(min_max_k.unwrap());
+                    CAVE.lock().unwrap().insert(tid, Box::into_raw(Box::new(remained)) as *mut u8 as usize);
+                }
+                let result = agg.into_iter()
+                    .filter(|(k, (v, w))| v.len() != 0 && w.len() != 0)
+                    .collect::<Vec<_>>();
+                Box::into_raw(Box::new(result)) as *mut u8
             },
             _ => panic!("Invalid is_shuffle")
         }
@@ -467,6 +508,7 @@ where
 
     fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
         //encryption block size: 1
+        /*
         let now = Instant::now();
         let agg = unsafe{ Box::from_raw(data_ptr as *mut Vec<(KE, (Vec<Vec<VE>>, Vec<Vec<WE>>))>) };
         let data = agg.iter()
@@ -497,17 +539,18 @@ where
         forget(agg);
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("in enclave decrypt {:?} s", dur);
-        //println!("data = {:?}", data);
+        */
+        let data = unsafe{ Box::from_raw(data_ptr as *mut Vec<(K, (Vec<V>, Vec<W>))>) };
         Box::new(data.into_iter())
     }
 }
 
 impl<K, V, W, KE, VE, WE, FE, FD> OpE for CoGrouped<K, V, W, KE, VE, WE, FE, FD> 
 where 
-    K: Data + Eq + Hash,
+    K: Data + Eq + Hash + Ord,
     V: Data,
     W: Data,
-    KE: Data + Eq + Hash,
+    KE: Data + Eq + Hash + Ord,
     VE: Data,
     WE: Data,
     FE: SerFunc(Vec<(K, (Vec<V>, Vec<W>))>) -> Vec<(KE, (Vec<VE>, Vec<WE>))>, 

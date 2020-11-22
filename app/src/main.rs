@@ -108,7 +108,7 @@ fn main() -> Result<()> {
     let rdd0 = sc.make_rdd(vec![], vec, Fn!(|i| i), Fn!(|i| i), 4);
     let rdd1 = rdd0.group_by_key(4);
     let res = rdd1.secure_collect().unwrap();
-    println!("result: {:?}", res);
+    println!("result: {:?}", rdd1.batch_decrypt(&res));
     */
 
     /*

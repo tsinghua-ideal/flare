@@ -1,5 +1,6 @@
 use std::vec::Vec;
 use std::boxed::Box;
+use std::string::String;
 
 // function clone_in_place is unnecessary in untrusted part
 #[derive(Debug)]
@@ -242,5 +243,27 @@ where T: Clone + Construct + Default
         } else {
             self.clone_from(&other);
         }
+    }
+}
+
+impl Construct for String
+{
+    fn send(&self, buf: &mut SizeBuf, idx: &mut Idx) {
+        idx.vec_idx += 1;
+        buf.vec_buf[idx.vec_idx] = self.len();
+    }
+
+    fn recv(&mut self, buf: &SizeBuf, idx: &mut Idx) {
+        idx.vec_idx += 1;
+        let len = buf.vec_buf[idx.vec_idx];
+        *self = String::with_capacity(len);
+    }
+
+    fn need_recursive(&self) -> bool {
+        true
+    }
+
+    fn clone_in_place(&mut self, other: &Self) {
+        self.clone_from(&other);
     }
 }

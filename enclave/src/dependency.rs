@@ -1,5 +1,5 @@
 use std::boxed::Box;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::hash::Hash;
 use std::mem::forget;
 use std::sync::Arc;
@@ -30,7 +30,7 @@ impl Dependency {
 
 impl<K, V, C, KE, CE, FE, FD> From<ShuffleDependency<K, V, C, KE, CE, FE, FD>> for Dependency 
 where
-    K: Data + Eq + Hash, 
+    K: Data + Eq + Hash + Ord, 
     V: Data, 
     C: Data,
     KE: Data,
@@ -95,7 +95,7 @@ impl_downcast!(sync ShuffleDependencyTrait);
 
 pub struct ShuffleDependency<K, V, C, KE, CE, FE, FD> 
 where
-    K: Data + Eq + Hash, 
+    K: Data + Eq + Hash + Ord, 
     V: Data, 
     C: Data,
     KE: Data,
@@ -113,7 +113,7 @@ where
 
 impl<K, V, C, KE, CE, FE, FD> ShuffleDependency<K, V, C, KE, CE, FE, FD> 
 where 
-    K: Data + Eq + Hash, 
+    K: Data + Eq + Hash + Ord, 
     V: Data, 
     C: Data,
     KE: Data,
@@ -142,7 +142,7 @@ where
 
 impl<K, V, C, KE, CE, FE, FD> ShuffleDependencyTrait for ShuffleDependency<K, V, C, KE, CE, FE, FD>
 where
-    K: Data + Eq + Hash, 
+    K: Data + Eq + Hash + Ord, 
     V: Data, 
     C: Data,
     KE: Data,
@@ -154,8 +154,8 @@ where
         let aggregator = self.aggregator.clone();
         let num_output_splits = self.partitioner.get_num_of_partitions();
         let partitioner = self.partitioner.clone();
-        let mut buckets: Vec<HashMap<K, C>> = (0..num_output_splits)
-            .map(|_| HashMap::new())
+        let mut buckets: Vec<BTreeMap<K, C>> = (0..num_output_splits)
+            .map(|_| BTreeMap::new())
             .collect::<Vec<_>>();
 
         for (count, i) in iter.enumerate() {

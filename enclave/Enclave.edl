@@ -24,6 +24,7 @@ enclave {
         /* define ECALLs here. */
 
         public size_t secure_executing(size_t id, 
+                uint64_t tid,
                 uint8_t is_shuffle, 
 		[user_check] uint8_t* input, 
 		[user_check] uint8_t* captured_vars);

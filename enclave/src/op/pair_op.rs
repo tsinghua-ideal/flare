@@ -11,9 +11,9 @@ use crate::op::*;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 pub trait Pair<K, V, KE, VE>: OpE<Item = (K, V), ItemE = (KE, VE)> + Send + Sync 
 where 
-    K: Data + Eq + Hash, 
+    K: Data + Eq + Hash + Ord, 
     V: Data, 
-    KE: Data + Eq + Hash, 
+    KE: Data + Eq + Hash + Ord, 
     VE: Data,
 {
     fn combine_by_key<KE2: Data, C: Data, CE: Data, FE, FD>(
@@ -284,18 +284,18 @@ where
 impl<K, V, KE, VE, T> Pair<K, V, KE, VE> for T
 where
     T: OpE<Item = (K, V), ItemE = (KE, VE)>,
-    K: Data + Eq + Hash, 
+    K: Data + Eq + Hash + Ord, 
     V: Data, 
-    KE: Data + Eq + Hash, 
+    KE: Data + Eq + Hash + Ord, 
     VE: Data,
 {}
 
 impl<K, V, KE, VE, T> Pair<K, V, KE, VE> for SerArc<T>
 where
     T: OpE<Item = (K, V), ItemE = (KE, VE)>,
-    K: Data + Eq + Hash, 
+    K: Data + Eq + Hash + Ord, 
     V: Data, 
-    KE: Data + Eq + Hash, 
+    KE: Data + Eq + Hash + Ord, 
     VE: Data,
 {}
 
@@ -468,8 +468,8 @@ where
         self.next_deps.clone()
     }    
     
-    fn iterator(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-        self.compute_start(data_ptr, is_shuffle)
+    fn iterator(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+        self.compute_start(tid, data_ptr, is_shuffle)
     }
 }
 
@@ -495,7 +495,7 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start (&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+    fn compute_start (&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         match is_shuffle {
             0 => {       //No shuffle later
                 self.narrow(data_ptr)
@@ -706,8 +706,8 @@ where
         self.next_deps.clone()
     }
     
-    fn iterator(&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-        self.compute_start(data_ptr, is_shuffle)
+    fn iterator(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+        self.compute_start(tid, data_ptr, is_shuffle)
     }
 }
 
@@ -732,7 +732,7 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start (&self, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+    fn compute_start (&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         match is_shuffle {
             0 => {       //No shuffle later
                 self.narrow(data_ptr)
