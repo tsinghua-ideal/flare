@@ -16,8 +16,8 @@ pub trait ReaderConfiguration<I: Data> {
         O: Data,
         OE: Data,
         F: SerFunc(I) -> O,
-        FE: SerFunc(Vec<O>) -> Vec<OE>,
-        FD: SerFunc(Vec<OE>) -> Vec<O>;
+        FE: SerFunc(Vec<O>) -> OE,
+        FD: SerFunc(OE) -> Vec<O>;
 }
 
 pub struct LocalFsReaderConfig {
@@ -38,8 +38,8 @@ impl ReaderConfiguration<Vec<u8>> for LocalFsReaderConfig {
         O: Data,
         OE: Data,
         F: SerFunc(Vec<u8>) -> O,
-        FE: SerFunc(Vec<O>) -> Vec<OE>,
-        FD: SerFunc(Vec<OE>) -> Vec<O>,
+        FE: SerFunc(Vec<O>) -> OE,
+        FD: SerFunc(OE) -> Vec<O>,
     {
         let reader = LocalFsReader::<Vec<u8>>::new(self, context);
         let read_files = 
@@ -106,7 +106,7 @@ macro_rules! impl_common_lfs_opb_funcs {
                     } else {
                         let mut idx = Idx::new();
                         let data = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Vec<u8>>) };
-                        let data_enc = self.batch_encrypt(&data);
+                        let data_enc = self.get_fe()(*data.clone());
                         data_enc.send(&mut buf, &mut idx);
                         forget(data);
                     }
@@ -135,7 +135,7 @@ macro_rules! impl_common_lfs_opb_funcs {
                         v_out.clone_in_place(&data_enc);
                     } else {
                         let data = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Vec<u8>>) };
-                        let data_enc = Box::new(self.batch_encrypt(&data));
+                        let data_enc = Box::new(self.get_fe()(*data.clone()));
                         v_out.clone_in_place(&data_enc);
                         forget(data); //data may be used later
                     }
@@ -216,12 +216,12 @@ impl<T: Data> Op for LocalFsReader<T> {
 }
 
 impl<T: Data> OpE for LocalFsReader<T> {
-    type ItemE = Vec<u8>;
+    type ItemE = Vec<Vec<u8>>;
     fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
         Arc::new(self.clone())
     }
 
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>> {
+    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
         let fe = |v: Vec<Self::Item>| {
             let mut ct = Vec::with_capacity(v.len()); 
             for pt in v {
@@ -229,18 +229,18 @@ impl<T: Data> OpE for LocalFsReader<T> {
             }
             ct
         }; 
-        Box::new(fe) as Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>>
+        Box::new(fe) as Box<dyn Func(Vec<Self::Item>)->Self::ItemE>
     }
 
-    fn get_fd(&self) -> Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>> {
-        let fd = |v: Vec<Self::ItemE>| {
+    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
+        let fd = |v: Self::ItemE| {
             let mut pt = Vec::with_capacity(v.len());
             for ct in v {
                 pt.push(decrypt::<>(ct.as_ref()));
             }
             pt
         };
-        Box::new(fd) as Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>>
+        Box::new(fd) as Box<dyn Func(Self::ItemE)->Vec<Self::Item>>
     }
 
 }

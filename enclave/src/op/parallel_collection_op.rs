@@ -14,8 +14,8 @@ pub struct ParallelCollection<T, TE, FE, FD>
 where
     T: Data,
     TE: Data,
-    FE: Func(Vec<T>) -> Vec<TE> + Clone,
-    FD: Func(Vec<TE>) -> Vec<T> + Clone,
+    FE: Func(Vec<T>) -> TE + Clone,
+    FD: Func(TE) -> Vec<T> + Clone,
 {
     vals: Arc<OpVals>, 
     next_deps: Arc<SgxMutex<Vec<Dependency>>>,
@@ -29,8 +29,8 @@ impl<T, TE, FE, FD> Clone for ParallelCollection<T, TE, FE, FD>
 where
     T: Data,
     TE: Data,
-    FE: Func(Vec<T>) -> Vec<TE> + Clone,
-    FD: Func(Vec<TE>) -> Vec<T> + Clone,
+    FE: Func(Vec<T>) -> TE + Clone,
+    FD: Func(TE) -> Vec<T> + Clone,
 {
     fn clone(&self) -> Self {
         ParallelCollection {
@@ -48,8 +48,8 @@ impl<T, TE, FE, FD> ParallelCollection<T, TE, FE, FD>
 where 
     T: Data,
     TE: Data,
-    FE: Func(Vec<T>) -> Vec<TE> + Clone,
-    FD: Func(Vec<TE>) -> Vec<T> + Clone,
+    FE: Func(Vec<T>) -> TE + Clone,
+    FD: Func(TE) -> Vec<T> + Clone,
 {
     pub fn new(context: Arc<Context>, fe: FE, fd: FD) -> Self {
         let vals = OpVals::new(context.clone());
@@ -68,8 +68,8 @@ impl<T, TE, FE, FD> OpBase for ParallelCollection<T, TE, FE, FD>
 where 
     T: Data,
     TE: Data,
-    FE: SerFunc(Vec<T>) -> Vec<TE>,
-    FD: SerFunc(Vec<TE>) -> Vec<T>,
+    FE: SerFunc(Vec<T>) -> TE,
+    FD: SerFunc(TE) -> Vec<T>,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
         let mut buf = unsafe{ Box::from_raw(p_buf as *mut SizeBuf) };
@@ -84,7 +84,7 @@ where
                 } else {
                     let mut idx = Idx::new();
                     let data = unsafe{ Box::from_raw(p_data_enc as *mut Vec<T>) };
-                    let data_enc = self.batch_encrypt(&data);
+                    let data_enc = self.batch_encrypt(*data.clone());
                     data_enc.send(&mut buf, &mut idx);
                     forget(data);
                 }
@@ -112,7 +112,7 @@ where
                     v_out.clone_in_place(&data_enc);
                 } else {
                     let data = unsafe{ Box::from_raw(p_data_enc as *mut Vec<T>) };
-                    let data_enc = Box::new(self.batch_encrypt(&data));
+                    let data_enc = Box::new(self.batch_encrypt(*data.clone()));
                     v_out.clone_in_place(&data_enc);
                     forget(data); //data may be used later
                 }
@@ -157,8 +157,8 @@ impl<T, TE, FE, FD> Op for ParallelCollection<T, TE, FE, FD>
 where 
     T: Data,
     TE: Data,
-    FE: SerFunc(Vec<T>) -> Vec<TE>,
-    FD: SerFunc(Vec<TE>) -> Vec<T>,
+    FE: SerFunc(Vec<T>) -> TE,
+    FD: SerFunc(TE) -> Vec<T>,
 {
     type Item = T;
 
@@ -185,7 +185,7 @@ where
     fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
         let now = Instant::now();
         let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<TE>) }; 
-        let data = self.batch_decrypt(&data_enc);
+        let data = self.batch_decrypt(*data_enc.clone());
         forget(data_enc);
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("in enclave decrypt {:?} s", dur);    
@@ -198,20 +198,20 @@ impl<T, TE, FE, FD> OpE for ParallelCollection<T, TE, FE, FD>
 where 
     T: Data,
     TE: Data,
-    FE: SerFunc(Vec<T>) -> Vec<TE>,
-    FD: SerFunc(Vec<TE>) -> Vec<T>,
+    FE: SerFunc(Vec<T>) -> TE,
+    FD: SerFunc(TE) -> Vec<T>,
 {
     type ItemE = TE;
     fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
         Arc::new(self.clone())
     }
 
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>> {
-        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>>
+    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
+        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Self::ItemE>
     }
 
-    fn get_fd(&self) -> Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>> {
-        Box::new(self.fd.clone()) as Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>>
+    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
+        Box::new(self.fd.clone()) as Box<dyn Func(Self::ItemE)->Vec<Self::Item>>
     }
 
 }

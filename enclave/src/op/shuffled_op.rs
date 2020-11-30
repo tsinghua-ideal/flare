@@ -23,8 +23,8 @@ where
     C: Data,
     KE: Data,
     CE: Data,
-    FE: Func(Vec<(K, C)>) -> Vec<(KE, CE)> + Clone,
-    FD: Func(Vec<(KE, CE)>) -> Vec<(K, C)> + Clone,
+    FE: Func(Vec<(K, C)>) -> (KE, CE) + Clone,
+    FD: Func((KE, CE)) -> Vec<(K, C)> + Clone,
 {
     vals: Arc<OpVals>,
     next_deps: Arc<SgxMutex<Vec<Dependency>>>,
@@ -42,8 +42,8 @@ where
     C: Data,
     KE: Data,
     CE: Data,
-    FE: Func(Vec<(K, C)>) -> Vec<(KE, CE)> + Clone,
-    FD: Func(Vec<(KE, CE)>) -> Vec<(K, C)> + Clone,
+    FE: Func(Vec<(K, C)>) -> (KE, CE) + Clone,
+    FD: Func((KE, CE)) -> Vec<(K, C)> + Clone,
 {
     fn clone(&self) -> Self {
         Shuffled {
@@ -65,8 +65,8 @@ where
     C: Data,
     KE: Data,
     CE: Data,
-    FE: Func(Vec<(K, C)>) -> Vec<(KE, CE)> + Clone,
-    FD: Func(Vec<(KE, CE)>) -> Vec<(K, C)> + Clone,
+    FE: Func(Vec<(K, C)>) -> (KE, CE) + Clone,
+    FD: Func((KE, CE)) -> Vec<(K, C)> + Clone,
 {
     pub(crate) fn new(
         parent: Arc<dyn Op<Item = (K, V)>>,
@@ -83,8 +83,8 @@ where
                 aggregator.clone(),
                 part.clone(),
                 prev_ids,
-                fe.clone(),
-                fd.clone(),
+                Box::new(fe.clone()),
+                Box::new(fd.clone()),
             ),
         ));
         let ctx = parent.get_context();
@@ -111,8 +111,8 @@ where
     C: Data,
     KE: Data,
     CE: Data,
-    FE: SerFunc(Vec<(K, C)>) -> Vec<(KE, CE)>,
-    FD: SerFunc(Vec<(KE, CE)>) -> Vec<(K, C)>,
+    FE: SerFunc(Vec<(K, C)>) -> (KE, CE),
+    FD: SerFunc((KE, CE)) -> Vec<(K, C)>,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
         let mut buf = unsafe{ Box::from_raw(p_buf as *mut SizeBuf) };
@@ -127,7 +127,7 @@ where
                 } else {
                     let mut idx = Idx::new();
                     let data = unsafe{ Box::from_raw(p_data_enc as *mut Vec<(K, C)>) };
-                    let data_enc = self.batch_encrypt(&data);
+                    let data_enc = self.batch_encrypt(*data.clone());
                     data_enc.send(&mut buf, &mut idx);
                     forget(data);
                 }
@@ -156,7 +156,7 @@ where
                     v_out.clone_in_place(&data_enc);
                 } else {
                     let data = unsafe{ Box::from_raw(p_data_enc as *mut Vec<(K, C)>) };
-                    let data_enc = Box::new(self.batch_encrypt(&data));
+                    let data_enc = Box::new(self.batch_encrypt(*data.clone()));
                     v_out.clone_in_place(&data_enc);
                     forget(data); //data may be used later
                 }
@@ -207,8 +207,8 @@ where
     C: Data,
     KE: Data,
     CE: Data,
-    FE: SerFunc(Vec<(K, C)>) -> Vec<(KE, CE)>,
-    FD: SerFunc(Vec<(KE, CE)>) -> Vec<(K, C)>, 
+    FE: SerFunc(Vec<(K, C)>) -> (KE, CE),
+    FD: SerFunc((KE, CE)) -> Vec<(K, C)>, 
 {
     type Item = (K, C);
 
@@ -231,12 +231,17 @@ where
             2 => {      //Shuffle read
                 let aggregator = self.aggregator.clone(); 
                 let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<Vec<(KE, CE)>>) };
-                // encryption block size: 1
                 let data = data_enc.clone()
                     .into_iter()
-                    .map(|v |
-                        self.get_fd()(v)
-                    ).collect::<Vec<_>>();
+                    .map(|v | {
+                        //batch_decrypt
+                        let mut data = Vec::new();
+                        for block in v {
+                            let mut pt = self.get_fd()(block);
+                            data.append(&mut pt); //need to check security
+                        }
+                        data
+                    }).collect::<Vec<_>>();
                 forget(data_enc);
                 let remained_ptr = CAVE.lock().unwrap().remove(&tid);
                 let mut combiners: BTreeMap<K, Option<C>> = match remained_ptr {
@@ -268,11 +273,6 @@ where
                     CAVE.lock().unwrap().insert(tid, Box::into_raw(Box::new(remained)) as *mut u8 as usize);
                 }
                 let result = combiners.into_iter().map(|(k, v)| (k, v.unwrap())).collect::<Vec<Self::Item>>();
-                // encryption block size: 1
-                /*
-                let result_enc = self.get_fe()(result); 
-                let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8; 
-                */
                 let result_ptr = Box::into_raw(Box::new(result)) as *mut u8; 
                 result_ptr
             },
@@ -281,12 +281,6 @@ where
     }
 
     fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
-        /*
-        let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<(KE, CE)>) };
-        // for group_by, self.fd naturally encrypt/decrypt per row, that is, encryption block size = 1
-        let data = self.get_fd()(*(data_enc.clone()));
-        forget(data_enc);
-        */
         let data = unsafe{ Box::from_raw(data_ptr as *mut Vec<(K, C)>) };
         Box::new(data.into_iter())
     }
@@ -299,19 +293,19 @@ where
     C: Data,
     KE: Data,
     CE: Data,
-    FE: SerFunc(Vec<(K, C)>) -> Vec<(KE, CE)>,
-    FD: SerFunc(Vec<(KE, CE)>) -> Vec<(K, C)>, 
+    FE: SerFunc(Vec<(K, C)>) -> (KE, CE),
+    FD: SerFunc((KE, CE)) -> Vec<(K, C)>, 
 {
     type ItemE = (KE, CE);
     fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
         Arc::new(self.clone())
     }
 
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>> {
-        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>>
+    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
+        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Self::ItemE>
     }
 
-    fn get_fd(&self) -> Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>> {
-        Box::new(self.fd.clone()) as Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>>
+    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
+        Box::new(self.fd.clone()) as Box<dyn Func(Self::ItemE)->Vec<Self::Item>>
     }
 }

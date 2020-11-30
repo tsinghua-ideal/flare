@@ -9,13 +9,14 @@ use std::sync::{
     Arc, SgxMutex as Mutex, Weak,
 };
 
-use aes_gcm::Aes128Gcm;
+use aes_gcm::{Aes128Gcm, aead::generic_array::functional::MappedGenericSequence};
 use aes_gcm::aead::{Aead, NewAead, generic_array::GenericArray};
 
 use crate::{lp_boundary, opmap};
 use crate::basic::{AnyData, Arc as SerArc, Data, Func, SerFunc};
 use crate::dependency::Dependency;
 use crate::partitioner::Partitioner;
+use crate::serialization_free::Construct;
 mod parallel_collection_op;
 pub use parallel_collection_op::*;
 mod co_grouped_op;
@@ -78,10 +79,21 @@ pub fn encrypt(pt: &[u8]) -> Vec<u8> {
 }
 
 #[inline(always)]
-pub fn divide_ct(ct: Vec<u8>, len: usize) -> Vec<Option<Vec<u8>>> {
-    let mut ct_div = vec![None; len];
-    ct_div[0] = Some(ct);
-    ct_div
+pub fn ser_encrypt<T>(pt: Vec<T>) -> Vec<u8> 
+where
+    T: serde::ser::Serialize + serde::de::DeserializeOwned + 'static
+{
+    match type_eq::<T, u8>() {
+        true => {
+            let (ptr, len, cap) = pt.into_raw_parts();
+            let rebuilt = unsafe {
+                let ptr = ptr as *mut u8;
+                Vec::from_raw_parts(ptr, len, cap)
+            };
+            encrypt(&rebuilt)
+        },
+        false => encrypt(bincode::serialize(&pt).unwrap().as_ref()),
+    } 
 }
 
 #[inline(always)]
@@ -93,15 +105,30 @@ pub fn decrypt(ct: &[u8]) -> Vec<u8> {
 }
 
 #[inline(always)]
-pub fn recover_ct(ct_div: Vec<Option<Vec<u8>>>) -> Vec<u8> {
-    if ct_div.len() > 0 {
-        match ct_div[0].clone() {
-            Some(s) => return s,
-            None => panic!("invalid ciphertext vector"),
-        }
-    } else {
-        return vec![]
+pub fn ser_decrypt<T>(ct: Vec<u8>) -> Vec<T> 
+where
+    T: serde::ser::Serialize + serde::de::DeserializeOwned + 'static
+{
+    if ct.len() == 0 {
+        return Vec::new();
     }
+    match type_eq::<T, u8>() {
+        true => {
+            let pt = decrypt(&ct);
+            let (ptr, len, cap) = pt.into_raw_parts();
+            let rebuilt = unsafe {
+                let ptr = ptr as *mut T;
+                Vec::from_raw_parts(ptr, len, cap)
+            };
+            rebuilt
+        },
+        false => bincode::deserialize(decrypt(&ct).as_ref()).unwrap(),
+    }
+
+}
+
+pub fn type_eq<T1: 'static, T2: 'static>() -> bool{
+    std::any::TypeId::of::<T1>() == std::any::TypeId::of::<T2>()
 }
 
 #[derive(Default)]
@@ -124,8 +151,8 @@ impl Context {
     where
         T: Data,
         TE: Data,
-        FE: SerFunc(Vec<T>) -> Vec<TE>,
-        FD: SerFunc(Vec<TE>) -> Vec<T>,
+        FE: SerFunc(Vec<T>) -> TE,
+        FD: SerFunc(TE) -> Vec<T>,
     {
         let new_op = SerArc::new(ParallelCollection::new(self.clone(), fe, fd));
         insert_opmap(new_op.get_id(), new_op.get_op_base());
@@ -143,8 +170,8 @@ impl Context {
     where
         F: SerFunc(I) -> O,
         C: ReaderConfiguration<I>,
-        FE: SerFunc(Vec<O>) -> Vec<OE>,
-        FD: SerFunc(Vec<OE>) -> Vec<O>,
+        FE: SerFunc(Vec<O>) -> OE,
+        FD: SerFunc(OE) -> Vec<O>,
     {
         //need to do insert opmap
         config.make_reader(self.clone(), func, fe, fd)
@@ -262,11 +289,11 @@ impl<I: OpE + ?Sized> OpE for SerArc<I> {
         (**self).get_ope()
     }
 
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>> {
+    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
         (**self).get_fe()
     }
 
-    fn get_fd(&self) -> Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>> {
+    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
         (**self).get_fd()
     }
 }
@@ -285,45 +312,42 @@ pub trait OpE: Op {
     type ItemE: Data;
     fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>;
 
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>>;
+    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE>;
 
-    fn get_fd(&self) -> Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>>;
+    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>>;
 
-    fn batch_encrypt(&self, data: &Vec<Self::Item>) -> Vec<Self::ItemE> {
-        let len = data.len();
+    fn batch_encrypt(&self, mut data: Vec<Self::Item>) -> Vec<Self::ItemE> {
+        let mut len = data.len();
         let mut data_enc = Vec::with_capacity(len);
-        let mut cur = 0;
-        while cur < len {
-            let next = match cur + MAX_ENC_BL > len {
-                true => len,
-                false => cur + MAX_ENC_BL ,
-            };
-            data_enc.append(&mut self.get_fe()((data[cur..next]).to_vec())); //need to check security
-            cur = next;
+        while len >= MAX_ENC_BL {
+            len -= MAX_ENC_BL;
+            let remain = data.split_off(MAX_ENC_BL);
+            let input = data;
+            data = remain;
+            data_enc.push(self.get_fe()(input));
+        }
+        if len != 0 {
+            data_enc.push(self.get_fe()(data));
         }
         data_enc
     }
 
-    fn batch_decrypt(&self, data_enc: &Vec<Self::ItemE>) -> Vec<Self::Item> {
-        let len = data_enc.len();
-        let mut data = Vec::with_capacity(len);
-        let mut cur = 0;
-        while cur < len {
-            let next = match cur + MAX_ENC_BL > len {
-                true => len,
-                false => cur + MAX_ENC_BL ,
-            };
-            let mut pt = self.get_fd()((data_enc[cur..next]).to_vec());
-            cur += pt.len();
+    fn batch_decrypt(&self, data_enc: Vec<Self::ItemE>) -> Vec<Self::Item> {
+        let mut data = Vec::new();
+        for block in data_enc {
+            let mut pt = self.get_fd()(block);
             data.append(&mut pt); //need to check security
         }
         data
     }
 
     fn narrow(&self, data_ptr: *mut u8) -> *mut u8 {
-        let result = self.compute(data_ptr).collect::<Vec<Self::Item>>();
         let now = Instant::now();
-        let result_enc = self.batch_encrypt(&result); 
+        let result = self.compute(data_ptr).collect::<Vec<Self::Item>>();
+        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+        println!("in enclave narrow computation {:?} s", dur); 
+        let now = Instant::now();
+        let result_enc = self.batch_encrypt(result); 
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("in enclave encrypt {:?} s", dur); 
         let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
@@ -363,8 +387,8 @@ pub trait OpE: Op {
         U: Data,
         UE: Data,
         F: SerFunc(Self::Item) -> U,
-        FE: SerFunc(Vec<U>) -> Vec<UE>,
-        FD: SerFunc(Vec<UE>) -> Vec<U>,
+        FE: SerFunc(Vec<U>) -> UE,
+        FD: SerFunc(UE) -> Vec<U>,
     {
         let new_op = SerArc::new(Mapper::new(self.get_op(), f, fe, fd));
         insert_opmap(new_op.get_id(), new_op.get_op_base());
@@ -377,8 +401,8 @@ pub trait OpE: Op {
         U: Data,
         UE: Data,
         F: SerFunc(Self::Item) -> Box<dyn Iterator<Item = U>>,
-        FE: SerFunc(Vec<U>) -> Vec<UE>,
-        FD: SerFunc(Vec<UE>) -> Vec<U>,
+        FE: SerFunc(Vec<U>) -> UE,
+        FD: SerFunc(UE) -> Vec<U>,
     {
         let new_op = SerArc::new(FlatMapper::new(self.get_op(), f, fe, fd));
         insert_opmap(new_op.get_id(), new_op.get_op_base());

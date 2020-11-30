@@ -8,6 +8,7 @@ use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
 use crate::basic::{AnyData, Data, Func};
+use crate::op::MAX_ENC_BL;
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use downcast_rs::DowncastSync;
@@ -28,17 +29,15 @@ impl Dependency {
     }
 }
 
-impl<K, V, C, KE, CE, FE, FD> From<ShuffleDependency<K, V, C, KE, CE, FE, FD>> for Dependency 
+impl<K, V, C, KE, CE> From<ShuffleDependency<K, V, C, KE, CE>> for Dependency 
 where
     K: Data + Eq + Hash + Ord, 
     V: Data, 
     C: Data,
     KE: Data,
     CE: Data,
-    FE: Func(Vec<(K, C)>) -> Vec<(KE, CE)> + Clone,
-    FD: Func(Vec<(KE, CE)>) -> Vec<(K, C)> + Clone,
 {
-    fn from(shuf_dep: ShuffleDependency<K, V, C, KE, CE, FE, FD>) -> Self {
+    fn from(shuf_dep: ShuffleDependency<K, V, C, KE, CE>) -> Self {
         Dependency::ShuffleDependency(Arc::new(shuf_dep) as Arc<dyn ShuffleDependencyTrait>)
     }
 }
@@ -93,41 +92,37 @@ pub trait ShuffleDependencyTrait: DowncastSync + Send + Sync  {
 }
 impl_downcast!(sync ShuffleDependencyTrait);
 
-pub struct ShuffleDependency<K, V, C, KE, CE, FE, FD> 
+pub struct ShuffleDependency<K, V, C, KE, CE> 
 where
     K: Data + Eq + Hash + Ord, 
     V: Data, 
     C: Data,
     KE: Data,
     CE: Data,
-    FE: Func(Vec<(K, C)>) -> Vec<(KE, CE)> + Clone,
-    FD: Func(Vec<(KE, CE)>) -> Vec<(K, C)> + Clone,
 {
     pub is_cogroup: bool,
     pub aggregator: Arc<Aggregator<K, V, C>>,
     pub partitioner: Box<dyn Partitioner>,
     prev_ids: HashSet<usize>,
-    fe: FE,
-    fd: FD,
+    pub fe: Box<dyn Func(Vec<(K, C)>) -> (KE, CE)>,
+    pub fd: Box<dyn Func((KE, CE)) -> Vec<(K, C)>>,
 }
 
-impl<K, V, C, KE, CE, FE, FD> ShuffleDependency<K, V, C, KE, CE, FE, FD> 
+impl<K, V, C, KE, CE> ShuffleDependency<K, V, C, KE, CE> 
 where 
     K: Data + Eq + Hash + Ord, 
     V: Data, 
     C: Data,
     KE: Data,
     CE: Data,
-    FE: Func(Vec<(K, C)>) -> Vec<(KE, CE)> + Clone,
-    FD: Func(Vec<(KE, CE)>) -> Vec<(K, C)> + Clone,
 {
     pub fn new(
         is_cogroup: bool,
         aggregator: Arc<Aggregator<K, V, C>>,
         partitioner: Box<dyn Partitioner>,
         prev_ids: HashSet<usize>,
-        fe: FE,
-        fd: FD,
+        fe: Box<dyn Func(Vec<(K, C)>) -> (KE, CE)>,
+        fd: Box<dyn Func((KE, CE)) -> Vec<(K, C)>>,
     ) -> Self {
         ShuffleDependency {
             is_cogroup,
@@ -140,15 +135,13 @@ where
     }
 }
 
-impl<K, V, C, KE, CE, FE, FD> ShuffleDependencyTrait for ShuffleDependency<K, V, C, KE, CE, FE, FD>
+impl<K, V, C, KE, CE> ShuffleDependencyTrait for ShuffleDependency<K, V, C, KE, CE>
 where
     K: Data + Eq + Hash + Ord, 
     V: Data, 
     C: Data,
     KE: Data,
     CE: Data,
-    FE: Func(Vec<(K, C)>) -> Vec<(KE, CE)> + Clone,
-    FD: Func(Vec<(KE, CE)>) -> Vec<(K, C)> + Clone,
 {
     fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>) -> *mut u8 {
         let aggregator = self.aggregator.clone();
@@ -175,18 +168,27 @@ where
         let now = Instant::now();
         let result = buckets.into_iter()
             .map(|bucket| {
-                (self.fe)(bucket.into_iter().collect::<Vec<_>>())    //may need to sub-partition
+                //batch encrypt
+                let mut bucket = bucket.into_iter().collect::<Vec<_>>();
+                let mut len = bucket.len();
+                let mut data_enc = Vec::with_capacity(len);
+                //TODO: need to adjust the block size
+                while len >= MAX_ENC_BL {    
+                    len -= MAX_ENC_BL;
+                    let remain = bucket.split_off(MAX_ENC_BL);
+                    let input = bucket;
+                    bucket = remain;
+                    data_enc.push((self.fe)(input));
+                }
+                if len != 0 {
+                    data_enc.push((self.fe)(bucket));
+                }
+                data_enc
             })
-            .collect::<Vec<_>>();  //HashMap to Vec
+            .collect::<Vec<_>>();  //BTreeMap to Vec
+
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("in enclave encrypt {:?} s", dur); 
-
-        /*
-        crate::ALLOCATOR.lock().set_switch(true);
-        let result_enc = result.clone();
-        let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
-        crate::ALLOCATOR.lock().set_switch(false);
-        */
         let result_ptr = Box::into_raw(Box::new(result)) as *mut u8;
 
         result_ptr
@@ -212,4 +214,3 @@ where
     }
 
 }
-

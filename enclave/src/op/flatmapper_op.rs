@@ -10,8 +10,8 @@ use crate::serialization_free::{Construct, Idx, SizeBuf};
 pub struct FlatMapper<T: Data, U: Data, UE: Data, F, FE, FD>
 where
     F: Func(T) -> Box<dyn Iterator<Item = U>> + Clone,
-    FE: Func(Vec<U>) -> Vec<UE> + Clone,
-    FD: Func(Vec<UE>) -> Vec<U> + Clone,
+    FE: Func(Vec<U>) -> UE + Clone,
+    FD: Func(UE) -> Vec<U> + Clone,
 {
     vals: Arc<OpVals>,
     next_deps: Arc<SgxMutex<Vec<Dependency>>>,
@@ -24,8 +24,8 @@ where
 impl<T: Data, U: Data, UE: Data, F, FE, FD> Clone for FlatMapper<T, U, UE, F, FE, FD>
 where
     F: Func(T) -> Box<dyn Iterator<Item = U>> + Clone,
-    FE: Func(Vec<U>) -> Vec<UE> + Clone,
-    FD: Func(Vec<UE>) -> Vec<U> + Clone,
+    FE: Func(Vec<U>) -> UE + Clone,
+    FD: Func(UE) -> Vec<U> + Clone,
 {
     fn clone(&self) -> Self {
         FlatMapper {
@@ -42,8 +42,8 @@ where
 impl<T: Data, U: Data, UE: Data, F, FE, FD> FlatMapper<T, U, UE, F, FE, FD>
 where
     F: Func(T) -> Box<dyn Iterator<Item = U>> + Clone,
-    FE: Func(Vec<U>) -> Vec<UE> + Clone,
-    FD: Func(Vec<UE>) -> Vec<U> + Clone,
+    FE: Func(Vec<U>) -> UE + Clone,
+    FD: Func(UE) -> Vec<U> + Clone,
 {
     pub(crate) fn new(prev: Arc<dyn Op<Item = T>>, f: F, fe: FE, fd: FD) -> Self {
         let mut vals = OpVals::new(prev.get_op_base().get_context());
@@ -73,8 +73,8 @@ where
 impl<T: Data, U: Data, UE: Data, F, FE, FD> OpBase for FlatMapper<T, U, UE, F, FE, FD>
 where
     F: SerFunc(T) -> Box<dyn Iterator<Item = U>>,
-    FE: SerFunc(Vec<U>) -> Vec<UE>,
-    FD: SerFunc(Vec<UE>) -> Vec<U>,
+    FE: SerFunc(Vec<U>) -> UE,
+    FD: SerFunc(UE) -> Vec<U>,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
         let mut buf = unsafe{ Box::from_raw(p_buf as *mut SizeBuf) };
@@ -89,7 +89,7 @@ where
                 } else {
                     let mut idx = Idx::new();
                     let data = unsafe{ Box::from_raw(p_data_enc as *mut Vec<U>) };
-                    let data_enc = self.batch_encrypt(&data);
+                    let data_enc = self.batch_encrypt(*data.clone());
                     data_enc.send(&mut buf, &mut idx);
                     forget(data);
                 }
@@ -103,8 +103,7 @@ where
                 shuf_dep.send_sketch(&mut buf, p_data_enc);
             },
             _ => panic!("invalid is_shuffle"),
-        } 
-
+        }
         forget(buf);
     }
 
@@ -118,7 +117,7 @@ where
                     v_out.clone_in_place(&data_enc);
                 } else {
                     let data = unsafe{ Box::from_raw(p_data_enc as *mut Vec<U>) };
-                    let data_enc = Box::new(self.batch_encrypt(&data));
+                    let data_enc = Box::new(self.batch_encrypt(*data.clone()));
                     v_out.clone_in_place(&data_enc);
                     forget(data); //data may be used later
                 }
@@ -161,8 +160,8 @@ where
 impl<T: Data, U: Data, UE: Data, F, FE, FD> Op for FlatMapper<T, U, UE, F, FE, FD>
 where
     F: SerFunc(T) -> Box<dyn Iterator<Item = U>> ,
-    FE: SerFunc(Vec<U>) -> Vec<UE>,
-    FD: SerFunc(Vec<UE>) -> Vec<U>,
+    FE: SerFunc(Vec<U>) -> UE,
+    FD: SerFunc(UE) -> Vec<U>,
 { 
     type Item = U;
     
@@ -195,19 +194,19 @@ where
 impl<T: Data, U: Data, UE: Data, F, FE, FD> OpE for FlatMapper<T, U, UE, F, FE, FD>
 where
     F: SerFunc(T) -> Box<dyn Iterator<Item = U>>,
-    FE: SerFunc(Vec<U>) -> Vec<UE>,
-    FD: SerFunc(Vec<UE>) -> Vec<U>,
+    FE: SerFunc(Vec<U>) -> UE,
+    FD: SerFunc(UE) -> Vec<U>,
 {
     type ItemE = UE;
     fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
         Arc::new(self.clone())
     }
 
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>> {
-        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>>
+    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
+        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Self::ItemE>
     }
 
-    fn get_fd(&self) -> Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>> {
-        Box::new(self.fd.clone()) as Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>>
+    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
+        Box::new(self.fd.clone()) as Box<dyn Func(Self::ItemE)->Vec<Self::Item>>
     }
 }

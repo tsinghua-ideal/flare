@@ -17,16 +17,18 @@ use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 
 #[derive(Clone)]
-pub struct CoGrouped<K, V, W, KE, VE, WE, FE, FD> 
+pub struct CoGrouped<K, V, W, KE, VE, WE, CE, DE, FE, FD> 
 where
     K: Data + Eq + Hash + Ord,
     V: Data,
     W: Data,
     KE: Data + Eq + Hash + Ord,
     VE: Data,
+    CE: Data,
     WE: Data,
-    FE: Func(Vec<(K, (Vec<V>, Vec<W>))>) -> Vec<(KE, (Vec<VE>, Vec<WE>))> + Clone, 
-    FD: Func(Vec<(KE, (Vec<VE>, Vec<WE>))>) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
+    DE: Data,
+    FE: Func(Vec<(K, (Vec<V>, Vec<W>))>) -> (KE, (CE, DE)) + Clone, 
+    FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
 {
     pub(crate) vals: Arc<OpVals>,
     pub(crate) next_deps: Arc<SgxMutex<Vec<Dependency>>>,
@@ -37,16 +39,18 @@ where
     fd: FD,
 }
 
-impl<K, V, W, KE, VE, WE, FE, FD> CoGrouped<K, V, W, KE, VE, WE, FE, FD> 
+impl<K, V, W, KE, VE, WE, CE, DE, FE, FD> CoGrouped<K, V, W, KE, VE, WE, CE, DE, FE, FD> 
 where
-    K: Data + Eq + Hash + Ord,
-    V: Data,
-    W: Data,
-    KE: Data + Eq + Hash + Ord,
-    VE: Data,
-    WE: Data,
-    FE: Func(Vec<(K, (Vec<V>, Vec<W>))>) -> Vec<(KE, (Vec<VE>, Vec<WE>))> + Clone, 
-    FD: Func(Vec<(KE, (Vec<VE>, Vec<WE>))>) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone, 
+K: Data + Eq + Hash + Ord,
+V: Data,
+W: Data,
+KE: Data + Eq + Hash + Ord,
+VE: Data,
+CE: Data,
+WE: Data,
+DE: Data,
+FE: Func(Vec<(K, (Vec<V>, Vec<W>))>) -> (KE, (CE, DE)) + Clone, 
+FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
 {
     pub fn new(op0: Arc<dyn OpE<Item = (K, V), ItemE = (KE, VE)>>,
                op1: Arc<dyn OpE<Item = (K, W), ItemE = (KE, WE)>>,
@@ -73,35 +77,29 @@ where
                 )
             );
         } else {
+            //TODO need revision if fe & fd of group_by is passed 
             let fe = op0.get_fe();
-            let fe_wrapper = move |v: Vec<(K, Vec<V>)>| {
-                let mut ct = Vec::with_capacity(v.len());
-                for (x, vy) in v {
-                    let (ct_x, ct_y): (Vec<KE>, Vec<VE>) = (fe)(vy
-                        .into_iter()
-                        .map(|y| (x.clone(), y))
-                        .collect::<Vec<_>>())
-                        .into_iter()
-                        .unzip();
-                    ct.push((ct_x[0].clone(), ct_y));
-                } 
-                ct
-            };
+            let fe_wrapper = Box::new(move |v: Vec<(K, Vec<V>)>| {
+                let (x, y): (Vec<K>, Vec<Vec<V>>) = v.into_iter().unzip();
+                let mut y_padding = Vec::new();
+                y_padding.resize_with(x.len(), Default::default);
+                let (ct_x, _) = (fe)(x.into_iter()
+                    .zip(y_padding.into_iter())
+                    .collect::<Vec<_>>()
+                );
+                (ct_x, ser_encrypt(y))
+            });
 
             let fd = op0.get_fd();
-            let fd_wrapper = move |v: Vec<(KE, Vec<VE>)>| {
-                let mut pt = Vec::with_capacity(v.len());
-                for (x, vy) in v {
-                    let (pt_x, pt_y): (Vec<K>, Vec<V>) = (fd)(vy
-                        .into_iter()
-                        .map(|y| (x.clone(), y))
-                        .collect::<Vec<_>>())
-                        .into_iter()
-                        .unzip();
-                    pt.push((pt_x[0].clone(), pt_y));
-                }
-                pt
-            };
+            let fd_wrapper = Box::new(move |v: (KE, Vec<u8>)| {
+                let (x, y) = v;
+                let y_padding: VE = Default::default();
+                let (pt_x, _): (Vec<K>, Vec<V>) = (fd)((x, y_padding)).into_iter().unzip();
+                let pt_y: Vec<Vec<V>> = ser_decrypt(y);
+                pt_x.into_iter()
+                    .zip(pt_y.into_iter())
+                    .collect::<Vec<_>>()
+            });
 
             let aggr = Arc::new(Aggregator::<K, V, _>::default());
             deps.push(Dependency::ShuffleDependency(
@@ -144,35 +142,29 @@ where
                 )
             ); 
         } else {
+            //TODO need revision if fe & fd of group_by is passed 
             let fe = op1.get_fe();
-            let fe_wrapper = move |v: Vec<(K, Vec<W>)>| {
-                let mut ct = Vec::with_capacity(v.len());
-                for (x, vy) in v {
-                    let (ct_x, ct_y): (Vec<KE>, Vec<WE>) = (fe)(vy
-                        .into_iter()
-                        .map(|y| (x.clone(), y))
-                        .collect::<Vec<_>>())
-                        .into_iter()
-                        .unzip();
-                    ct.push((ct_x[0].clone(), ct_y));
-                } 
-                ct
-            };
+            let fe_wrapper = Box::new(move |v: Vec<(K, Vec<W>)>| {
+                let (x, y): (Vec<K>, Vec<Vec<W>>) = v.into_iter().unzip();
+                let mut y_padding = Vec::new();
+                y_padding.resize_with(x.len(), Default::default);
+                let (ct_x, _) = (fe)(x.into_iter()
+                    .zip(y_padding.into_iter())
+                    .collect::<Vec<_>>()
+                );
+                (ct_x, ser_encrypt(y))
+            });
 
             let fd = op1.get_fd();
-            let fd_wrapper = move |v: Vec<(KE, Vec<WE>)>| {
-                let mut pt = Vec::with_capacity(v.len());
-                for (x, vy) in v {
-                    let (pt_x, pt_y): (Vec<K>, Vec<W>) = (fd)(vy
-                        .into_iter()
-                        .map(|y| (x.clone(), y))
-                        .collect::<Vec<_>>())
-                        .into_iter()
-                        .unzip();
-                    pt.push((pt_x[0].clone(), pt_y));
-                }
-                pt
-            };
+            let fd_wrapper = Box::new(move |v: (KE, Vec<u8>)| {
+                let (x, y) = v;
+                let y_padding: WE = Default::default();
+                let (pt_x, _): (Vec<K>, Vec<W>) = (fd)((x, y_padding)).into_iter().unzip();
+                let pt_y: Vec<Vec<W>> = ser_decrypt(y);
+                pt_x.into_iter()
+                    .zip(pt_y.into_iter())
+                    .collect::<Vec<_>>()
+            });
 
             let aggr = Arc::new(Aggregator::<K, W, _>::default());
             deps.push(Dependency::ShuffleDependency(
@@ -213,16 +205,18 @@ where
     }
 }
 
-impl<K, V, W, KE, VE, WE, FE, FD> OpBase for CoGrouped<K, V, W, KE, VE, WE, FE, FD> 
+impl<K, V, W, KE, VE, WE, CE, DE, FE, FD> OpBase for CoGrouped<K, V, W, KE, VE, WE, CE, DE, FE, FD> 
 where 
     K: Data + Eq + Hash + Ord,
     V: Data,
     W: Data,
     KE: Data + Eq + Hash + Ord,
     VE: Data,
+    CE: Data,
     WE: Data,
-    FE: SerFunc(Vec<(K, (Vec<V>, Vec<W>))>) -> Vec<(KE, (Vec<VE>, Vec<WE>))>, 
-    FD: SerFunc(Vec<(KE, (Vec<VE>, Vec<WE>))>) -> Vec<(K, (Vec<V>, Vec<W>))>, 
+    DE: Data,
+    FE: Func(Vec<(K, (Vec<V>, Vec<W>))>) -> (KE, (CE, DE)) + Clone, 
+    FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
         let mut buf = unsafe{ Box::from_raw(p_buf as *mut SizeBuf) };
@@ -231,13 +225,13 @@ where
                 let encrypted = self.get_next_deps().lock().unwrap().is_empty();
                 if encrypted {
                     let mut idx = Idx::new();
-                    let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<(KE, (Vec<VE>, Vec<WE>))>) };
+                    let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<(KE, (CE, DE))>) };
                     data_enc.send(&mut buf, &mut idx);
                     forget(data_enc);
                 } else {
                     let mut idx = Idx::new();
                     let data = unsafe{ Box::from_raw(p_data_enc as *mut Vec<(K, (Vec<V>, Vec<W>))>) };
-                    let data_enc = self.batch_encrypt(&data);
+                    let data_enc = self.batch_encrypt(*data.clone());
                     data_enc.send(&mut buf, &mut idx);
                     forget(data);
                 }
@@ -250,26 +244,6 @@ where
                 };
                 shuf_dep.send_sketch(&mut buf, p_data_enc);
             },
-            20 => {
-                let mut idx = Idx::new();
-                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<(KE, Vec<VE>)>) };
-                data_enc.send(&mut buf, &mut idx);
-                println!("buf = {:?}", buf);
-                forget(data_enc);
-            },
-            21 => {
-                let mut idx = Idx::new();
-                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<(KE,  Vec<WE>)>) };
-                data_enc.send(&mut buf, &mut idx);
-                println!("buf = {:?}", buf);
-                forget(data_enc);
-            },
-            22 => {
-                let mut idx = Idx::new();
-                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Vec<usize>>) };
-                data_enc.send(&mut buf, &mut idx);
-                forget(data_enc);
-            },
             _ => panic!("invalid is_shuffle"),
         } 
 
@@ -279,14 +253,14 @@ where
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8) {
         match is_shuffle {
             0 | 2 => {
-                let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<(KE, (Vec<VE>, Vec<WE>))>) };
+                let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<(KE, (CE, DE))>) };
                 let encrypted = self.get_next_deps().lock().unwrap().is_empty();
                 if encrypted {
-                    let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<(KE, (Vec<VE>, Vec<WE>))>) };
+                    let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<(KE, (CE, DE))>) };
                     v_out.clone_in_place(&data_enc);
                 } else {
                     let data = unsafe{ Box::from_raw(p_data_enc as *mut Vec<(K, (Vec<V>, Vec<W>))>) };
-                    let data_enc = Box::new(self.batch_encrypt(&data));
+                    let data_enc = Box::new(self.batch_encrypt(*data.clone()));
                     v_out.clone_in_place(&data_enc);
                     forget(data); //data may be used later
                 }
@@ -299,24 +273,6 @@ where
                     Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
                 };
                 shuf_dep.send_enc_data(p_out, p_data_enc);
-            },
-            20 => {
-                let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<(KE, Vec<VE>)>) };
-                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<(KE, Vec<VE>)>) };
-                v_out.clone_in_place(&data_enc);
-                forget(v_out);
-            },
-            21 => {
-                let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<(KE, Vec<WE>)>) };
-                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<(KE, Vec<WE>)>) };
-                v_out.clone_in_place(&data_enc);
-                forget(v_out);
-            },
-            22 => {
-                let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<Vec<usize>>) };
-                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Vec<usize>>) };
-                v_out.clone_in_place(&data_enc);
-                forget(v_out);
             },
             _ => panic!("invalid is_shuffle"),
         } 
@@ -351,16 +307,18 @@ where
 
 }
 
-impl<K, V, W, KE, VE, WE, FE, FD> Op for CoGrouped<K, V, W, KE, VE, WE, FE, FD>
+impl<K, V, W, KE, VE, WE, CE, DE, FE, FD> Op for CoGrouped<K, V, W, KE, VE, WE, CE, DE, FE, FD>
 where 
     K: Data + Eq + Hash + Ord,
     V: Data,
     W: Data,
     KE: Data + Eq + Hash + Ord,
     VE: Data,
+    CE: Data,
     WE: Data,
-    FE: SerFunc(Vec<(K, (Vec<V>, Vec<W>))>) -> Vec<(KE, (Vec<VE>, Vec<WE>))>, 
-    FD: SerFunc(Vec<(KE, (Vec<VE>, Vec<WE>))>) -> Vec<(K, (Vec<V>, Vec<W>))>, 
+    DE: Data,
+    FE: SerFunc(Vec<(K, (Vec<V>, Vec<W>))>) -> (KE, (CE, DE)), 
+    FD: SerFunc((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))>, 
 {
     type Item = (K, (Vec<V>, Vec<W>));  
     
@@ -382,12 +340,13 @@ where
             },
             2 => {      //shuffle read
                 let mut dur_sum = 0.0;
+                //TODO need revision if fe & fd of group_by is passed 
                 let data_enc = unsafe{ 
                     Box::from_raw(data_ptr as *mut (
-                        Vec<Vec<(KE, VE)>>, 
-                        Vec<Vec<(KE, Vec<VE>)>>, 
-                        Vec<Vec<(KE, WE)>>, 
-                        Vec<Vec<(KE, Vec<WE>)>>
+                        Vec<(KE, VE)>, 
+                        Vec<Vec<(KE, Vec<u8>)>>, 
+                        Vec<(KE, WE)>, 
+                        Vec<Vec<(KE, Vec<u8>)>>
                     ))
                 };
                 let remained_ptr = CAVE.lock().unwrap().remove(&tid);
@@ -413,19 +372,17 @@ where
                             }
                         }
                     },
-                    Dependency::ShuffleDependency(_shuf) => {
+                    Dependency::ShuffleDependency(shuf) => {
+                        //TODO need revision if fe & fd of group_by is passed 
+                        let s = shuf.downcast_ref::<ShuffleDependency<K, V, Vec<V>, KE, Vec<u8>>>().unwrap();
                         for sub_data_enc in data_enc.1.clone() {  
                             let now = Instant::now();
                             let mut pt = Vec::with_capacity(sub_data_enc.len());
-                            for (x, vy) in sub_data_enc {
-                                let (pt_x, pt_y): (Vec<K>, Vec<V>) = self.op0.get_fd()(vy
-                                    .into_iter()
-                                    .map(|y| (x.clone(), y))
-                                    .collect::<Vec<_>>())
-                                    .into_iter()
-                                    .unzip();
-                                pt.push((pt_x[0].clone(), pt_y));
+                            for block in sub_data_enc {
+                                let mut pt_b = (s.fd)(block);
+                                pt.append(&mut pt_b); //need to check security
                             }
+
                             let data0 = pt;
                             let dur = now.elapsed().as_nanos() as f64 * 1e-9;
                             dur_sum += dur;  
@@ -460,19 +417,17 @@ where
                             }
                         }
                     },
-                    Dependency::ShuffleDependency(_shuf) => {
+                    Dependency::ShuffleDependency(shuf) => {
+                        //TODO need revision if fe & fd of group_by is passed 
+                        let s = shuf.downcast_ref::<ShuffleDependency<K, W, Vec<W>, KE, Vec<u8>>>().unwrap();
                         for sub_data_enc in data_enc.3.clone() { 
                             let now = Instant::now();
                             let mut pt = Vec::with_capacity(sub_data_enc.len());
-                            for (x, vy) in sub_data_enc {
-                                let (pt_x, pt_y): (Vec<K>, Vec<W>) = self.op1.get_fd()(vy
-                                    .into_iter()
-                                    .map(|y| (x.clone(), y))
-                                    .collect::<Vec<_>>())
-                                    .into_iter()
-                                    .unzip();
-                                pt.push((pt_x[0].clone(), pt_y));
+                            for block in sub_data_enc {
+                                let mut pt_b = (s.fd)(block);
+                                pt.append(&mut pt_b); //need to check security
                             }
+
                             let data1 = pt;
                             let dur = now.elapsed().as_nanos() as f64 * 1e-9;
                             dur_sum += dur;
@@ -545,28 +500,30 @@ where
     }
 }
 
-impl<K, V, W, KE, VE, WE, FE, FD> OpE for CoGrouped<K, V, W, KE, VE, WE, FE, FD> 
+impl<K, V, W, KE, VE, WE, CE, DE, FE, FD> OpE for CoGrouped<K, V, W, KE, VE, WE, CE, DE, FE, FD> 
 where 
     K: Data + Eq + Hash + Ord,
     V: Data,
     W: Data,
     KE: Data + Eq + Hash + Ord,
     VE: Data,
+    CE: Data,
     WE: Data,
-    FE: SerFunc(Vec<(K, (Vec<V>, Vec<W>))>) -> Vec<(KE, (Vec<VE>, Vec<WE>))>, 
-    FD: SerFunc(Vec<(KE, (Vec<VE>, Vec<WE>))>) -> Vec<(K, (Vec<V>, Vec<W>))>,
+    DE: Data,
+    FE: SerFunc(Vec<(K, (Vec<V>, Vec<W>))>) -> (KE, (CE, DE)), 
+    FD: SerFunc((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))>,
 {
-    type ItemE = (KE, (Vec<VE>, Vec<WE>));
+    type ItemE = (KE, (CE, DE));
     fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
         Arc::new(self.clone())
     }
 
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>> {
-        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>>
+    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
+        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Self::ItemE>
     }
 
-    fn get_fd(&self) -> Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>> {
-        Box::new(self.fd.clone()) as Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>>
+    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
+        Box::new(self.fd.clone()) as Box<dyn Func(Self::ItemE)->Vec<Self::Item>>
     }
 
 

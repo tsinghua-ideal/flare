@@ -14,8 +14,8 @@ where
     T: Data, 
     TE: Data, 
     F: Func(Box<dyn Iterator<Item = T>>) -> Vec<T> + Clone,
-    FE: Func(Vec<T>) -> Vec<TE> + Clone,
-    FD: Func(Vec<TE>) -> Vec<T> + Clone,
+    FE: Func(Vec<T>) -> TE + Clone,
+    FD: Func(TE) -> Vec<T> + Clone,
 {
     prev: Arc<dyn Op<Item = T>>,
     f: F,
@@ -28,8 +28,8 @@ where
     T: Data, 
     TE: Data, 
     F: Func(Box<dyn Iterator<Item = T>>) -> Vec<T> + Clone,
-    FE: Func(Vec<T>) -> Vec<TE> + Clone,
-    FD: Func(Vec<TE>) -> Vec<T> + Clone,
+    FE: Func(Vec<T>) -> TE + Clone,
+    FD: Func(TE) -> Vec<T> + Clone,
 {
     fn clone(&self) -> Self {
         Reduced {
@@ -46,8 +46,8 @@ where
     T: Data, 
     TE: Data, 
     F: Func(Box<dyn Iterator<Item = T>>) -> Vec<T> + Clone,
-    FE: Func(Vec<T>) -> Vec<TE> + Clone,
-    FD: Func(Vec<TE>) -> Vec<T> + Clone,
+    FE: Func(Vec<T>) -> TE + Clone,
+    FD: Func(TE) -> Vec<T> + Clone,
 {
     pub(crate) fn new(prev: Arc<dyn Op<Item = T>>, f: F, fe: FE, fd: FD) -> Self {
         let mut prev_ids = prev.get_prev_ids();
@@ -73,8 +73,8 @@ where
     T: Data,
     TE: Data,
     F: SerFunc(Box<dyn Iterator<Item = T>>) -> Vec<T>,
-    FE: SerFunc(Vec<T>) -> Vec<TE>,
-    FD: SerFunc(Vec<TE>) -> Vec<T>,
+    FE: SerFunc(Vec<T>) -> TE,
+    FD: SerFunc(TE) -> Vec<T>,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
         
@@ -136,8 +136,8 @@ where
     T: Data,
     TE: Data,
     F: SerFunc(Box<dyn Iterator<Item = T>>) -> Vec<T>,
-    FE: SerFunc(Vec<T>) -> Vec<TE>,
-    FD: SerFunc(Vec<TE>) -> Vec<T>,
+    FE: SerFunc(Vec<T>) -> TE,
+    FD: SerFunc(TE) -> Vec<T>,
 {
     type Item = T;
     
@@ -161,7 +161,7 @@ where
 
     fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
         let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<TE>) };
-        let data = self.batch_decrypt(&data_enc); //need to check security
+        let data = self.batch_decrypt(*data_enc.clone()); //need to check security
         forget(data_enc);
         Box::new((self.f)(Box::new(data.into_iter())).into_iter())        
     }
@@ -173,19 +173,19 @@ where
     T: Data,
     TE: Data,   
     F: SerFunc(Box<dyn Iterator<Item = T>>) -> Vec<T>,
-    FE: SerFunc(Vec<T>) -> Vec<TE>,
-    FD: SerFunc(Vec<TE>) -> Vec<T>,
+    FE: SerFunc(Vec<T>) -> TE,
+    FD: SerFunc(TE) -> Vec<T>,
 {
     type ItemE = TE;
     fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
         Arc::new(self.clone())
     }
 
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>> {
-        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Vec<Self::ItemE>>
+    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
+        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Self::ItemE>
     }
 
-    fn get_fd(&self) -> Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>> {
-        Box::new(self.fd.clone()) as Box<dyn Func(Vec<Self::ItemE>)->Vec<Self::Item>>
+    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
+        Box::new(self.fd.clone()) as Box<dyn Func(Self::ItemE)->Vec<Self::Item>>
     }
 }
