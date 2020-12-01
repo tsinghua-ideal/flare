@@ -342,10 +342,7 @@ pub trait OpE: Op {
     }
 
     fn narrow(&self, data_ptr: *mut u8) -> *mut u8 {
-        let now = Instant::now();
         let result = self.compute(data_ptr).collect::<Vec<Self::Item>>();
-        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("in enclave narrow computation {:?} s", dur); 
         let now = Instant::now();
         let result_enc = self.batch_encrypt(result); 
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;

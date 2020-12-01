@@ -83,6 +83,7 @@ lazy_static! {
     static ref final_id: usize = {
         /* map */
         /*
+        // secure mode
         let fe = Box::new(|vp: Vec<i32>| {
             let buf0 = ser_encrypt::<>(vp);
             buf0
@@ -94,7 +95,7 @@ lazy_static! {
             pt0
         });
         let rdd0 = sc.make_op(fe.clone(), fd.clone());
-        let rdd1 = rdd0.map(Box::new(|i: i32| i * 4399 / (i % 71 + 1)), fe, fd);
+        let rdd1 = rdd0.map(Box::new(|i: i32|  i % (1 << 20) * 4399 / (i % 71 + 1) ), fe, fd);
         rdd1.get_id()
         */
 
@@ -331,7 +332,7 @@ lazy_static! {
         rdd2.get_id()
         */
         
-        /*
+        
         let fe = Box::new(|vp: Vec<(i32, i32)> | -> (Vec<u8>, Vec<u8>) {
             let len = vp.len();
             let mut buf0 = Vec::with_capacity(len);
@@ -392,10 +393,10 @@ lazy_static! {
         let rdd1 = sc.make_op(fe.clone(), fd.clone());
         let rdd2 = rdd1.join(rdd0.clone(), fe_jn, fd_jn, 1);
         rdd2.get_id()
-        */      
+        
 
         /* reduce */
-        
+        /*
         let fe = Box::new(|vp: Vec<i32>| {
             let buf0 = ser_encrypt::<>(vp);
             buf0
@@ -410,7 +411,7 @@ lazy_static! {
         let rdd0 = sc.make_op(fe, fd);
         let rdd1 = rdd0.reduce(Box::new(|x, y| x+y));
         rdd1.get_id()
-              
+        */    
 
         /* linear regression */
         /*
