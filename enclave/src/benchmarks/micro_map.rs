@@ -19,3 +19,4 @@ pub fn map_sec_0() -> usize {
     let rdd1 = rdd0.map(Box::new(|i: i32|  i % (1 << 20) * 4399 / (i % 71 + 1) ), fe, fd);
     rdd1.get_id()
 }
+

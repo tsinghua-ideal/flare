@@ -27,6 +27,7 @@ sgx_signal = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
 aes-gcm = "0.8.0"
 bincode = { git = "https://github.com/mesalock-linux/bincode-sgx" }
 # bytes = { git = "https://github.com/mesalock-linux/bytes-sgx" }
+# dashmap = { version = "3.11.10", features = ["no_std"] }  # need to port
 downcast-rs = { version = "1.2.0", default-features = false }
 dyn-clone = "1.0.3"
 itertools = { git = "https://github.com/mesalock-linux/rust-itertools-sgx" }
@@ -35,7 +36,6 @@ lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
 serde = { git = "https://github.com/mesalock-linux/serde-sgx" }
 serde_derive = { git = "https://github.com/mesalock-linux/serde-sgx" }
 spin = "0.7.0"
-
 
 [patch.'https://github.com/apache/teaclave-sgx-sdk.git']
 sgx_alloc = { path = "../incubator-teaclave-sgx-sdk/sgx_alloc" }

@@ -6,8 +6,9 @@ use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::basic::{Data, Func, SerFunc};
 use crate::dependency::{Dependency, OneToOneDependency};
-use crate::op::{Context, Op, OpE, OpBase};
+use crate::op::{CacheMeta, Context, Op, OpE, OpBase};
 use crate::serialization_free::{Construct, Idx, SizeBuf};
+use crate::custom_thread::PThread;
 
 pub struct Reduced<T, TE, F, FE, FD>
 where
@@ -77,37 +78,24 @@ where
     FD: SerFunc(TE) -> Vec<T>,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
-        
         match is_shuffle {
-            3 => {
-                let mut buf = unsafe{ Box::from_raw(p_buf as *mut SizeBuf) };
-                let mut idx = Idx::new();
-                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<TE>) };
-                data_enc.send(&mut buf, &mut idx);
-                forget(data_enc);
-                forget(buf);
-            }, 
-            _ => {
-                self.prev.build_enc_data_sketch(p_buf, p_data_enc, is_shuffle);
-            },
-        } 
-
-        
+            3 => self.step0_of_clone(p_buf, p_data_enc, is_shuffle), 
+            _ => self.prev.build_enc_data_sketch(p_buf, p_data_enc, is_shuffle),
+        }
     }
 
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8) {
         match is_shuffle {
-            3 => {
-                let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<TE>) };
-                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<TE>) };
-                v_out.clone_in_place(&data_enc);
-                forget(v_out);
-            }, 
-            _ => {
-                self.prev.clone_enc_data_out(p_out, p_data_enc, is_shuffle);
-            },
+            3 => self.step1_of_clone(p_out, p_data_enc, is_shuffle), 
+            _ => self.prev.clone_enc_data_out(p_out, p_data_enc, is_shuffle),
         } 
-        
+    }
+
+    fn call_free_res_enc(&self, res_ptr: *mut u8, is_shuffle: u8) {
+        match is_shuffle {
+            3 => self.free_res_enc(res_ptr),
+            _ => self.prev.call_free_res_enc(res_ptr, is_shuffle),
+        };
     }
 
     fn get_id(&self) -> usize {
@@ -126,8 +114,8 @@ where
         self.prev.get_next_deps()
     }
 
-    fn iterator(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-        self.compute_start(tid, data_ptr, is_shuffle)
+    fn iterator(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
+        self.compute_start(tid, data_ptr, is_shuffle, cache_meta)
     }
 }
 
@@ -149,21 +137,28 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
   
-    fn compute_start (&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8{
-        //3 is only for reduce
+    fn compute_start (&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8{
+        //3 is only for reduce & fold
         if is_shuffle == 3 {
-            self.narrow(data_ptr)
+            let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<TE>) };
+            let data = self.batch_decrypt(*data_enc.clone()); //need to check security
+            forget(data_enc);
+            let result = (self.f)(Box::new(data.into_iter()));
+            let now = Instant::now();
+            let result_enc = self.batch_encrypt(result); 
+            let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+            println!("in enclave encrypt {:?} s", dur); 
+            let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
+            return result_ptr;  
         }
         else {
-            self.prev.compute_start(tid, data_ptr, is_shuffle)
+            self.narrow(data_ptr, cache_meta)
         }
     }
 
-    fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
-        let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<TE>) };
-        let data = self.batch_decrypt(*data_enc.clone()); //need to check security
-        forget(data_enc);
-        Box::new((self.f)(Box::new(data.into_iter())).into_iter())        
+    fn compute(&self, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+        let (res_iter, handle) = self.prev.compute(data_ptr, cache_meta);
+        (Box::new((self.f)(res_iter).into_iter()), handle)        
     }
 
 }

@@ -8,7 +8,7 @@ use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
 use crate::basic::{AnyData, Data, Func};
-use crate::op::MAX_ENC_BL;
+use crate::op::{res_enc_to_ptr, MAX_ENC_BL};
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use downcast_rs::DowncastSync;
@@ -88,6 +88,7 @@ pub trait ShuffleDependencyTrait: DowncastSync + Send + Sync  {
     fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>) -> *mut u8;
     fn send_sketch(&self, buf: &mut SizeBuf, p_data_enc: *mut u8);
     fn send_enc_data(&self, p_out: usize, p_data_enc: *mut u8);
+    fn free_res_enc(&self, res_ptr: *mut u8);
     fn get_prev_ids(&self) -> HashSet<usize>;
 }
 impl_downcast!(sync ShuffleDependencyTrait);
@@ -189,9 +190,7 @@ where
 
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("in enclave encrypt {:?} s", dur); 
-        let result_ptr = Box::into_raw(Box::new(result)) as *mut u8;
-
-        result_ptr
+        return res_enc_to_ptr(result);
     }
 
     fn send_sketch(&self, buf: &mut SizeBuf, p_data_enc: *mut u8){
@@ -207,6 +206,13 @@ where
         v_out.clone_in_place(&buckets_enc);
         forget(v_out);
         //and free encrypted buckets
+    }
+
+    fn free_res_enc(&self, res_ptr: *mut u8) {
+        crate::ALLOCATOR.lock().set_switch(true);
+        let res = unsafe { Box::from_raw(res_ptr as *mut Vec<Vec<(KE, CE)>>) };
+        drop(res);
+        crate::ALLOCATOR.lock().set_switch(false);
     }
 
     fn get_prev_ids(&self) -> HashSet<usize> {
