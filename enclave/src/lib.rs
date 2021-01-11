@@ -17,6 +17,7 @@
 #![crate_name = "sparkenclave"]
 #![crate_type = "staticlib"]
 
+#![feature(box_syntax)]
 #![feature(coerce_unsized)]
 #![feature(fn_traits)]
 #![feature(map_first_last)]
@@ -39,6 +40,7 @@
 #[cfg(not(target_env = "sgx"))]
 #[macro_use]
 extern crate sgx_tstd as std;
+extern crate sgx_libc as libc;
 #[macro_use]
 extern crate serde_derive;
 #[macro_use]
@@ -47,17 +49,18 @@ extern crate lazy_static;
 extern crate downcast_rs; 
 use serde_derive::{Deserialize, Serialize};
 
-use sgx_types::*;
 use sgx_tcrypto::*;
 use std::boxed::Box;
 use std::cmp::min;
 use std::collections::{btree_map::BTreeMap, HashMap};
-use std::sync::{atomic::Ordering, Arc, SgxMutex as Mutex};
+use std::sync::{atomic::Ordering, Arc, SgxRwLock as RwLock, SgxMutex as Mutex};
 use std::thread;
 use std::time::Instant;
 use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 
+mod allocator;
+use allocator::{Allocator, Locked};
 mod aggregator;
 mod atomicptr_wrapper;
 use atomicptr_wrapper::AtomicPtrWrapper;
@@ -69,12 +72,18 @@ mod partitioner;
 mod op;
 use op::*;
 mod serialization_free;
+mod custom_thread;
+
+#[global_allocator]
+static ALLOCATOR: Locked<Allocator> = Locked::new(Allocator::new());
+static immediate_cout: bool = true;
 
 struct Captured {
     w: f32,
 }
 
 lazy_static! {
+    static ref CACHE: OpCache = OpCache::new();
     static ref CAVE: Arc<Mutex<HashMap<u64, usize>>> = Arc::new(Mutex::new(HashMap::new()));
     /// loop boundary: (lower bound after maping, upper bound after mapping, iteration number)
     static ref lp_boundary: AtomicPtrWrapper<Vec<(usize, usize, usize)>> = AtomicPtrWrapper::new(Box::into_raw(Box::new(Vec::new()))); 
@@ -90,10 +99,13 @@ lazy_static! {
         /* join */
         //join_sec_0()
         //join_sec_1()
-        join_sec_2()
+        //join_sec_2()
         
         /* reduce */
         //reduce_sec_0()
+
+        /* count */
+        count_sec_0()
 
         /* linear regression */
         /*
@@ -127,29 +139,48 @@ pub struct Point {
 }
 
 #[no_mangle]
-pub extern "C" fn secure_executing(id: usize,
-                                   tid: u64,
-                                   is_shuffle: u8, 
-                                   input: *mut u8, 
-                                   captured_vars: *const u8) -> usize 
+pub extern "C" fn get_lp_boundary() -> usize {
+    let lp_bd = unsafe{ lp_boundary.load(Ordering::Relaxed).as_ref()}.unwrap();
+    ALLOCATOR.lock().set_switch(true);
+    let ptr = Box::into_raw(Box::new(lp_bd.to_vec())) as *mut u8 as usize;
+    ALLOCATOR.lock().set_switch(false);
+    ptr
+}
+
+#[no_mangle]
+pub extern "C" fn free_lp_boundary(lp_bd_ptr: *mut u8) {
+    ALLOCATOR.lock().set_switch(true);
+    let lp_bd = unsafe { Box::from_raw(lp_bd_ptr as *mut Vec<(usize, usize, usize)>) };
+    drop(lp_bd);
+    ALLOCATOR.lock().set_switch(false);
+}
+
+#[no_mangle]
+pub extern "C" fn secure_executing(tid: u64, 
+                                    rdd_id: usize,
+                                    cache_meta: CacheMeta,
+                                    is_shuffle: u8, 
+                                    input: *mut u8, 
+                                    captured_vars: *const u8) -> usize 
 {
-    println!("inside enclave id = {:?}, is_shuffle = {:?}, thread_id = {:?}", id, is_shuffle, thread::rsgx_thread_self());
+    println!("inside enclave id = {:?}, is_shuffle = {:?}, thread_id = {:?}", rdd_id, is_shuffle, thread::rsgx_thread_self());
     let _final_id = *final_id; //this is necessary to let it accually execute
     //get current stage's captured vars
     let captured_vars = unsafe { (captured_vars as *const HashMap<usize, Vec<u8>>).as_ref() }.unwrap();
     //TODO
-    match captured_vars.get(&id) {
+    match captured_vars.get(&rdd_id) {
         Some(var) =>  {
             w.store(&mut bincode::deserialize::<f32>(var).unwrap(), Ordering::Relaxed);
         },
         None => (),
     };
     let now = Instant::now();
-    let mapped_id = map_id(id);
-    println!("mapped_id = {:?}", mapped_id);
+    let op_id = map_id(rdd_id);
+    println!("op_id = {:?}", op_id);
     println!("opmap = {:?}", load_opmap().len());
-    let op = load_opmap().get(&mapped_id).unwrap();
-    let result_ptr = op.iterator(tid, input, is_shuffle);
+    let op = load_opmap().get(&op_id).unwrap();
+    let mut cache_meta = cache_meta.clone();
+    let result_ptr = op.iterator(tid, input, is_shuffle, &mut cache_meta);
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("in enclave {:?} s", dur);
 
@@ -157,24 +188,36 @@ pub extern "C" fn secure_executing(id: usize,
 }
 
 #[no_mangle]
-pub extern "C" fn get_sketch(id: usize, 
+pub extern "C" fn free_res_enc(op_id: usize, is_shuffle: u8, input: *mut u8) {
+    let op = load_opmap().get(&op_id).unwrap();
+    op.call_free_res_enc(input, is_shuffle);
+}
+
+#[no_mangle]
+pub extern "C" fn priv_free_res_enc(op_id: usize, is_shuffle: u8, input: *mut u8) {
+    let op = load_opmap().get(&op_id).unwrap();
+    op.call_free_res_enc(input, is_shuffle);
+}
+
+#[no_mangle]
+pub extern "C" fn get_sketch(rdd_id: usize, 
                             is_shuffle: u8, 
                             p_buf: *mut u8, 
                             p_data_enc: *mut u8)
 {
-    let mapped_id = map_id(id);
-    let op = load_opmap().get(&mapped_id).unwrap();
+    let op_id = map_id(rdd_id);
+    let op = load_opmap().get(&op_id).unwrap();
     op.build_enc_data_sketch(p_buf, p_data_enc, is_shuffle);
 }
 
 #[no_mangle]
-pub extern "C" fn clone_out(id: usize, 
+pub extern "C" fn clone_out(rdd_id: usize, 
                             is_shuffle: u8,
                             p_out: usize, 
                             p_data_enc: *mut u8)
 {
-    let mapped_id = map_id(id);
-    let op = load_opmap().get(&mapped_id).unwrap();
+    let op_id = map_id(rdd_id);
+    let op = load_opmap().get(&op_id).unwrap();
     op.clone_enc_data_out(p_out, p_data_enc, is_shuffle);
 }
 
@@ -182,27 +225,8 @@ pub extern "C" fn clone_out(id: usize,
 pub extern "C" fn pre_touching(zero: u8) -> usize 
 {
     println!("thread_id = {:?}", thread::rsgx_thread_self());
-    // 4KB per page
-    // 1MB = 1<<8 = 2^8 pages
-    let mut p: *mut u8 = std::ptr::null_mut();
-    let mut tmp_p: *mut u8 = std::ptr::null_mut();
-    {
-        // malloc < 256B
-        p = Box::into_raw(Box::new(1)); 
-        //println!("<256B -> {:?}", p);
-    }
-    {
-        // 256B < malloc <256KB, e.g., 4K: one_page
-        tmp_p = Vec::with_capacity(4*1024).as_mut_ptr();
-        //println!("4KB -> {:?}", tmp_p);
-        p = min(tmp_p, p);
-    }
-    {
-        // malloc > 256KB, e.g., 1M
-        tmp_p = Vec::with_capacity(1024 * 1024).as_mut_ptr();
-        //println!("1MB -> {:?}", tmp_p);
-        p = min(tmp_p, p);
-    }
+    let base = std::enclave::get_heap_base();
+    let mut p = base as *mut u8;
     unsafe{ *p += zero; }
 
     for _i in 0..1<<10 {
@@ -214,3 +238,27 @@ pub extern "C" fn pre_touching(zero: u8) -> usize
     println!("finish pre_touching");
     return 0;
 }
+
+#[no_mangle]
+pub extern "C" fn probe_caching(rdd_id: usize,
+    part: usize,
+) -> usize {
+    let cached = CACHE.get_subpid(rdd_id, part);
+    ALLOCATOR.lock().set_switch(true);
+    let ptr = Box::into_raw(Box::new(cached.clone()));
+    ALLOCATOR.lock().set_switch(false);
+    ptr as *mut u8 as usize
+}
+
+#[no_mangle]
+pub extern "C" fn finish_probe_caching(
+    cached_sub_parts: *mut u8,
+) {
+    let cached_sub_parts = unsafe {
+        Box::from_raw(cached_sub_parts as *mut Vec<usize>)
+    };
+    ALLOCATOR.lock().set_switch(true);
+    drop(cached_sub_parts);
+    ALLOCATOR.lock().set_switch(false);
+}
+

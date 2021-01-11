@@ -45,11 +45,14 @@ fn main() -> Result<()> {
     /* join */
     //join_sec_0()?;
     //join_sec_1()?;
-    join_sec_2()?;
+    //join_sec_2()?;
     //join_unsec_2()?;
 
     /* reduce */
     //reduce_sec_0()?;
+
+    /* count */
+    count_sec_0()?;
 
     /* linear regression */
     /*
@@ -83,6 +86,8 @@ fn main() -> Result<()> {
     println!("Total time {:?} s", dur);
     println!("w = {:?}", w);
     */
+
+
 
     Ok(())
 }

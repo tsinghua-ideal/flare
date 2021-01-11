@@ -1,0 +1,255 @@
+src/base/sgx_utils.lo: src/base/sgx_utils.cc \
+ /home/lixiang/sgx/linux-sgx/common/inc/tlibc/string.h \
+ /home/lixiang/sgx/linux-sgx/common/inc/tlibc/sys/cdefs.h \
+ /home/lixiang/sgx/linux-sgx/common/inc/tlibc/sys/_types.h \
+ src/base/commandlineflags.h src/config.h \
+ /home/lixiang/sgx/linux-sgx/common/inc/sgx_trts.h \
+ /home/lixiang/sgx/linux-sgx/common/inc/sgx_error.h \
+ /home/lixiang/sgx/linux-sgx/common/inc/tlibc/stddef.h \
+ /home/lixiang/sgx/linux-sgx/common/inc/sgx_defs.h \
+ /home/lixiang/sgx/linux-sgx/common/inc/sgx_thread.h \
+ /home/lixiang/sgx/linux-sgx/common/inc/tlibc/stdint.h \
+ /home/lixiang/sgx/linux-sgx/common/inc/tlibc/sys/stdint.h \
+ /home/lixiang/sgx/linux-sgx/common/inc/sgx_spinlock.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/string \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_prolog.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_cprolog.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/features.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_stlport_version.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/_sgx.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/user_config.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/compat.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/host.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/_system.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/_linux.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/features.h \
+ /home/lixiang/sgx/linux-sgx/common/inc/tlibc/sys/endian.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/_gcc.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/stl_confix.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/_native_headers.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/debug/_debug.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_string.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_alloc.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_cstddef.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_cstdlib.h \
+ /home/lixiang/sgx/linux-sgx/common/inc/tlibc/stdlib.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_cmath.h \
+ /home/lixiang/sgx/linux-sgx/common/inc/tlibc/math.h \
+ /home/lixiang/sgx/linux-sgx/common/inc/tlibc/sys/limits.h \
+ /home/lixiang/sgx/linux-sgx/common/inc/tlibc/float.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_cstring.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/using/cstring \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_algobase.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/climits \
+ /home/lixiang/sgx/linux-sgx/common/inc/tlibc/limits.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_pair.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/type_traits.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/type_manips.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_iterator_base.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_ptrs_specialize.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_algobase.c \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_function_base.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_iterator.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_new.h \
+ /home/lixiang/sgx/linux-sgx/common/inc/stdc++/new \
+ /home/lixiang/sgx/linux-sgx/common/inc/sgx_defs.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/exception \
+ /home/lixiang/sgx/linux-sgx/common/inc/stdc++/exception \
+ /home/lixiang/sgx/linux-sgx/common/inc/stdc++/linux/exception \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_construct.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_alloc.c \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_string_fwd.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/char_traits.h \
+ /home/lixiang/sgx/linux-sgx/common/inc/tlibc/sys/types.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_cwchar.h \
+ /home/lixiang/sgx/linux-sgx/common/inc/tlibc/wchar.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_mbstate_t.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_uninitialized.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_string_base.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_string_npos.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_string_operators.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_string.c \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_ctraits_fns.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_function.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_function_adaptors.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_range_errors.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_range_errors.c \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_stdexcept.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_stdexcept_base.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_exception.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_string_hash.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_hash_fun.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_epilog.h \
+ /home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_config_compat_post.h \
+ src/base/basictypes.h \
+ /home/lixiang/sgx/linux-sgx/common/inc/tlibc/inttypes.h
+
+/home/lixiang/sgx/linux-sgx/common/inc/tlibc/string.h:
+
+/home/lixiang/sgx/linux-sgx/common/inc/tlibc/sys/cdefs.h:
+
+/home/lixiang/sgx/linux-sgx/common/inc/tlibc/sys/_types.h:
+
+src/base/commandlineflags.h:
+
+src/config.h:
+
+/home/lixiang/sgx/linux-sgx/common/inc/sgx_trts.h:
+
+/home/lixiang/sgx/linux-sgx/common/inc/sgx_error.h:
+
+/home/lixiang/sgx/linux-sgx/common/inc/tlibc/stddef.h:
+
+/home/lixiang/sgx/linux-sgx/common/inc/sgx_defs.h:
+
+/home/lixiang/sgx/linux-sgx/common/inc/sgx_thread.h:
+
+/home/lixiang/sgx/linux-sgx/common/inc/tlibc/stdint.h:
+
+/home/lixiang/sgx/linux-sgx/common/inc/tlibc/sys/stdint.h:
+
+/home/lixiang/sgx/linux-sgx/common/inc/sgx_spinlock.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/string:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_prolog.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_cprolog.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/features.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_stlport_version.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/_sgx.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/user_config.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/compat.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/host.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/_system.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/_linux.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/features.h:
+
+/home/lixiang/sgx/linux-sgx/common/inc/tlibc/sys/endian.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/_gcc.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/stl_confix.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/config/_native_headers.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/debug/_debug.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_string.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_alloc.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_cstddef.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_cstdlib.h:
+
+/home/lixiang/sgx/linux-sgx/common/inc/tlibc/stdlib.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_cmath.h:
+
+/home/lixiang/sgx/linux-sgx/common/inc/tlibc/math.h:
+
+/home/lixiang/sgx/linux-sgx/common/inc/tlibc/sys/limits.h:
+
+/home/lixiang/sgx/linux-sgx/common/inc/tlibc/float.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_cstring.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/using/cstring:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_algobase.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/climits:
+
+/home/lixiang/sgx/linux-sgx/common/inc/tlibc/limits.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_pair.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/type_traits.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/type_manips.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_iterator_base.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_ptrs_specialize.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_algobase.c:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_function_base.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_iterator.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_new.h:
+
+/home/lixiang/sgx/linux-sgx/common/inc/stdc++/new:
+
+/home/lixiang/sgx/linux-sgx/common/inc/sgx_defs.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/exception:
+
+/home/lixiang/sgx/linux-sgx/common/inc/stdc++/exception:
+
+/home/lixiang/sgx/linux-sgx/common/inc/stdc++/linux/exception:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_construct.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_alloc.c:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_string_fwd.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/char_traits.h:
+
+/home/lixiang/sgx/linux-sgx/common/inc/tlibc/sys/types.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_cwchar.h:
+
+/home/lixiang/sgx/linux-sgx/common/inc/tlibc/wchar.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_mbstate_t.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_uninitialized.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_string_base.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_string_npos.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_string_operators.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_string.c:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_ctraits_fns.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_function.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_function_adaptors.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_range_errors.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_range_errors.c:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_stdexcept.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_stdexcept_base.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_exception.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_string_hash.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_hash_fun.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_epilog.h:
+
+/home/lixiang/sgx/linux-sgx/sdk/tlibstdcxx/stlport/stl/_config_compat_post.h:
+
+src/base/basictypes.h:
+
+/home/lixiang/sgx/linux-sgx/common/inc/tlibc/inttypes.h:

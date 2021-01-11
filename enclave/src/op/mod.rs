@@ -1,28 +1,37 @@
+use std::any::TypeId;
 use std::boxed::Box;
 use std::collections::{btree_map::BTreeMap, HashMap, HashSet};
 use std::cmp::{Ordering, Reverse};
 use std::vec::Vec;
+use std::mem::forget;
 use std::time::Instant;
 use std::untrusted::time::InstantEx;
 use std::sync::{
     atomic::{self, AtomicUsize},
-    Arc, SgxMutex as Mutex, Weak,
+    Arc, SgxMutex as Mutex, SgxRwLock as RwLock, Weak,
 };
 
 use aes_gcm::{Aes128Gcm, aead::generic_array::functional::MappedGenericSequence};
 use aes_gcm::aead::{Aead, NewAead, generic_array::GenericArray};
+use sgx_types::*;
 
-use crate::{lp_boundary, opmap};
+use crate::{CACHE, lp_boundary, opmap};
 use crate::basic::{AnyData, Arc as SerArc, Data, Func, SerFunc};
 use crate::dependency::Dependency;
 use crate::partitioner::Partitioner;
-use crate::serialization_free::Construct;
-mod parallel_collection_op;
-pub use parallel_collection_op::*;
+use crate::serialization_free::{Construct, Idx, SizeBuf};
+use crate::custom_thread::PThread;
+
+mod aggregated_op;
+pub use aggregated_op::*;
+mod count_op;
+pub use count_op::*;
 mod co_grouped_op;
 pub use co_grouped_op::*;
 mod flatmapper_op;
 pub use flatmapper_op::*;
+mod fold_op;
+pub use fold_op::*;
 mod local_file_reader;
 pub use local_file_reader::*;
 mod mapper_op;
@@ -31,12 +40,164 @@ mod map_partitions_op;
 pub use map_partitions_op::*;
 mod pair_op;
 pub use pair_op::*;
+mod parallel_collection_op;
+pub use parallel_collection_op::*;
 mod reduced_op;
 pub use reduced_op::*;
 mod shuffled_op;
 pub use shuffled_op::*;
+mod union_op;
+pub use union_op::*;
 
 pub const MAX_ENC_BL: usize = 1000;
+
+extern "C" {
+    pub fn ocall_cache_to_outside(ret_val: *mut u8,   //write successfully or not
+        rdd_id: usize,
+        part_id: usize,
+        sub_part_id: usize,
+        data_ptr: usize,
+    ) -> sgx_status_t;
+
+    pub fn ocall_cache_from_outside(ret_val: *mut usize,  //ptr outside enclave
+        rdd_id: usize,
+        part_id: usize,
+        sub_part_id: usize,
+    ) -> sgx_status_t;
+}
+
+#[repr(C)]
+#[derive(Clone)]
+pub struct CacheMeta {
+    caching_rdd_id: usize,
+    cached_rdd_id: usize,
+    part_id: usize,
+    sub_part_id: usize,
+    steps_to_caching: usize,
+    steps_to_cached: usize,
+}
+
+impl CacheMeta {
+    pub fn new(
+        caching_rdd_id: usize,
+        cached_rdd_id: usize,
+        part_id: usize,
+        steps_to_caching: usize,
+        steps_to_cached: usize,
+    ) -> Self {
+        CacheMeta {
+            caching_rdd_id,
+            cached_rdd_id,
+            part_id,
+            sub_part_id: 0, 
+            steps_to_caching,
+            steps_to_cached,
+        }
+    }
+
+    fn set_sub_part_id(&mut self, sub_part_id: usize) {
+        self.sub_part_id = sub_part_id;
+    }
+
+    fn count_caching_down(&mut self) -> bool {
+        if self.steps_to_caching == usize::MAX || self.caching_rdd_id == 0 {
+            println!("steps_to_caching {:?}", self.steps_to_caching);
+            return false;
+        }
+        let (i, res) = self.steps_to_caching.overflowing_sub(1);
+        self.steps_to_caching = i;
+        println!("steps_to_caching {:?}", self.steps_to_caching);
+        res
+    }
+
+    fn count_cached_down(&mut self) -> bool {
+        if self.steps_to_cached == usize::MAX || self.cached_rdd_id == 0 {
+            println!("steps_to_cached {:?}, cached_rdd_id {:?}", self.steps_to_cached, self.cached_rdd_id);
+            return false;
+        }
+        let (i, res) = self.steps_to_cached.overflowing_sub(1);
+        self.steps_to_cached = i;
+        println!("steps_to_cached {:?}", self.steps_to_cached);
+        res
+    }
+}
+
+
+
+#[derive(Clone)]
+pub struct OpCache {
+    //<(cached_rdd_id, part_id, sub_part_id), data>, data can not be Any object, required by lazy_static
+    map: Arc<RwLock<HashMap<(usize, usize, usize), usize>>>,
+    //<(cached_rdd_id, part_id), HashSet<cached_sub_part_id>>
+    //contains all sub_part_ids whose corresponding value is cached
+    subpid_map: Arc<RwLock<HashMap<(usize, usize), HashSet<usize>>>>,
+}
+
+impl OpCache{
+    pub fn new() -> Self {
+        OpCache {
+            map: Arc::new(RwLock::new(HashMap::new())),
+            subpid_map: Arc::new(RwLock::new(HashMap::new())), 
+        }
+    }
+
+    pub fn get(&self, key: (usize, usize, usize)) -> Option<usize> {
+        self.map.read().unwrap().get(&key).map(|x| *x)
+    }
+
+    pub fn insert(&self, key: (usize, usize, usize), value: usize) -> Option<usize> {
+        self.map.write().unwrap().insert(key, value)
+    }
+
+    //free the value?
+    pub fn remove(&self, key: (usize, usize, usize)) -> Option<usize> {
+        self.map.write().unwrap().remove(&key)
+    }
+
+    pub fn insert_subpid(&self, rdd_id: usize, part_id: usize, sub_part_id: usize) {
+        let mut res =  self.subpid_map.write().unwrap();
+        if let Some(set) = res.get_mut(&(rdd_id, part_id)) {
+            set.insert(sub_part_id);
+            return;
+        }
+        let mut hs = HashSet::new();
+        hs.insert(sub_part_id);
+        res.insert((rdd_id, part_id), hs);
+    }
+
+    pub fn remove_subpid(&self, rdd_id: usize, part_id: usize, sub_part_id: usize) {
+        self.subpid_map.write()
+            .unwrap()
+            .get_mut(&(rdd_id, part_id))
+            .unwrap()
+            .remove(&sub_part_id);
+    }
+
+    pub fn get_subpid(&self, rdd_id: usize, part_id: usize) -> Vec<usize> {
+        match self.subpid_map.read()
+            .unwrap()
+            .get(&(rdd_id, part_id)) 
+        {
+            Some(v) => v.iter().cloned().collect(),
+            None => Vec::new(),
+        }
+    }
+
+    pub fn clear_by_rid_pid(&self, rdd_id: usize, part_id: usize) {
+        let sub_part_ids = match self.subpid_map.write().unwrap().remove(&(rdd_id, part_id)) {
+            Some(ids) => ids,
+            None => return,
+        };
+        let mut map = self.map.write().unwrap();
+        for sub_part_id in sub_part_ids {
+            map.remove(&(rdd_id, part_id, sub_part_id));
+        }
+    }
+
+    pub fn clear_by_rid_pid_spid(&self, rdd_id: usize, part_id: usize, sub_part_id: usize) {
+        self.map.write().unwrap().remove(&(rdd_id, part_id, sub_part_id));
+    }
+}
 
 pub fn map_id(id: usize) -> usize {
     let lp_bd = unsafe{ lp_boundary.load(atomic::Ordering::Relaxed).as_ref()}.unwrap();
@@ -83,7 +244,7 @@ pub fn ser_encrypt<T>(pt: Vec<T>) -> Vec<u8>
 where
     T: serde::ser::Serialize + serde::de::DeserializeOwned + 'static
 {
-    match type_eq::<T, u8>() {
+    match TypeId::of::<u8>() == TypeId::of::<T>() {
         true => {
             let (ptr, len, cap) = pt.into_raw_parts();
             let rebuilt = unsafe {
@@ -112,7 +273,7 @@ where
     if ct.len() == 0 {
         return Vec::new();
     }
-    match type_eq::<T, u8>() {
+    match TypeId::of::<u8>() == TypeId::of::<T>() {
         true => {
             let pt = decrypt(&ct);
             let (ptr, len, cap) = pt.into_raw_parts();
@@ -127,8 +288,16 @@ where
 
 }
 
-pub fn type_eq<T1: 'static, T2: 'static>() -> bool{
-    std::any::TypeId::of::<T1>() == std::any::TypeId::of::<T2>()
+pub fn res_enc_to_ptr<T: Clone>(result_enc: T) -> *mut u8 {
+    let result_ptr;
+    if crate::immediate_cout {
+        crate::ALLOCATOR.lock().set_switch(true);
+        result_ptr = Box::into_raw(Box::new(result_enc.clone())) as *mut u8;
+        crate::ALLOCATOR.lock().set_switch(false);
+    } else {
+        result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
+    }
+    result_ptr
 }
 
 #[derive(Default)]
@@ -177,6 +346,10 @@ impl Context {
         config.make_reader(self.clone(), func, fe, fd)
     }
 
+    pub fn union<T: Data, TE: Data>(rdds: &[Arc<dyn OpE<Item = T, ItemE = TE>>]) -> impl OpE<Item = T, ItemE = TE> {
+        Union::new(rdds)
+    }
+
 }
 
 pub(crate) struct OpVals {
@@ -198,6 +371,7 @@ impl OpVals {
 pub trait OpBase: Send + Sync {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8);
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8);
+    fn call_free_res_enc(&self, res_ptr: *mut u8, is_shuffle: u8);
     fn get_id(&self) -> usize;
     fn get_context(&self) -> Arc<Context>;
     fn get_deps(&self) -> Vec<Dependency>;
@@ -212,10 +386,22 @@ pub trait OpBase: Send + Sync {
         };
         set
     }
+    fn need_encryption(&self) -> bool {
+        let mut flag = true;
+        let next_deps = self.get_next_deps().lock().unwrap().clone();
+        assert!(next_deps.len() == 1 || next_deps.len() == 0);
+        for dep in next_deps {
+            flag = match dep {
+                Dependency::ShuffleDependency(_) => false,
+                Dependency::NarrowDependency(_) => true,
+            };
+        }
+        flag
+    }
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
         None
     }
-    fn iterator(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8;
+    fn iterator(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8;
 }
 
 impl PartialOrd for dyn OpBase {
@@ -247,6 +433,9 @@ impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8) {
         (**self).clone_enc_data_out(p_out, p_data_enc, is_shuffle);
     }
+    fn call_free_res_enc(&self, res_ptr: *mut u8, is_shuffle: u8) {
+        (**self).call_free_res_enc(res_ptr, is_shuffle);
+    }
     fn get_id(&self) -> usize {
         (**self).get_op_base().get_id()
     }
@@ -262,8 +451,8 @@ impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     fn get_prev_ids(&self) -> HashSet<usize> {
         (**self).get_op_base().get_prev_ids()
     }
-    fn iterator(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-        (**self).get_op_base().iterator(tid, data_ptr, is_shuffle)
+    fn iterator(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
+        (**self).get_op_base().iterator(tid, data_ptr, is_shuffle, cache_meta)
     }
 }
 
@@ -275,11 +464,14 @@ impl<I: OpE + ?Sized> Op for SerArc<I> {
     fn get_op_base(&self) -> Arc<dyn OpBase> {
         (**self).get_op_base()
     }
-    fn compute_start(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-        (**self).compute_start(tid, data_ptr, is_shuffle)
+    fn compute_start(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
+        (**self).compute_start(tid, data_ptr, is_shuffle, cache_meta)
     }
-    fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>> {
-        (**self).compute(data_ptr)
+    fn compute(&self, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+        (**self).compute(data_ptr, cache_meta)
+    }
+    fn cache(&self, data: Vec<Self::Item>) {
+        (**self).cache(data);
     }
 }
 
@@ -303,8 +495,11 @@ pub trait Op: OpBase + 'static {
     type Item: Data;
     fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>>;
     fn get_op_base(&self) -> Arc<dyn OpBase>;
-    fn compute_start(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8;
-    fn compute(&self, data_ptr: *mut u8) -> Box<dyn Iterator<Item = Self::Item>>;
+    fn compute_start(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8;
+    fn compute(&self, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>);
+    fn cache(&self, data: Vec<Self::Item>) {
+        ()
+    }
 
 }
 
@@ -315,6 +510,152 @@ pub trait OpE: Op {
     fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE>;
 
     fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>>;
+    
+    fn cache_from_outside(&self, key: (usize, usize, usize)) -> Vec<Self::Item> {
+        let mut ptr: usize = 0;
+        let sgx_status = unsafe { 
+            ocall_cache_from_outside(&mut ptr, key.0, key.1, key.2)
+        };
+        match sgx_status {
+            sgx_status_t::SGX_SUCCESS => {},
+            _ => {
+                panic!("[-] OCALL Enclave Failed {}!", sgx_status.as_str());
+            }
+        }
+        if ptr == 0 {
+            return Vec::new();
+        }
+        let ct_ = unsafe {
+            Box::from_raw(ptr as *mut u8 as *mut Vec<Self::ItemE>)
+        };
+        let ct = ct_.clone();
+        forget(ct_);
+        self.batch_decrypt(*ct)
+    }
+
+    fn cache_to_outside(&self, key: (usize, usize, usize), value: Vec<Self::Item>) -> PThread {
+        let op = self.get_ope();
+        let handle = unsafe {
+            PThread::new(Box::new(move || {
+                let ct = op.batch_encrypt(value);
+                crate::ALLOCATOR.lock().set_switch(true);
+                let ct_ptr = Box::into_raw(Box::new(ct.clone())) as *mut u8 as usize;
+                crate::ALLOCATOR.lock().set_switch(false);
+                let mut res = 0;
+                ocall_cache_to_outside(&mut res, key.0, key.1, key.2, ct_ptr);
+                //TODO: Handle the case res != 0
+            }))
+        }.unwrap();
+        handle
+    }
+
+    fn get_and_remove_cached_data(&self, key: (usize, usize, usize)) -> Vec<Self::Item> {
+        let val = match CACHE.remove(key) {
+            //cache inside enclave
+            Some(val) => {
+                CACHE.remove_subpid(key.0, key.1, key.2);
+                *unsafe {
+                    Box::from_raw(val as *mut u8 as *mut Vec<Self::Item>)
+                } 
+            },
+            //cache outside enclave
+            None => {
+                self.cache_from_outside(key)
+            },
+        };
+        val
+    }
+
+    fn set_cached_data(&self, key: (usize, usize, usize), iter: Box<dyn Iterator<Item = Self::Item>>) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>){              
+        let res = iter.collect::<Vec<_>>();
+        //cache inside enclave
+        println!("begin cache inside enclave");
+        CACHE.insert(key, Box::into_raw(Box::new(res.clone())) as *mut u8 as usize);
+        CACHE.insert_subpid(key.0, key.1, key.2);
+        //cache outside enclave
+        println!("begin cache outside enclave");
+        let res_c = res.clone();
+        let handle = self.cache_to_outside(key, res_c);
+        (Box::new(res.into_iter()), Some(handle))
+    }
+
+    fn step0_of_clone(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
+        let mut buf = unsafe{ Box::from_raw(p_buf as *mut SizeBuf) };
+        match is_shuffle {
+            0 | 2  => {
+                let encrypted = self.need_encryption();
+                if encrypted {
+                    let mut idx = Idx::new();
+                    let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::ItemE>) };
+                    data_enc.send(&mut buf, &mut idx);
+                    forget(data_enc);
+                } else {
+                    let mut idx = Idx::new();
+                    let data = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::Item>) };
+                    let data_enc = self.batch_encrypt(*data.clone());
+                    data_enc.send(&mut buf, &mut idx);
+                    forget(data);
+                }
+            }, 
+            1 => {
+                let next_deps = self.get_next_deps().lock().unwrap().clone();
+                let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
+                    Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
+                    Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
+                };
+                shuf_dep.send_sketch(&mut buf, p_data_enc);
+            },
+            3 => {
+                let mut idx = Idx::new();
+                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::ItemE>) };
+                data_enc.send(&mut buf, &mut idx);
+                forget(data_enc);
+            }
+            _ => panic!("invalid is_shuffle"),
+        };
+        forget(buf);
+    }
+
+    fn step1_of_clone(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8) {
+        match is_shuffle {
+            0 | 2 => {
+                let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<Self::ItemE>) };
+                let encrypted = self.need_encryption();
+                if encrypted {
+                    let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::ItemE>) };
+                    v_out.clone_in_place(&data_enc);
+                } else {
+                    let data = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::Item>) };
+                    let data_enc = Box::new(self.batch_encrypt(*data.clone()));
+                    v_out.clone_in_place(&data_enc);
+                    forget(data); //data may be used later
+                }
+                forget(v_out);
+            }, 
+            1 => {
+                let next_deps = self.get_next_deps().lock().unwrap().clone();
+                let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
+                    Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
+                    Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
+                };
+                shuf_dep.send_enc_data(p_out, p_data_enc);
+            },
+            3 => {
+                let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<Self::ItemE>) };
+                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::ItemE>) };
+                v_out.clone_in_place(&data_enc);
+                forget(v_out);
+            }
+            _ => panic!("invalid is_shuffle"),
+        }  
+    }
+
+    fn free_res_enc(&self, res_ptr: *mut u8) {
+        crate::ALLOCATOR.lock().set_switch(true);
+        let res = unsafe { Box::from_raw(res_ptr as *mut Vec<Self::ItemE>) };
+        drop(res);
+        crate::ALLOCATOR.lock().set_switch(false);
+    }
 
     fn batch_encrypt(&self, mut data: Vec<Self::Item>) -> Vec<Self::ItemE> {
         let mut len = data.len();
@@ -341,25 +682,42 @@ pub trait OpE: Op {
         data
     }
 
-    fn narrow(&self, data_ptr: *mut u8) -> *mut u8 {
-        let result = self.compute(data_ptr).collect::<Vec<Self::Item>>();
-        let now = Instant::now();
-        let result_enc = self.batch_encrypt(result); 
-        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("in enclave encrypt {:?} s", dur); 
-        let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
-        return result_ptr;  
+    fn narrow(&self, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> *mut u8 {
+        let (result_iter, handle) = self.compute(data_ptr, cache_meta);
+        let result = result_iter.collect::<Vec<Self::Item>>();
+        let result_ptr = match self.need_encryption() {
+            true => {
+                let now = Instant::now();
+                let result_enc = self.batch_encrypt(result); 
+                let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+                println!("in enclave encrypt {:?} s", dur); 
+                res_enc_to_ptr(result_enc) 
+            },
+            false => {
+                let result_ptr = Box::into_raw(Box::new(result)) as *mut u8;
+                result_ptr
+            },
+        };
+        if let Some(handle) = handle {
+            handle.join();
+        }
+        result_ptr
     } 
 
-    fn shuffle(&self, data_ptr: *mut u8) -> *mut u8 {
-        let data = self.compute(data_ptr).collect::<Vec<Self::Item>>();
+    fn shuffle(&self, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> *mut u8 {
+        let (data_iter, handle) = self.compute(data_ptr, cache_meta);
+        let data = data_iter.collect::<Vec<Self::Item>>();
         let next_deps = self.get_next_deps().lock().unwrap().clone();
         let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
         let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
             Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
             Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
         };
-        shuf_dep.do_shuffle_task(iter)
+        let result_ptr = shuf_dep.do_shuffle_task(iter);
+        if let Some(handle) = handle {
+            handle.join();
+        }
+        result_ptr
     }
 
     /// Return a new RDD containing only the elements that satisfy a predicate.
@@ -413,14 +771,77 @@ pub trait OpE: Op {
     {
         // cloned cause we will use `f` later.
         let cf = f.clone();        
-        let reduce_partition = move |iter: Box<dyn Iterator<Item = Self::Item>>| {
+        let reduce_partition = Box::new(move |iter: Box<dyn Iterator<Item = Self::Item>>| {
             let acc = iter.reduce(&cf);
             match acc { 
                 None => vec![],
                 Some(e) => vec![e],
             }
-        };         
+        });         
         let new_op = SerArc::new(Reduced::new(self.get_op(), reduce_partition, self.get_fe(), self.get_fd()));
+        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        new_op
+    }
+
+    fn fold<F>(&self, init: Self::Item, f: F) -> SerArc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>
+    where
+        Self: Sized,
+        F: SerFunc(Self::Item, Self::Item) -> Self::Item,
+    {
+        let cf = f.clone();
+        let zero = init.clone();
+        let reduce_partition = Box::new(
+            move |iter: Box<dyn Iterator<Item = Self::Item>>| {
+                vec![iter.fold(zero.clone(), &cf)]
+        });
+        let new_op = SerArc::new(Fold::new(self.get_op(), reduce_partition, self.get_fe(), self.get_fd()));
+        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        new_op
+    }
+
+    fn aggregate<U, UE, SF, CF, FE, FD>(&self, init: U, seq_fn: SF, comb_fn: CF, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = U, ItemE = UE>>
+    where
+        Self: Sized,
+        U: Data,
+        UE: Data,
+        SF: SerFunc(U, Self::Item) -> U,
+        CF: SerFunc(U, U) -> U,
+        FE: SerFunc(Vec<U>) -> UE,
+        FD: SerFunc(UE) -> Vec<U>,
+    {
+        let zero = init.clone();
+        let reduce_partition = Box::new(
+            move |iter: Box<dyn Iterator<Item = Self::Item>>| iter.fold(zero.clone(), &seq_fn)
+        );
+        let zero = init.clone();
+        let combine = Box::new(
+            move |iter: Box<dyn Iterator<Item = U>>| vec![iter.fold(zero.clone(), &comb_fn)]
+        );
+        let new_op = SerArc::new(Aggregated::new(self.get_ope(), reduce_partition, combine, fe, fd));
+        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        new_op
+    }
+
+    fn count(&self) -> SerArc<dyn OpE<Item = u64, ItemE = Vec<u64>>>
+    where
+        Self: Sized,
+    {
+        let new_op = SerArc::new(Count::new(self.get_ope()));
+        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        new_op
+    } 
+
+    fn union(
+        &self,
+        other: Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>,
+    ) -> SerArc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>
+    where
+        Self: Clone,
+    {
+        let new_op = SerArc::new(Context::union(&[
+            Arc::new(self.clone()) as Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>,
+            other,
+        ]));
         insert_opmap(new_op.get_id(), new_op.get_op_base());
         new_op
     }

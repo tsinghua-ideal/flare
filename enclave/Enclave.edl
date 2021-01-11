@@ -20,23 +20,59 @@ enclave {
     from "sgx_stdio.edl" import *;
     from "sgx_backtrace.edl" import *;
     from "sgx_tstdc.edl" import *;
+    from "sgx_pthread.edl" import *;
+    
+    struct cache_meta_t {
+        size_t caching_rdd_id;
+        size_t cached_rdd_id;
+        size_t part_id;
+        size_t sub_part_id; 
+        size_t steps_to_caching;
+        size_t steps_to_cached;
+    };
+    
     trusted {
         /* define ECALLs here. */
-
-        public size_t secure_executing(size_t id, 
-                uint64_t tid,
-                uint8_t is_shuffle, 
-		[user_check] uint8_t* input, 
-		[user_check] uint8_t* captured_vars);
-        public void get_sketch(size_t id,
-                uint8_t is_shuffle,
-                [user_check] uint8_t* p_buf,
-                [user_check] uint8_t* p_data_enc);
-        public void clone_out(size_t id,
-                uint8_t is_shuffle,
-                size_t p_out,
-                [user_check] uint8_t* p_data_enc);
+        public size_t get_lp_boundary();
+        public void free_lp_boundary([user_check] uint8_t* lp_bd_ptr);
+        public size_t secure_executing(uint64_t tid,
+            size_t rdd_id, 
+            cache_meta_t cache_meta,
+            uint8_t is_shuffle, 
+		    [user_check] uint8_t* input, 
+		    [user_check] uint8_t* captured_vars);
+        public void free_res_enc(size_t op_id,
+            uint8_t is_shuffle,
+		    [user_check] uint8_t* input);
+        void priv_free_res_enc(size_t op_id,
+            uint8_t is_shuffle,
+		    [user_check] uint8_t* input);
+        public void get_sketch(size_t rdd_id,
+            uint8_t is_shuffle,
+            [user_check] uint8_t* p_buf,
+            [user_check] uint8_t* p_data_enc);
+        public void clone_out(size_t rdd_id,
+            uint8_t is_shuffle,
+            size_t p_out,
+            [user_check] uint8_t* p_data_enc);
+        public size_t probe_caching(size_t rdd_id,
+            size_t part,
+            [user_check] uint8_t* cached_sub_parts,
+            [user_check] size_t* num_cached);
+        public void finish_probe_caching([user_check] uint8_t* cached_sub_parts);
         public size_t pre_touching(uint8_t zero);
+    };
+
+    untrusted {
+        uint8_t ocall_cache_to_outside(size_t rdd_id,
+            size_t part_id,
+            size_t sub_part_id,
+            size_t data_ptr)
+            allow(priv_free_res_enc); 
+        size_t ocall_cache_from_outside(size_t rdd_id,
+            size_t part_id,
+            size_t sub_part_id); 
+        void* sbrk_o(size_t size);  
     };
 
 };

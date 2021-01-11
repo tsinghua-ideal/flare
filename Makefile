@@ -93,24 +93,57 @@ else
 	Trts_Library_Name := sgx_trts
 	Service_Library_Name := sgx_tservice
 endif
+Tcmalloc_Flag := sgx_tcmalloc
+
 Crypto_Library_Name := sgx_tcrypto
 KeyExchange_Library_Name := sgx_tkey_exchange
 ProtectedFs_Library_Name := sgx_tprotected_fs
 
 RustEnclave_C_Files := $(wildcard ./enclave/*.c)
 RustEnclave_C_Objects := $(RustEnclave_C_Files:.c=.o)
-RustEnclave_Include_Paths := -I$(CUSTOM_COMMON_PATH)/inc -I$(CUSTOM_EDL_PATH) -I$(SGX_SDK)/include -I$(SGX_SDK)/include/tlibc -I$(SGX_SDK)/include/stlport -I$(SGX_SDK)/include/epid -I ./enclave -I./include
+RustEnclave_Include_Paths := -I$(CUSTOM_COMMON_PATH)/inc -I$(CUSTOM_EDL_PATH) -I$(SGX_SDK)/include -I$(SGX_SDK)/include/tlibc -I./enclave -I./include -I$(SGX_SDK)/include/libcxx
 
 RustEnclave_Link_Libs := -L$(CUSTOM_LIBRARY_PATH) -lenclave
 RustEnclave_Compile_Flags := $(SGX_COMMON_CFLAGS) $(ENCLAVE_CFLAGS) $(RustEnclave_Include_Paths)
 RustEnclave_Link_Flags := -Wl,--no-undefined -nostdlib -nodefaultlibs -nostartfiles -L$(SGX_LIBRARY_PATH) \
-	-Wl,--whole-archive -l$(Trts_Library_Name) -Wl,--no-whole-archive \
-	-Wl,--start-group -lsgx_tstdc -l$(Service_Library_Name) -l$(Crypto_Library_Name) $(RustEnclave_Link_Libs) -Wl,--end-group \
+	-Wl,--whole-archive -l$(Tcmalloc_Flag) -l$(Trts_Library_Name) -Wl,--no-whole-archive \
+	-Wl,--start-group -lsgx_tstdc -lsgx_tcxx -lsgx_pthread -l$(Service_Library_Name) -l$(Crypto_Library_Name) $(RustEnclave_Link_Libs) -Wl,--end-group \
 	-Wl,--version-script=enclave/Enclave.lds \
 	$(ENCLAVE_LDFLAGS)
 
 RustEnclave_Name := enclave/enclave.so
 Signed_RustEnclave_Name := bin/enclave.signed.so
+
+TCMALLOC_Default_Include_Paths := -I./enclave/gperftools/gperftools-2.5/src
+TCMALLOC_Include_Paths := $(TCMALLOC_Default_Include_Paths) -I$(SGX_SDK)/include -I$(SGX_SDK)/include/tlibc -I$(SGX_SDK)/include/libcxx -IEnclave
+
+am__append_2 = -Wall -Wwrite-strings -Woverloaded-virtual
+
+am__append_3 = -fno-builtin -fno-builtin-function
+am__append_5 = -Wno-unused-result
+am__append_8 = -DNO_FRAME_POINTER
+
+TCMALLOC_CFlags := -Wall -DHAVE_CONFIG_H -DNO_TCMALLOC_SAMPLES -DNDEBUG -DNO_HEAP_CHECK -DTCMALLOC_SGX -DTCMALLOC_NO_ALIASES -fstack-protector -ffreestanding -nostdinc -fvisibility=hidden -fPIC $(am__append_2) $(am__append_3) $(am__append_5) $(am__append_8)
+
+SYSTEM_ALLOC_CC = ./enclave/gperftools/system-alloc.cc
+libtcmalloc_minimal_internal_la_SOURCES = ./enclave/gperftools/common.cc \
+                                          ./enclave/gperftools/internal_logging.cc \
+                                          $(SYSTEM_ALLOC_CC) \
+                                          ./enclave/gperftools/central_freelist.cc \
+                                          ./enclave/gperftools/page_heap.cc \
+                                          ./enclave/gperftools/sampler.cc \
+                                          ./enclave/gperftools/span.cc \
+                                          ./enclave/gperftools/stack_trace_table.cc \
+                                          ./enclave/gperftools/static_vars.cc \
+                                          ./enclave/gperftools/symbolize.cc \
+                                          ./enclave/gperftools/thread_cache.cc \
+                                          ./enclave/gperftools/malloc_hook.cc \
+                                          ./enclave/gperftools/maybe_threads.cc \
+										  ./enclave/gperftools/malloc_extension.cc \
+										  ./enclave/gperftools/tcmalloc.cc
+
+TCMALLOC_Objects := $(libtcmalloc_minimal_internal_la_SOURCES:.cc=.o) enclave/gperftools/base/spinlock.o enclave/gperftools/base/sgx_utils.o
+Break_Objests := $(wildcard ./lib/*.o)
 
 .PHONY: all
 all: $(App_Name) $(Signed_RustEnclave_Name)
@@ -138,14 +171,96 @@ $(App_Name): $(App_Enclave_u_Object) $(App_SRC_Files)
 	mkdir -p bin
 	cp $(App_Rust_Path)/app ./bin
 
+######## enclave/Tcmalloc Objects ########
+
+#For TCMALLOC
+enclave/gperftools/base/sgx_utils.o: enclave/gperftools/base/sgx_utils.cc
+	@$(CXX) $(SGX_COMMON_CFLAGS) $(TCMALLOC_CFlags) $(TCMALLOC_Include_Paths) -c $< -o $@
+	@echo "CXX  <= $<"
+
+enclave/gperftools/base/spinlock.o: enclave/gperftools/base/spinlock.cc
+	@$(CXX) $(SGX_COMMON_CFLAGS) $(TCMALLOC_CFlags) $(TCMALLOC_Include_Paths) -c $< -o $@
+	@echo "CXX  <= $<"
+
+enclave/gperftools/maybe_threads.o: enclave/gperftools/maybe_threads.cc
+	@$(CXX) $(SGX_COMMON_CFLAGS) $(TCMALLOC_CFlags) $(TCMALLOC_Include_Paths) -c $< -o $@
+	@echo "CXX  <= $<"
+
+enclave/gperftools/common.o: enclave/gperftools/common.cc
+	@$(CXX) $(SGX_COMMON_CFLAGS) $(TCMALLOC_CFlags) $(TCMALLOC_Include_Paths) -c $< -o $@
+	@echo "CXX  <= $<"
+
+enclave/gperftools/internal_logging.o: enclave/gperftools/internal_logging.cc
+	@$(CXX) $(SGX_COMMON_CFLAGS) $(TCMALLOC_CFlags) $(TCMALLOC_Include_Paths) -c $< -o $@ 
+	@echo "CXX  <= $<"
+
+#OCALL is needed in system-alloc.cc
+enclave/gperftools/system-alloc.o: enclave/gperftools/system-alloc.cc
+	@$(CXX) $(RustEnclave_Compile_Flags) $(TCMALLOC_CFlags) $(TCMALLOC_Include_Paths) -c $< -o $@
+	@echo "CXX  <= $<"
+
+enclave/gperftools/central_freelist.o: enclave/gperftools/central_freelist.cc
+	@$(CXX) $(SGX_COMMON_CFLAGS) $(TCMALLOC_CFlags) $(TCMALLOC_Include_Paths) -c $< -o $@
+	@echo "CXX  <= $<"
+
+enclave/gperftools/page_heap.o: enclave/gperftools/page_heap.cc
+	@$(CXX) $(SGX_COMMON_CFLAGS) $(TCMALLOC_CFlags) $(TCMALLOC_Include_Paths) -c $< -o $@
+	@echo "CXX  <= $<"
+
+enclave/gperftools/sampler.o: enclave/gperftools/sampler.cc
+	@$(CXX) $(SGX_COMMON_CFLAGS) $(TCMALLOC_CFlags) $(TCMALLOC_Include_Paths) -c $< -o $@
+	@echo "CXX  <= $<"
+
+enclave/gperftools/span.o: enclave/gperftools/span.cc
+	@$(CXX) $(SGX_COMMON_CFLAGS) $(TCMALLOC_CFlags) $(TCMALLOC_Include_Paths) -c $< -o $@
+	@echo "CXX  <= $<"
+
+enclave/gperftools/stack_trace_table.o: enclave/gperftools/stack_trace_table.cc
+	@$(CXX) $(SGX_COMMON_CFLAGS) $(TCMALLOC_CFlags) $(TCMALLOC_Include_Paths) -c $< -o $@
+	@echo "CXX  <= $<"
+
+enclave/gperftools/static_vars.o: enclave/gperftools/static_vars.cc
+	@$(CXX) $(SGX_COMMON_CFLAGS) $(TCMALLOC_CFlags) $(TCMALLOC_Include_Paths) -c $< -o $@
+	@echo "CXX  <= $<"
+
+enclave/gperftools/symbolize.o: enclave/gperftools/symbolize.cc
+	@$(CXX) $(SGX_COMMON_CFLAGS) $(TCMALLOC_CFlags) $(TCMALLOC_Include_Paths) -c $< -o $@
+	@echo "CXX  <= $<"
+
+enclave/gperftools/thread_cache.o: enclave/gperftools/thread_cache.cc
+	@$(CXX) $(SGX_COMMON_CFLAGS) $(TCMALLOC_CFlags) $(TCMALLOC_Include_Paths) -c $< -o $@
+	@echo "CXX  <= $<"
+
+enclave/gperftools/malloc_hook.o: enclave/gperftools/malloc_hook.cc
+	@$(CXX) $(SGX_COMMON_CFLAGS) $(TCMALLOC_CFlags) $(TCMALLOC_Include_Paths) -c $< -o $@
+	@echo "CXX  <= $<"
+
+enclave/gperftools/malloc_extension.o: enclave/gperftools/malloc_extension.cc
+	@$(CXX) $(SGX_COMMON_CFLAGS) $(TCMALLOC_CFlags) $(TCMALLOC_Include_Paths) -c $< -o $@
+	@echo "CXX  <= $<"
+
+enclave/gperftools/tcmalloc.o: enclave/gperftools/tcmalloc.cc
+	@$(CXX) $(SGX_COMMON_CFLAGS) $(TCMALLOC_CFlags) $(TCMALLOC_Include_Paths) -c $< -o $@
+	@echo "CXX  <= $<"
+
+TCMALLOC_name := libsgx_ucmalloc.a
+$(TCMALLOC_name): $(TCMALLOC_Objects)
+	$(AR) rcsD $@ $^
+	mv $@ $(CUSTOM_LIBRARY_PATH)
+
 ######## Enclave Objects ########
 
 enclave/Enclave_t.o: $(Enclave_EDL_Files)
 	@$(CC) $(RustEnclave_Compile_Flags) -c enclave/Enclave_t.c -o $@
 	@echo "CC   <=  $<"
 
-$(RustEnclave_Name): enclave enclave/Enclave_t.o
-	@$(CXX) enclave/Enclave_t.o -o $@ $(RustEnclave_Link_Flags)
+$(RustEnclave_Name): enclave enclave/Enclave_t.o $(TCMALLOC_name)
+	@rm -rf tcmalloc_objs enclave_objs
+	@mkdir tcmalloc_objs && ar x $(CUSTOM_LIBRARY_PATH)/$(TCMALLOC_name) && mv *.o tcmalloc_objs
+	@mkdir enclave_objs && ar x $(CUSTOM_LIBRARY_PATH)/libenclave.a && mv *.o enclave_objs
+	@$(AR) rcs $(CUSTOM_LIBRARY_PATH)/libenclave.a tcmalloc_objs/*.o enclave_objs/*.o
+	@rm -rf tcmalloc_objs enclave_objs
+	@$(CXX) enclave/Enclave_t.o -o $@ $(RustEnclave_Link_Flags) # -Wl,--allow-multiple-definition
 	@echo "LINK =>  $@"
 
 $(Signed_RustEnclave_Name): $(RustEnclave_Name)
@@ -164,3 +279,4 @@ clean:
 	@cd enclave && cargo clean && rm -f Cargo.lock
 	@cd $(APP_DIR) && cargo clean && rm -f Cargo.lock
 	@cd $(SPARK_CORE_DIR) && cargo clean && rm -f Cargo.lock
+	@cd lib && rm -rf *.a
