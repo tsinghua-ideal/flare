@@ -280,3 +280,4 @@ clean:
 	@cd $(APP_DIR) && cargo clean && rm -f Cargo.lock
 	@cd $(SPARK_CORE_DIR) && cargo clean && rm -f Cargo.lock
 	@cd lib && rm -rf *.a
+	@rm -rf $(TCMALLOC_Objects)
