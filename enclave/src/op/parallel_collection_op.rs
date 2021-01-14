@@ -154,7 +154,9 @@ where
     fn compute(&self, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
         let now = Instant::now();
         let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<TE>) }; 
+        //println!("In parallel_collection_op(before decryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
         let data = self.batch_decrypt(*data_enc.clone());
+        //println!("In parallel_collection_op(after decryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
         forget(data_enc);
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("in enclave decrypt {:?} s", dur);    

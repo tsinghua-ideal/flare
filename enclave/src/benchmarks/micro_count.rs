@@ -16,9 +16,9 @@ pub fn count_sec_0() -> usize {
         pt0
     });
     let rdd0 = sc.make_op(fe.clone(), fd.clone());
-    let rdd1 = rdd0.map(Box::new(|i: i32|  i % (1 << 20) * 4399 / (i % 71 + 1) ), fe.clone(), fd.clone());
+    let rdd1 = rdd0.map(Box::new(|i: i32|  i % (1 << 10) * 4399 / (i % 71 + 1) ), fe.clone(), fd.clone());
     let _res = rdd1.count();
-    let rdd2 = rdd1.map(Box::new(|i: i32|  i % (1 << 20) * 8765 / (i % 97 + 1) ), fe, fd);
+    let rdd2 = rdd1.map(Box::new(|i: i32|  i % (1 << 10) * 8765 / (i % 97 + 1) ), fe, fd);
     let _res = rdd2.count();
     rdd2.get_id()
 }

@@ -167,13 +167,24 @@ where
         
         let (res_iter, handle) = self.prev.compute(data_ptr, cache_meta);
         let res_iter = Box::new(res_iter.map(self.f.clone()));
-
+        
+        //println!("In mapper_op, memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
         let need_cache = cache_meta.count_caching_down();
         if need_cache {
             assert!(handle.is_none());
             let key = (cache_meta.caching_rdd_id, cache_meta.part_id, cache_meta.sub_part_id);
             if CACHE.get(key).is_none() { 
+                
                 return self.set_cached_data(key, res_iter);
+                
+                /*
+                let (res_iter, handle) = self.set_cached_data(key, res_iter);
+                println!("In mapper_op (before join), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
+                if let Some(handle) = handle {
+                    handle.join();
+                }
+                return (res_iter, None);
+                */
             }
         }
 

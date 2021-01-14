@@ -1,7 +1,7 @@
 use std::any::TypeId;
 use std::boxed::Box;
 use std::collections::{btree_map::BTreeMap, HashMap, HashSet};
-use std::cmp::{Ordering, Reverse};
+use std::cmp::{min, Ordering, Reverse};
 use std::vec::Vec;
 use std::mem::forget;
 use std::time::Instant;
@@ -538,9 +538,11 @@ pub trait OpE: Op {
         let handle = unsafe {
             PThread::new(Box::new(move || {
                 let ct = op.batch_encrypt(value);
+                //println!("finish encryption, memory usage {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
                 crate::ALLOCATOR.lock().set_switch(true);
                 let ct_ptr = Box::into_raw(Box::new(ct.clone())) as *mut u8 as usize;
                 crate::ALLOCATOR.lock().set_switch(false);
+                //println!("finish copy out, memory usage {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
                 let mut res = 0;
                 ocall_cache_to_outside(&mut res, key.0, key.1, key.2, ct_ptr);
                 //TODO: Handle the case res != 0
@@ -556,7 +558,7 @@ pub trait OpE: Op {
                 CACHE.remove_subpid(key.0, key.1, key.2);
                 *unsafe {
                     Box::from_raw(val as *mut u8 as *mut Vec<Self::Item>)
-                } 
+                }
             },
             //cache outside enclave
             None => {
@@ -568,15 +570,19 @@ pub trait OpE: Op {
 
     fn set_cached_data(&self, key: (usize, usize, usize), iter: Box<dyn Iterator<Item = Self::Item>>) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>){              
         let res = iter.collect::<Vec<_>>();
+        //println!("After collect, memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
         //cache inside enclave
-        println!("begin cache inside enclave");
         CACHE.insert(key, Box::into_raw(Box::new(res.clone())) as *mut u8 as usize);
+        //println!("After cache inside enclave, memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
         CACHE.insert_subpid(key.0, key.1, key.2);
         //cache outside enclave
-        println!("begin cache outside enclave");
-        let res_c = res.clone();
-        let handle = self.cache_to_outside(key, res_c);
+        let handle = self.cache_to_outside(key, res.clone());
+        //println!("After launch encryption thread, memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
         (Box::new(res.into_iter()), Some(handle))
+        
+        /*
+        (Box::new(res.into_iter()), None)
+        */
     }
 
     fn step0_of_clone(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
@@ -659,7 +665,7 @@ pub trait OpE: Op {
 
     fn batch_encrypt(&self, mut data: Vec<Self::Item>) -> Vec<Self::ItemE> {
         let mut len = data.len();
-        let mut data_enc = Vec::with_capacity(len);
+        let mut data_enc = Vec::with_capacity(len/MAX_ENC_BL);
         while len >= MAX_ENC_BL {
             len -= MAX_ENC_BL;
             let remain = data.split_off(MAX_ENC_BL);
@@ -669,6 +675,18 @@ pub trait OpE: Op {
         }
         if len != 0 {
             data_enc.push(self.get_fe()(data));
+        }
+        data_enc
+    }
+
+    fn batch_encrypt_ref(&self, data: &Vec<Self::Item>) -> Vec<Self::ItemE> {
+        let len = data.len();
+        let mut data_enc = Vec::with_capacity(len/MAX_ENC_BL);
+        let mut cur = 0;
+        while cur < len {
+            let next = min(len, cur + MAX_ENC_BL);
+            data_enc.push(self.get_fe()(data[cur..next].to_vec()));
+            cur = next;
         }
         data_enc
     }
@@ -684,11 +702,20 @@ pub trait OpE: Op {
 
     fn narrow(&self, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> *mut u8 {
         let (result_iter, handle) = self.compute(data_ptr, cache_meta);
+        /*
+        println!("In narrow(before join), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
+        if let Some(handle) = handle {
+            handle.join();
+        }
+        */
+        
         let result = result_iter.collect::<Vec<Self::Item>>();
+        //println!("In narrow(before encryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
         let result_ptr = match self.need_encryption() {
             true => {
                 let now = Instant::now();
                 let result_enc = self.batch_encrypt(result); 
+                //println!("In narrow(after encryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
                 let dur = now.elapsed().as_nanos() as f64 * 1e-9;
                 println!("in enclave encrypt {:?} s", dur); 
                 res_enc_to_ptr(result_enc) 
@@ -698,9 +725,11 @@ pub trait OpE: Op {
                 result_ptr
             },
         };
+        
         if let Some(handle) = handle {
             handle.join();
         }
+        
         result_ptr
     } 
 

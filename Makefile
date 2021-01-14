@@ -114,7 +114,7 @@ RustEnclave_Link_Flags := -Wl,--no-undefined -nostdlib -nodefaultlibs -nostartfi
 RustEnclave_Name := enclave/enclave.so
 Signed_RustEnclave_Name := bin/enclave.signed.so
 
-TCMALLOC_Default_Include_Paths := -I./enclave/gperftools/gperftools-2.5/src
+TCMALLOC_Default_Include_Paths := -I./enclave/gperftools
 TCMALLOC_Include_Paths := $(TCMALLOC_Default_Include_Paths) -I$(SGX_SDK)/include -I$(SGX_SDK)/include/tlibc -I$(SGX_SDK)/include/libcxx -IEnclave
 
 am__append_2 = -Wall -Wwrite-strings -Woverloaded-virtual

@@ -48,6 +48,8 @@ const MIN_ALIGN: usize = 16;
 
 pub struct Allocator {
     switch: bool,
+    usage: usize,
+    max_usage: usize,
     mapper: [sgx_thread_t; TCSNUM],   //match num of TCS
 }
 
@@ -55,6 +57,8 @@ impl Allocator {
     pub const fn new() -> Self {
         Allocator {
             switch: false,
+            usage: 0,
+            max_usage: 0,
             mapper: [0; TCSNUM],
         }
     }
@@ -98,6 +102,13 @@ impl Allocator {
         (cur_idx, vac_idx)
     }
 
+    pub fn get_memory_usage(&self) -> usize {
+        self.usage
+    }
+
+    pub fn get_max_memory_usage(&self) -> usize {
+        self.max_usage
+    }
 }
 
 impl Locked<Allocator> {
@@ -124,7 +135,7 @@ impl Locked<Allocator> {
 unsafe impl GlobalAlloc for Locked<Allocator> {
     #[inline]
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let bump = self.lock(); // get a mutable reference
+        let mut bump = self.lock(); // get a mutable reference
         let switch = bump.get_switch();
         if switch {
             if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
@@ -133,13 +144,15 @@ unsafe impl GlobalAlloc for Locked<Allocator> {
                 aligned_malloc(&layout)
             }
         } else {
+            bump.usage += layout.size();
+            bump.max_usage = cmp::max(bump.max_usage, bump.usage);
             System.alloc(layout)
         }
     }
 
     #[inline]
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        let bump = self.lock();
+        let mut bump = self.lock();
         let switch = bump.get_switch();
         if switch {
             if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
@@ -152,24 +165,28 @@ unsafe impl GlobalAlloc for Locked<Allocator> {
                 ptr
             }
         } else {
+            bump.usage += layout.size();
+            bump.max_usage = cmp::max(bump.max_usage, bump.usage);
             System.alloc_zeroed(layout)
         }
     }
 
     #[inline]
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        let bump = self.lock();
+        let mut bump = self.lock();
         let switch = bump.get_switch();
         if switch {
             ocall_tc_free(ptr as *mut c_void);
         } else {
+            bump.usage -= layout.size();
+            bump.max_usage = cmp::max(bump.max_usage, bump.usage);
             System.dealloc(ptr, layout);
         }
     }
 
     #[inline]
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        let bump = self.lock();
+        let mut bump = self.lock();
         let switch = bump.get_switch();
         if switch {
             if layout.align() <= MIN_ALIGN && layout.align() <= new_size {
@@ -178,6 +195,8 @@ unsafe impl GlobalAlloc for Locked<Allocator> {
                 self.realloc_fallback(ptr, layout, new_size)
             }
         } else {
+            bump.usage += new_size - layout.size();
+            bump.max_usage = cmp::max(bump.max_usage, bump.usage);
             System.realloc(ptr, layout, new_size)
         }
     }

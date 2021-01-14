@@ -182,8 +182,7 @@ pub extern "C" fn secure_executing(tid: u64,
     let mut cache_meta = cache_meta.clone();
     let result_ptr = op.iterator(tid, input, is_shuffle, &mut cache_meta);
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    println!("in enclave {:?} s", dur);
-
+    println!("Acc max memory usage: {:?}, in enclave {:?} s", ALLOCATOR.lock().get_max_memory_usage(), dur);
     return result_ptr as usize
 }
 
