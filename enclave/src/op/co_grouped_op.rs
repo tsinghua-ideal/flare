@@ -1,21 +1,13 @@
-use std::any::Any;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
-use std::mem::forget;
-use std::sync::{Arc, SgxMutex};
-use std::vec::Vec;
 
 use crate::CAVE;
 use crate::aggregator::Aggregator;
-use crate::basic::{AnyData, Data, Func, SerFunc };
 use crate::dependency::{
-    Dependency, NarrowDependencyTrait, OneToOneDependency, ShuffleDependency,
+    NarrowDependencyTrait, OneToOneDependency, ShuffleDependency,
     ShuffleDependencyTrait,
 };
 use crate::op::*;
-use crate::partitioner::Partitioner;
-use crate::serialization_free::{Construct, Idx, SizeBuf};
-use crate::custom_thread::PThread;
 
 #[derive(Clone)]
 pub struct CoGrouped<K, V, W, KE, VE, WE, CE, DE, FE, FD> 
@@ -32,7 +24,7 @@ where
     FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
 {
     pub(crate) vals: Arc<OpVals>,
-    pub(crate) next_deps: Arc<SgxMutex<Vec<Dependency>>>,
+    pub(crate) next_deps: Arc<Mutex<Vec<Dependency>>>,
     pub(crate) op0: Arc<dyn OpE<Item = (K, V), ItemE = (KE, VE)>>,
     pub(crate) op1: Arc<dyn OpE<Item = (K, W), ItemE = (KE, WE)>>,
     pub(crate) part: Box<dyn Partitioner>,
@@ -196,7 +188,7 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
         let vals = Arc::new(vals);
         CoGrouped {
             vals,
-            next_deps: Arc::new(SgxMutex::new(Vec::<Dependency>::new())),
+            next_deps: Arc::new(Mutex::new(Vec::<Dependency>::new())),
             op0,
             op1,
             fe,
@@ -260,7 +252,7 @@ where
         self.vals.deps.clone()
     }
 
-    fn get_next_deps(&self) -> Arc<SgxMutex<Vec<Dependency>>> {
+    fn get_next_deps(&self) -> Arc<Mutex<Vec<Dependency>>> {
         self.next_deps.clone()
     }
 
@@ -269,9 +261,25 @@ where
         Some(part)
     }
     
-    fn iterator(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8{
-        println!("co_grouped iterator");
-        self.compute_start(tid, data_ptr, is_shuffle, cache_meta)
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8{
+        
+		self.compute_start(tid, call_seq, data_ptr, is_shuffle, cache_meta)
+    }
+
+    fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
+        if id == TypeId::of::<dyn Op<Item = (K, (Vec<V>, Vec<W>))>>() {
+            let x = std::ptr::null::<Self>() as *const dyn Op<Item = (K, (Vec<V>, Vec<W>))>;
+            let vtable = unsafe {
+                std::mem::transmute::<_, TraitObject>(x).vtable
+            };
+            let data = Arc::into_raw(self);
+            Some(TraitObject {
+                data: data as *mut (),
+                vtable: vtable,
+            })
+        } else {
+            None
+        }
     }
 
 }
@@ -299,13 +307,13 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
+    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
         match is_shuffle {
             0 => {       //No shuffle
-                self.narrow(data_ptr, cache_meta)
+                self.narrow(call_seq, data_ptr, cache_meta)
             },
             1 => {      //Shuffle write
-                self.shuffle(data_ptr, cache_meta)
+                self.shuffle(call_seq, data_ptr, cache_meta)
             },
             2 => {      //shuffle read
                 let mut dur_sum = 0.0;
@@ -430,7 +438,7 @@ where
         }
     }
 
-    fn compute(&self, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
         //encryption block size: 1
         /*
         let now = Instant::now();

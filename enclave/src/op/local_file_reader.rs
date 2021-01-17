@@ -1,14 +1,6 @@
-use std::boxed::Box;
 use std::marker::PhantomData;
-use std::mem::forget;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, SgxMutex};
-use std::vec::Vec;
-use crate::basic::{Data, Arc as SerArc, Func, SerFunc};
-use crate::dependency::Dependency;
 use crate::op::*;
-use crate::serialization_free::{Construct, Idx, SizeBuf};
-use crate::custom_thread::PThread;
 use serde_derive::{Deserialize, Serialize};
 
 pub trait ReaderConfiguration<I: Data> {
@@ -135,13 +127,31 @@ macro_rules! impl_common_lfs_opb_funcs {
             vec![]
         }
 
-        fn get_next_deps(&self) -> Arc<SgxMutex<Vec<Dependency>>> {
-            Arc::new(SgxMutex::new(Vec::new()))
+        fn get_next_deps(&self) -> Arc<Mutex<Vec<Dependency>>> {
+            Arc::new(Mutex::new(Vec::new()))
         }
 
-        fn iterator(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
-            self.compute_start(tid, data_ptr, is_shuffle, cache_meta)
+        fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
+                
+		    self.compute_start(tid, call_seq, data_ptr, is_shuffle, cache_meta)
         }
+
+        fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
+            if id == TypeId::of::<dyn Op<Item = Vec<u8>>>() {
+                let x = std::ptr::null::<Self>() as *const dyn Op<Item = Vec<u8>>;
+                let vtable = unsafe {
+                    std::mem::transmute::<_, TraitObject>(x).vtable
+                };
+                let data = Arc::into_raw(self);
+                Some(TraitObject {
+                    data: data as *mut (),
+                    vtable: vtable,
+                })
+            } else {
+                None
+            }
+        }
+
     };
 }
 
@@ -169,7 +179,7 @@ impl<T: Data> Op for LocalFsReader<T> {
 
     impl_common_lfs_op_funcs!();
 
-    fn compute(&self, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
         //TODO decrypt
         let data_enc  = unsafe{ Box::from_raw(data_ptr as *mut Vec<Vec<u8>>) };
         let data = self.get_fd()(*(data_enc.clone()));
@@ -177,9 +187,9 @@ impl<T: Data> Op for LocalFsReader<T> {
         (Box::new(data.into_iter()), None)
     }
 
-    fn compute_start(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
+    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
         //suppose no shuffle will happen after this rdd
-        self.narrow(data_ptr, cache_meta)
+        self.narrow(call_seq, data_ptr, cache_meta)
     }
 
 }

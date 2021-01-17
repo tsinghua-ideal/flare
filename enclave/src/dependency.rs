@@ -13,7 +13,6 @@ use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use downcast_rs::DowncastSync;
 
-
 #[derive(Clone)]
 pub enum Dependency {
     NarrowDependency(Arc<dyn NarrowDependencyTrait>),

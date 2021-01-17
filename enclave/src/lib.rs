@@ -21,6 +21,7 @@
 #![feature(coerce_unsized)]
 #![feature(fn_traits)]
 #![feature(map_first_last)]
+#![feature(raw)]
 #![feature(specialization)]
 #![feature(unboxed_closures)]
 #![feature(unsize)]
@@ -157,30 +158,32 @@ pub extern "C" fn free_lp_boundary(lp_bd_ptr: *mut u8) {
 
 #[no_mangle]
 pub extern "C" fn secure_executing(tid: u64, 
-                                    rdd_id: usize,
+                                    rdd_ids: *const u8,
                                     cache_meta: CacheMeta,
                                     is_shuffle: u8, 
                                     input: *mut u8, 
                                     captured_vars: *const u8) -> usize 
 {
-    println!("inside enclave id = {:?}, is_shuffle = {:?}, thread_id = {:?}", rdd_id, is_shuffle, thread::rsgx_thread_self());
-    let _final_id = *final_id; //this is necessary to let it accually execute
-    //get current stage's captured vars
+    let rdd_ids = unsafe { (rdd_ids as *const Vec<(usize, usize)>).as_ref() }.unwrap();
+    let final_rdd_id = rdd_ids[0].0;
     let captured_vars = unsafe { (captured_vars as *const HashMap<usize, Vec<u8>>).as_ref() }.unwrap();
+    println!("inside enclave id = {:?}, is_shuffle = {:?}, thread_id = {:?}", final_rdd_id, is_shuffle, thread::rsgx_thread_self());
+    let _gfinal_id = *final_id; //this is necessary to let it accually execute
+    //get current stage's captured vars
+    
     //TODO
-    match captured_vars.get(&rdd_id) {
+    match captured_vars.get(&final_rdd_id) {
         Some(var) =>  {
             w.store(&mut bincode::deserialize::<f32>(var).unwrap(), Ordering::Relaxed);
         },
         None => (),
     };
     let now = Instant::now();
-    let op_id = map_id(rdd_id);
-    println!("op_id = {:?}", op_id);
     println!("opmap = {:?}", load_opmap().len());
-    let op = load_opmap().get(&op_id).unwrap();
     let mut cache_meta = cache_meta.clone();
-    let result_ptr = op.iterator(tid, input, is_shuffle, &mut cache_meta);
+    let mut call_seq = NextOpId::new(rdd_ids);
+    let final_op = call_seq.get_next_op();
+    let result_ptr = final_op.iterator_start(tid, &mut call_seq, input, is_shuffle, &mut cache_meta);
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Acc max memory usage: {:?}, in enclave {:?} s", ALLOCATOR.lock().get_max_memory_usage(), dur);
     return result_ptr as usize

@@ -1,15 +1,16 @@
-use std::any::TypeId;
+use std::any::{Any, TypeId};
 use std::boxed::Box;
 use std::collections::{btree_map::BTreeMap, HashMap, HashSet};
 use std::cmp::{min, Ordering, Reverse};
-use std::vec::Vec;
 use std::mem::forget;
-use std::time::Instant;
-use std::untrusted::time::InstantEx;
+use std::raw::TraitObject;
 use std::sync::{
     atomic::{self, AtomicUsize},
     Arc, SgxMutex as Mutex, SgxRwLock as RwLock, Weak,
 };
+use std::time::Instant;
+use std::untrusted::time::InstantEx;
+use std::vec::Vec;
 
 use aes_gcm::{Aes128Gcm, aead::generic_array::functional::MappedGenericSequence};
 use aes_gcm::aead::{Aead, NewAead, generic_array::GenericArray};
@@ -197,6 +198,43 @@ impl OpCache{
     pub fn clear_by_rid_pid_spid(&self, rdd_id: usize, part_id: usize, sub_part_id: usize) {
         self.map.write().unwrap().remove(&(rdd_id, part_id, sub_part_id));
     }
+}
+
+pub struct NextOpId<'a> {
+    rdd_ids: &'a Vec<(usize, usize)>,
+    cur_seg: usize,
+    cur_rdd_id: usize,
+}
+
+impl<'a> NextOpId<'a> {
+    pub fn new(rdd_ids: &'a Vec<(usize, usize)>) -> Self {
+        NextOpId {
+            rdd_ids,
+            cur_seg: 0,
+            cur_rdd_id: rdd_ids[0].0,
+        }
+    }
+
+    pub fn get_next_op(&mut self) -> &'static Arc<dyn OpBase> {
+        let id = self.get_next_id_and_advance();
+        load_opmap().get(&id).unwrap()
+    }
+
+    fn get_next_id_and_advance(&mut self) -> usize {
+        let (upper, lower) = self.rdd_ids[self.cur_seg];
+        let cur_rdd_id;
+        if self.cur_rdd_id >= lower && self.cur_rdd_id <= upper {
+            cur_rdd_id = self.cur_rdd_id;
+            self.cur_rdd_id -= 1;
+        } else {
+            self.cur_seg += 1;
+            self.cur_rdd_id = self.rdd_ids[self.cur_seg].0;
+            cur_rdd_id = self.cur_rdd_id;
+            self.cur_rdd_id -= 1;
+        }
+        map_id(cur_rdd_id)
+    }
+
 }
 
 pub fn map_id(id: usize) -> usize {
@@ -401,7 +439,20 @@ pub trait OpBase: Send + Sync {
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
         None
     }
-    fn iterator(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8;
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8;
+    fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject>;
+}
+
+impl dyn OpBase {
+    pub fn to_arc_op<T: ?Sized + Any>(self: Arc<Self>) -> Option<Arc<T>> {
+        if let Some(mut u) = self.__to_arc_op(TypeId::of::<T>()) {
+            Some(unsafe{
+                Arc::from_raw(*std::mem::transmute::<_, &mut *mut T>(&mut u))
+            })
+        } else {
+            None
+        }
+    }
 }
 
 impl PartialOrd for dyn OpBase {
@@ -451,8 +502,11 @@ impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     fn get_prev_ids(&self) -> HashSet<usize> {
         (**self).get_op_base().get_prev_ids()
     }
-    fn iterator(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
-        (**self).get_op_base().iterator(tid, data_ptr, is_shuffle, cache_meta)
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
+        (**self).get_op_base().iterator_start(tid, call_seq, data_ptr, is_shuffle, cache_meta)
+    }
+    fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
+        (**self).clone().__to_arc_op(id)
     }
 }
 
@@ -464,11 +518,11 @@ impl<I: OpE + ?Sized> Op for SerArc<I> {
     fn get_op_base(&self) -> Arc<dyn OpBase> {
         (**self).get_op_base()
     }
-    fn compute_start(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
-        (**self).compute_start(tid, data_ptr, is_shuffle, cache_meta)
+    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
+        (**self).compute_start(tid, call_seq, data_ptr, is_shuffle, cache_meta)
     }
-    fn compute(&self, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
-        (**self).compute(data_ptr, cache_meta)
+    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+        (**self).compute(call_seq, data_ptr, cache_meta)
     }
     fn cache(&self, data: Vec<Self::Item>) {
         (**self).cache(data);
@@ -495,12 +549,11 @@ pub trait Op: OpBase + 'static {
     type Item: Data;
     fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>>;
     fn get_op_base(&self) -> Arc<dyn OpBase>;
-    fn compute_start(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8;
-    fn compute(&self, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>);
+    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8;
+    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>);
     fn cache(&self, data: Vec<Self::Item>) {
         ()
     }
-
 }
 
 pub trait OpE: Op {
@@ -576,6 +629,7 @@ pub trait OpE: Op {
         //println!("After cache inside enclave, memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
         CACHE.insert_subpid(key.0, key.1, key.2);
         //cache outside enclave
+        
         let handle = self.cache_to_outside(key, res.clone());
         //println!("After launch encryption thread, memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
         (Box::new(res.into_iter()), Some(handle))
@@ -700,8 +754,8 @@ pub trait OpE: Op {
         data
     }
 
-    fn narrow(&self, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> *mut u8 {
-        let (result_iter, handle) = self.compute(data_ptr, cache_meta);
+    fn narrow(&self, call_seq: &mut NextOpId, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> *mut u8 {
+        let (result_iter, handle) = self.compute(call_seq, data_ptr, cache_meta);
         /*
         println!("In narrow(before join), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
         if let Some(handle) = handle {
@@ -733,8 +787,8 @@ pub trait OpE: Op {
         result_ptr
     } 
 
-    fn shuffle(&self, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> *mut u8 {
-        let (data_iter, handle) = self.compute(data_ptr, cache_meta);
+    fn shuffle(&self, call_seq: &mut NextOpId, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> *mut u8 {
+        let (data_iter, handle) = self.compute(call_seq, data_ptr, cache_meta);
         let data = data_iter.collect::<Vec<Self::Item>>();
         let next_deps = self.get_next_deps().lock().unwrap().clone();
         let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));

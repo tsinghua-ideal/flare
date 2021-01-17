@@ -1,6 +1,7 @@
 use std::boxed::Box;
 use std::collections::hash_map::HashMap;
 use std::mem::forget;
+use std::raw::TraitObject;
 use std::sync::{Arc, SgxMutex, SgxRwLock as RwLock};
 use std::vec::Vec;
 use crate::basic::{AnyData, Data, Func, SerFunc };
@@ -123,8 +124,24 @@ where
         self.next_deps.clone()
     }
     
-    fn iterator(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
-        self.compute_start(tid, data_ptr, is_shuffle, cache_meta)
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
+		self.compute_start(tid, call_seq, data_ptr, is_shuffle, cache_meta)
+    }
+
+    fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
+        if id == TypeId::of::<dyn Op<Item = U>>() {
+            let x = std::ptr::null::<Self>() as *const dyn Op<Item = U>;
+            let vtable = unsafe {
+                std::mem::transmute::<_, TraitObject>(x).vtable
+            };
+            let data = Arc::into_raw(self);
+            Some(TraitObject {
+                data: data as *mut (),
+                vtable: vtable,
+            })
+        } else {
+            None
+        }
     }
 }
 
@@ -144,19 +161,19 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
   
-    fn compute_start (&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
+    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
         match is_shuffle {
             0 => {       //No shuffle later
-                self.narrow(data_ptr, cache_meta)
+                self.narrow(call_seq, data_ptr, cache_meta)
             },
             1 => {      //Shuffle write
-                self.shuffle(data_ptr, cache_meta)
+                self.shuffle(call_seq, data_ptr, cache_meta)
             },
             _ => panic!("Invalid is_shuffle")
         }
     }
 
-    fn compute(&self, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
         let have_cache = cache_meta.count_cached_down();
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
@@ -165,7 +182,15 @@ where
             return (Box::new(val.into_iter()), None); 
         }
         
-        let (res_iter, handle) = self.prev.compute(data_ptr, cache_meta);
+
+        let opb = call_seq.get_next_op().clone();
+        let (res_iter, handle) = if opb.get_id() == self.prev.get_id() {
+            self.prev.compute(call_seq, data_ptr, cache_meta)
+        } else {
+            let op = opb.to_arc_op::<dyn Op<Item = T>>().unwrap();
+            op.compute(call_seq, data_ptr, cache_meta)
+        };
+        
         let res_iter = Box::new(res_iter.flat_map(self.f.clone()));
 
         let need_cache = cache_meta.count_caching_down();

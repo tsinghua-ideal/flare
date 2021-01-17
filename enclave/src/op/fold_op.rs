@@ -1,12 +1,14 @@
+use std::any::TypeId;
 use std::boxed::Box;
 use std::mem::forget;
+use std::raw::TraitObject;
 use std::sync::{Arc, SgxMutex};
 use std::time::{Duration, Instant};
 use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::basic::{Data, Func, SerFunc};
 use crate::dependency::{Dependency, OneToOneDependency};
-use crate::op::{CacheMeta, Context, Op, OpE, OpBase};
+use crate::op::{CacheMeta, Context, NextOpId, Op, OpE, OpBase};
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use crate::custom_thread::PThread;
 
@@ -114,8 +116,25 @@ where
         self.prev.get_next_deps()
     }
 
-    fn iterator(&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
-        self.compute_start(tid, data_ptr, is_shuffle, cache_meta)
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
+        
+		self.compute_start(tid, call_seq, data_ptr, is_shuffle, cache_meta)
+    }
+
+    fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
+        if id == TypeId::of::<dyn Op<Item = T>>() {
+            let x = std::ptr::null::<Self>() as *const dyn Op<Item = T>;
+            let vtable = unsafe {
+                std::mem::transmute::<_, TraitObject>(x).vtable
+            };
+            let data = Arc::into_raw(self);
+            Some(TraitObject {
+                data: data as *mut (),
+                vtable: vtable,
+            })
+        } else {
+            None
+        }
     }
 }
 
@@ -137,7 +156,7 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
   
-    fn compute_start (&self, tid: u64, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8{
+    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8{
         //3 is only for reduce and fold
         if is_shuffle == 3 {
             let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<TE>) };
@@ -152,12 +171,12 @@ where
             return result_ptr;  
         }
         else {
-            self.narrow(data_ptr, cache_meta)
+            self.narrow(call_seq, data_ptr, cache_meta)
         }
     }
 
-    fn compute(&self, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
-        let (res_iter, handle) = self.prev.compute(data_ptr, cache_meta);
+    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+        let (res_iter, handle) = self.prev.compute(call_seq, data_ptr, cache_meta);
         (Box::new((self.f)(res_iter).into_iter()), handle)  
     }
 

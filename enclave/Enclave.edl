@@ -36,7 +36,7 @@ enclave {
         public size_t get_lp_boundary();
         public void free_lp_boundary([user_check] uint8_t* lp_bd_ptr);
         public size_t secure_executing(uint64_t tid,
-            size_t rdd_id, 
+            [user_check] uint8_t* rdd_id, 
             cache_meta_t cache_meta,
             uint8_t is_shuffle, 
 		    [user_check] uint8_t* input, 
