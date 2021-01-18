@@ -124,8 +124,8 @@ where
         self.next_deps.clone()
     }
     
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
-		self.compute_start(tid, call_seq, data_ptr, is_shuffle, cache_meta)
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+		self.compute_start(tid, call_seq, data_ptr, is_shuffle)
     }
 
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
@@ -161,23 +161,25 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
   
-    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
+    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         match is_shuffle {
             0 => {       //No shuffle later
-                self.narrow(call_seq, data_ptr, cache_meta)
+                self.narrow(call_seq, data_ptr)
             },
             1 => {      //Shuffle write
-                self.shuffle(call_seq, data_ptr, cache_meta)
+                self.shuffle(call_seq, data_ptr)
             },
             _ => panic!("Invalid is_shuffle")
         }
     }
 
-    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
-        let have_cache = cache_meta.count_cached_down();
+    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+        let have_cache = call_seq.have_cache();
+        let need_cache = call_seq.need_cache();
+        
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
-            let key = (cache_meta.cached_rdd_id, cache_meta.part_id, cache_meta.sub_part_id);
+            let key = call_seq.get_cached_triplet();
             let val = self.get_and_remove_cached_data(key);
             return (Box::new(val.into_iter()), None); 
         }
@@ -185,20 +187,19 @@ where
 
         let opb = call_seq.get_next_op().clone();
         let (res_iter, handle) = if opb.get_id() == self.prev.get_id() {
-            self.prev.compute(call_seq, data_ptr, cache_meta)
+            self.prev.compute(call_seq, data_ptr)
         } else {
             let op = opb.to_arc_op::<dyn Op<Item = T>>().unwrap();
-            op.compute(call_seq, data_ptr, cache_meta)
+            op.compute(call_seq, data_ptr)
         };
         
         let res_iter = Box::new(res_iter.flat_map(self.f.clone()));
 
-        let need_cache = cache_meta.count_caching_down();
         if need_cache {
             assert!(handle.is_none());
-            let key = (cache_meta.caching_rdd_id, cache_meta.part_id, cache_meta.sub_part_id);
+            let key = call_seq.get_caching_triplet();
             if CACHE.get(key).is_none() { 
-                return self.set_cached_data(key, res_iter);
+                return self.set_cached_data(call_seq.is_caching_final_rdd(), key, res_iter);
             }
         }
 

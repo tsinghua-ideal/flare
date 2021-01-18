@@ -165,9 +165,9 @@ where
         Some(self.part.clone())
     }
     
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         
-		self.compute_start(tid, call_seq, data_ptr, is_shuffle, cache_meta)
+		self.compute_start(tid, call_seq, data_ptr, is_shuffle)
     }
 
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
@@ -207,13 +207,13 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8, cache_meta: &mut CacheMeta) -> *mut u8 {
+    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         match is_shuffle {
             0 => {      //No shuffle
-                self.narrow(call_seq, data_ptr, cache_meta)
+                self.narrow(call_seq, data_ptr)
             },
             1 => {      //Shuffle write
-                self.shuffle(call_seq, data_ptr, cache_meta)
+                self.shuffle(call_seq, data_ptr)
             }
             2 => {      //Shuffle read
                 let aggregator = self.aggregator.clone(); 
@@ -267,7 +267,7 @@ where
         }
     }
 
-    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8, cache_meta: &mut CacheMeta) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
         let data = unsafe{ Box::from_raw(data_ptr as *mut Vec<(K, C)>) };
         (Box::new(data.into_iter()), None)
     }

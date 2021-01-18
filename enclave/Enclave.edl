@@ -26,9 +26,7 @@ enclave {
         size_t caching_rdd_id;
         size_t cached_rdd_id;
         size_t part_id;
-        size_t sub_part_id; 
-        size_t steps_to_caching;
-        size_t steps_to_cached;
+        size_t sub_part_id;
     };
     
     trusted {

@@ -158,11 +158,11 @@ pub extern "C" fn free_lp_boundary(lp_bd_ptr: *mut u8) {
 
 #[no_mangle]
 pub extern "C" fn secure_executing(tid: u64, 
-                                    rdd_ids: *const u8,
-                                    cache_meta: CacheMeta,
-                                    is_shuffle: u8, 
-                                    input: *mut u8, 
-                                    captured_vars: *const u8) -> usize 
+    rdd_ids: *const u8,
+    cache_meta: CacheMeta,
+    is_shuffle: u8, 
+    input: *mut u8, 
+    captured_vars: *const u8) -> usize 
 {
     let rdd_ids = unsafe { (rdd_ids as *const Vec<(usize, usize)>).as_ref() }.unwrap();
     let final_rdd_id = rdd_ids[0].0;
@@ -180,10 +180,9 @@ pub extern "C" fn secure_executing(tid: u64,
     };
     let now = Instant::now();
     println!("opmap = {:?}", load_opmap().len());
-    let mut cache_meta = cache_meta.clone();
-    let mut call_seq = NextOpId::new(rdd_ids);
-    let final_op = call_seq.get_next_op();
-    let result_ptr = final_op.iterator_start(tid, &mut call_seq, input, is_shuffle, &mut cache_meta);
+    let mut call_seq = NextOpId::new(rdd_ids, cache_meta.clone());
+    let final_op = call_seq.get_cur_op();
+    let result_ptr = final_op.iterator_start(tid, &mut call_seq, input, is_shuffle);
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Acc max memory usage: {:?}, in enclave {:?} s", ALLOCATOR.lock().get_max_memory_usage(), dur);
     return result_ptr as usize
@@ -203,9 +202,9 @@ pub extern "C" fn priv_free_res_enc(op_id: usize, is_shuffle: u8, input: *mut u8
 
 #[no_mangle]
 pub extern "C" fn get_sketch(rdd_id: usize, 
-                            is_shuffle: u8, 
-                            p_buf: *mut u8, 
-                            p_data_enc: *mut u8)
+    is_shuffle: u8, 
+    p_buf: *mut u8, 
+    p_data_enc: *mut u8)
 {
     let op_id = map_id(rdd_id);
     let op = load_opmap().get(&op_id).unwrap();
@@ -214,9 +213,9 @@ pub extern "C" fn get_sketch(rdd_id: usize,
 
 #[no_mangle]
 pub extern "C" fn clone_out(rdd_id: usize, 
-                            is_shuffle: u8,
-                            p_out: usize, 
-                            p_data_enc: *mut u8)
+    is_shuffle: u8,
+    p_out: usize, 
+    p_data_enc: *mut u8)
 {
     let op_id = map_id(rdd_id);
     let op = load_opmap().get(&op_id).unwrap();

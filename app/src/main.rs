@@ -52,6 +52,7 @@ fn main() -> Result<()> {
     //reduce_sec_0()?;
 
     /* count */
+    //count_unsec_0()?;
     count_sec_0()?;
 
     /* linear regression */
