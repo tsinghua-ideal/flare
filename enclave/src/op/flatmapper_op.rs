@@ -196,7 +196,12 @@ where
             assert!(handle.is_none());
             let key = call_seq.get_caching_triplet();
             if CACHE.get(key).is_none() { 
-                return self.set_cached_data(call_seq.is_caching_final_rdd(), key, res_iter);
+                return self.set_cached_data(
+                    call_seq.is_survivor(),
+                    call_seq.is_caching_final_rdd(),
+                    key,
+                    res_iter
+                );
             }
         }
 

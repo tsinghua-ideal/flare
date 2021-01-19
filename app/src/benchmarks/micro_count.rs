@@ -16,7 +16,7 @@ pub fn count_sec_0() -> Result<()> {
         pt0
     });
 
-    let mut data = (0..100_000).collect::<Vec<_>>();
+    let mut data = (0..500_000).collect::<Vec<_>>();
     let mut len = data.len();
     let mut data_enc = Vec::with_capacity(len);
     while len >= MAX_ENC_BL {

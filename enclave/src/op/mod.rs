@@ -244,9 +244,18 @@ impl<'a> NextOpId<'a> {
         self.get_cur_rdd_id() == self.cache_meta.caching_rdd_id
     }
 
-    pub fn is_caching_final_rdd(&mut self) -> bool {
+    pub fn is_caching_final_rdd(&self) -> bool {
         self.rdd_ids[0].0 == self.cache_meta.caching_rdd_id
-    } 
+    }
+
+    pub fn is_survivor(&self) -> bool {
+        match self.cache_meta.is_survivor {
+            0 => false,
+            1 => true,
+            _ => panic!("invalid is_survivor"),
+        }
+    }
+
 }
 
 pub fn map_id(id: usize) -> usize {
@@ -605,6 +614,7 @@ pub trait OpE: Op {
         let val = match CACHE.remove(key) {
             //cache inside enclave
             Some(val) => {
+                //println!("get cached data inside enclave");
                 CACHE.remove_subpid(key.0, key.1, key.2);
                 *unsafe {
                     Box::from_raw(val as *mut u8 as *mut Vec<Self::Item>)
@@ -612,19 +622,22 @@ pub trait OpE: Op {
             },
             //cache outside enclave
             None => {
+                //println!("get cached data outside enclave");
                 self.cache_from_outside(key)
             },
         };
         val
     }
 
-    fn set_cached_data(&self, is_final: bool, key: (usize, usize, usize), iter: Box<dyn Iterator<Item = Self::Item>>) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {              
+    fn set_cached_data(&self, is_survivor: bool, is_final: bool, key: (usize, usize, usize), iter: Box<dyn Iterator<Item = Self::Item>>) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {              
         let res = iter.collect::<Vec<_>>();
         //println!("After collect, memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
-        //cache inside enclave
-        CACHE.insert(key, Box::into_raw(Box::new(res.clone())) as *mut u8 as usize);
-        //println!("After cache inside enclave, memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
-        CACHE.insert_subpid(key.0, key.1, key.2);
+        if is_survivor {
+            //cache inside enclave
+            CACHE.insert(key, Box::into_raw(Box::new(res.clone())) as *mut u8 as usize);
+            //println!("After cache inside enclave, memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
+            CACHE.insert_subpid(key.0, key.1, key.2);
+        }
         //cache outside enclave
         if is_final {
             (Box::new(res.into_iter()), None)
