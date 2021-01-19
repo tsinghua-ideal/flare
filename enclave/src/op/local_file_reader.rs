@@ -87,21 +87,21 @@ impl<T: Data> LocalFsReader<T> {
 macro_rules! impl_common_lfs_opb_funcs {
     () => {
         fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
-            match is_shuffle {
+            match self.dep_type(is_shuffle) {
                 0 | 1 => self.step0_of_clone(p_buf, p_data_enc, is_shuffle),
                 _ => panic!("invalid is_shuffle"),
             } 
         }
     
         fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8) {
-            match is_shuffle {
+            match self.dep_type(is_shuffle) {
                 0 | 1 => self.step1_of_clone(p_out, p_data_enc, is_shuffle),
                 _ => panic!("invalid is_shuffle"),
             } 
         }
 
         fn call_free_res_enc(&self, res_ptr: *mut u8, is_shuffle: u8) {
-            match is_shuffle {
+            match self.dep_type(is_shuffle) {
                 0 => self.free_res_enc(res_ptr),
                 1 => {
                     let next_deps = self.get_next_deps().lock().unwrap().clone();
@@ -189,7 +189,7 @@ impl<T: Data> Op for LocalFsReader<T> {
 
     fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         //suppose no shuffle will happen after this rdd
-        self.narrow(call_seq, data_ptr)
+        self.narrow(call_seq, data_ptr, is_shuffle)
     }
 
 }

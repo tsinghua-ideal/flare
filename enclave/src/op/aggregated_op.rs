@@ -63,11 +63,13 @@ where
     FD: Func(UE) -> Vec<U> + Clone,
 {
     pub(crate) fn new(prev: Arc<dyn OpE<Item = T, ItemE = TE>>, sf: SF, cf: CF, fe: FE, fd: FD) -> Self {
+        /*
         prev.get_next_deps().lock().unwrap().push(
             Dependency::NarrowDependency(
                 Arc::new(OneToOneDependency::new(true))
             )
         );
+        */
         Aggregated {
             prev,
             sf,
@@ -90,21 +92,21 @@ where
     FD: SerFunc(UE) -> Vec<U>,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
-        match is_shuffle {
+        match self.dep_type(is_shuffle) {
             3 => self.step0_of_clone(p_buf, p_data_enc, is_shuffle), 
             _ => self.prev.build_enc_data_sketch(p_buf, p_data_enc, is_shuffle),
         }
     }
 
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8) {
-        match is_shuffle {
+        match self.dep_type(is_shuffle) {
             3 => self.step1_of_clone(p_out, p_data_enc, is_shuffle), 
             _ => self.prev.clone_enc_data_out(p_out, p_data_enc, is_shuffle),
         }
     }
 
     fn call_free_res_enc(&self, res_ptr: *mut u8, is_shuffle: u8) {
-        match is_shuffle {
+        match self.dep_type(is_shuffle) {
             3 => self.free_res_enc(res_ptr),
             _ => self.prev.call_free_res_enc(res_ptr, is_shuffle),
         };
@@ -132,19 +134,7 @@ where
     }
 
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
-        if id == TypeId::of::<dyn Op<Item = U>>() {
-            let x = std::ptr::null::<Self>() as *const dyn Op<Item = U>;
-            let vtable = unsafe {
-                std::mem::transmute::<_, TraitObject>(x).vtable
-            };
-            let data = Arc::into_raw(self);
-            Some(TraitObject {
-                data: data as *mut (),
-                vtable: vtable,
-            })
-        } else {
-            None
-        }
+        self.prev.clone().__to_arc_op(id)
     }
 }
 
@@ -171,8 +161,8 @@ where
   
     fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8{
         //3 is only for reduce & fold
-        if is_shuffle == 3 {
-            self.narrow(call_seq, data_ptr)
+        if self.dep_type(is_shuffle) == 3 {
+            self.narrow(call_seq, data_ptr, is_shuffle)
         }
         else {
             self.prev.compute_start(tid, call_seq, data_ptr, is_shuffle)

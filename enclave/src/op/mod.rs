@@ -426,19 +426,15 @@ pub trait OpBase: Send + Sync {
     fn get_context(&self) -> Arc<Context>;
     fn get_deps(&self) -> Vec<Dependency>;
     fn get_next_deps(&self) -> Arc<Mutex<Vec<Dependency>>>;
-    fn need_encryption(&self) -> bool {
-        let mut flag = true;
-        let next_deps = self.get_next_deps().lock().unwrap().clone();
-        assert!(next_deps.len() == 1 || next_deps.len() == 0);
-        for dep in next_deps {
-            flag = match dep {
-                //for shuffle write, based on the assumption that action cannot append shuffle dependency
-                Dependency::ShuffleDependency(_) => false,
-                //for multi jobs && union_rdd
-                Dependency::NarrowDependency(nar) => nar.is_end_of_job(),
-            };
+    fn dep_type(&self, is_shuffle: u8) -> u8 {
+        is_shuffle / 10
+    }
+    fn need_encryption(&self, is_shuffle: u8) -> bool {
+        match is_shuffle % 10 {
+            0 => false,
+            1 => true,
+            _ => true,
         }
-        flag
     }
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
         None
@@ -641,9 +637,9 @@ pub trait OpE: Op {
 
     fn step0_of_clone(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
         let mut buf = unsafe{ Box::from_raw(p_buf as *mut SizeBuf) };
-        match is_shuffle {
+        match self.dep_type(is_shuffle) {
             0 | 2  => {
-                let encrypted = self.need_encryption();
+                let encrypted = self.need_encryption(is_shuffle);
                 if encrypted {
                     let mut idx = Idx::new();
                     let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::ItemE>) };
@@ -677,10 +673,10 @@ pub trait OpE: Op {
     }
 
     fn step1_of_clone(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8) {
-        match is_shuffle {
+        match self.dep_type(is_shuffle) {
             0 | 2 => {
                 let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<Self::ItemE>) };
-                let encrypted = self.need_encryption();
+                let encrypted = self.need_encryption(is_shuffle);
                 if encrypted {
                     let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::ItemE>) };
                     v_out.clone_in_place(&data_enc);
@@ -754,7 +750,7 @@ pub trait OpE: Op {
         data
     }
 
-    fn narrow(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> *mut u8 {
+    fn narrow(&self, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         let (result_iter, handle) = self.compute(call_seq, data_ptr);
         /*
         println!("In narrow(before join), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
@@ -765,7 +761,7 @@ pub trait OpE: Op {
         
         let result = result_iter.collect::<Vec<Self::Item>>();
         //println!("In narrow(before encryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
-        let result_ptr = match self.need_encryption() {
+        let result_ptr = match self.need_encryption(is_shuffle) {
             true => {
                 let now = Instant::now();
                 let result_enc = self.batch_encrypt(result); 

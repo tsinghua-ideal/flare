@@ -53,11 +53,13 @@ where
     FD: Func(TE) -> Vec<T> + Clone,
 {
     pub(crate) fn new(prev: Arc<dyn Op<Item = T>>, f: F, fe: FE, fd: FD) -> Self {
+        /*
         prev.get_next_deps().lock().unwrap().push(
             Dependency::NarrowDependency(
                 Arc::new(OneToOneDependency::new(true))
             )
         );
+        */
         Fold {
             prev,
             f,
@@ -76,21 +78,21 @@ where
     FD: SerFunc(TE) -> Vec<T>,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
-        match is_shuffle {
+        match self.dep_type(is_shuffle) {
             3 => self.step0_of_clone(p_buf, p_data_enc, is_shuffle), 
             _ => self.prev.build_enc_data_sketch(p_buf, p_data_enc, is_shuffle),
         }
     }
 
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8) {
-        match is_shuffle {
+        match self.dep_type(is_shuffle) {
             3 => self.step1_of_clone(p_out, p_data_enc, is_shuffle), 
             _ => self.prev.clone_enc_data_out(p_out, p_data_enc, is_shuffle),
         } 
     }
 
     fn call_free_res_enc(&self, res_ptr: *mut u8, is_shuffle: u8) {
-        match is_shuffle {
+        match self.dep_type(is_shuffle) {
             3 => self.free_res_enc(res_ptr),
             _ => self.prev.call_free_res_enc(res_ptr, is_shuffle),
         };
@@ -118,19 +120,7 @@ where
     }
 
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
-        if id == TypeId::of::<dyn Op<Item = T>>() {
-            let x = std::ptr::null::<Self>() as *const dyn Op<Item = T>;
-            let vtable = unsafe {
-                std::mem::transmute::<_, TraitObject>(x).vtable
-            };
-            let data = Arc::into_raw(self);
-            Some(TraitObject {
-                data: data as *mut (),
-                vtable: vtable,
-            })
-        } else {
-            None
-        }
+        self.prev.clone().__to_arc_op(id)
     }
 }
 
@@ -154,7 +144,7 @@ where
   
     fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8{
         //3 is only for reduce and fold
-        if is_shuffle == 3 {
+        if self.dep_type(is_shuffle) == 3 {
             let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<TE>) };
             let data = self.batch_decrypt(*data_enc.clone()); //need to check security
             forget(data_enc);
@@ -167,7 +157,7 @@ where
             return result_ptr;  
         }
         else {
-            self.narrow(call_seq, data_ptr)
+            self.narrow(call_seq, data_ptr, is_shuffle)
         }
     }
 
