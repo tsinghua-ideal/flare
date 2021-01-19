@@ -2,10 +2,11 @@ use std::boxed::Box;
 use std::string::String;
 use std::vec::Vec;
 use crate::op::*;
+use crate::Fn;
 
 pub fn join_sec_0() -> usize {
     let sc = Context::new();
-    let rdd0_fe = Box::new(|vp: Vec<(i32, (String, String))> | -> (Vec<u8>, (Vec<u8>, Vec<u8>)) {
+    let rdd0_fe = Fn!(|vp: Vec<(i32, (String, String))> | -> (Vec<u8>, (Vec<u8>, Vec<u8>)) {
         let len = vp.len();
         let mut buf0 = Vec::with_capacity(len);
         let mut buf1 = Vec::with_capacity(len);
@@ -21,7 +22,7 @@ pub fn join_sec_0() -> usize {
         (buf0, (buf1, buf2))
     });
 
-    let rdd0_fd = Box::new(|ve: (Vec<u8>, (Vec<u8>, Vec<u8>))| -> Vec<(i32, (String, String))> {
+    let rdd0_fd = Fn!(|ve: (Vec<u8>, (Vec<u8>, Vec<u8>))| -> Vec<(i32, (String, String))> {
         let (buf0, (buf1, buf2)) = ve;
         let mut pt0: Vec<i32> = ser_decrypt::<>(buf0); 
         let mut pt1: Vec<String> = ser_decrypt::<>(buf1);
@@ -36,7 +37,7 @@ pub fn join_sec_0() -> usize {
             ).collect::<Vec<_>>() 
     });
 
-    let rdd1_fe = Box::new(|vp: Vec<(i32, String)> | -> (Vec<u8>, Vec<u8>) {
+    let rdd1_fe = Fn!(|vp: Vec<(i32, String)> | -> (Vec<u8>, Vec<u8>) {
         let len = vp.len();
         let mut buf0 = Vec::with_capacity(len);
         let mut buf1 = Vec::with_capacity(len);
@@ -49,7 +50,7 @@ pub fn join_sec_0() -> usize {
         (buf0, buf1)
     });
 
-    let rdd1_fd = Box::new(|ve: (Vec<u8>, Vec<u8>)| -> Vec<(i32, String)> {
+    let rdd1_fd = Fn!(|ve: (Vec<u8>, Vec<u8>)| -> Vec<(i32, String)> {
         let (buf0, buf1) = ve;
         let mut pt0: Vec<i32> = ser_decrypt::<>(buf0); 
         let mut pt1: Vec<String> = ser_decrypt::<>(buf1);
@@ -59,7 +60,7 @@ pub fn join_sec_0() -> usize {
         pt0.into_iter().zip(pt1.into_iter()).collect::<Vec<_>>() 
     });
 
-    let fe_jn = Box::new(|vp: Vec<(i32, (String, (String, String)))>| {
+    let fe_jn = Fn!(|vp: Vec<(i32, (String, (String, String)))>| {
         let len = vp.len();
         let mut buf0 = Vec::with_capacity(len);
         let mut buf1 = Vec::with_capacity(len);
@@ -78,7 +79,7 @@ pub fn join_sec_0() -> usize {
         (buf0, (buf1, (buf2, buf3)))
     });
 
-    let fd_jn = Box::new(|ve: (Vec<u8>, (Vec<u8>, (Vec<u8>, Vec<u8>)))| {
+    let fd_jn = Fn!(|ve: (Vec<u8>, (Vec<u8>, (Vec<u8>, Vec<u8>)))| {
         let (buf0, (buf1, (buf2, buf3))) = ve;
         let mut pt0: Vec<i32> = ser_decrypt::<>(buf0); 
         let mut pt1: Vec<String> = ser_decrypt::<>(buf1);
@@ -105,7 +106,7 @@ pub fn join_sec_0() -> usize {
         
 pub fn join_sec_1() -> usize {
     let sc = Context::new();
-    let rdd0_fe = Box::new(|vp: Vec<(i32, (String, String))> | -> (Vec<i32>, (Vec<String>, Vec<String>)) {
+    let rdd0_fe = Fn!(|vp: Vec<(i32, (String, String))> | -> (Vec<i32>, (Vec<String>, Vec<String>)) {
         let len = vp.len();
         let mut buf0 = Vec::with_capacity(len);
         let mut buf1 = Vec::with_capacity(len);
@@ -118,7 +119,7 @@ pub fn join_sec_1() -> usize {
         (buf0, (buf1, buf2))
     });
 
-    let rdd0_fd = Box::new(|ve: (Vec<i32>, (Vec<String>, Vec<String>))| -> Vec<(i32, (String, String))> {
+    let rdd0_fd = Fn!(|ve: (Vec<i32>, (Vec<String>, Vec<String>))| -> Vec<(i32, (String, String))> {
         let (mut pt0, (mut pt1, mut pt2)) = ve;
         let len = pt0.len() | pt1.len() | pt2.len();
         pt0.resize_with(len, Default::default);
@@ -130,7 +131,7 @@ pub fn join_sec_1() -> usize {
             ).collect::<Vec<_>>() 
     });
 
-    let rdd1_fe = Box::new(|vp: Vec<(i32, String)> | -> (Vec<i32>, Vec<String>) {
+    let rdd1_fe = Fn!(|vp: Vec<(i32, String)> | -> (Vec<i32>, Vec<String>) {
         let len = vp.len();
         let mut buf0 = Vec::with_capacity(len);
         let mut buf1 = Vec::with_capacity(len);
@@ -141,7 +142,7 @@ pub fn join_sec_1() -> usize {
         (buf0, buf1)
     });
 
-    let rdd1_fd = Box::new(|ve: (Vec<i32>, Vec<String>)| -> Vec<(i32, String)> {
+    let rdd1_fd = Fn!(|ve: (Vec<i32>, Vec<String>)| -> Vec<(i32, String)> {
         let (mut pt0, mut pt1) = ve;
         let len = pt0.len() | pt1.len();
         pt0.resize_with(len, Default::default);
@@ -149,7 +150,7 @@ pub fn join_sec_1() -> usize {
         pt0.into_iter().zip(pt1.into_iter()).collect::<Vec<_>>() 
     });
 
-    let fe_jn = Box::new(|vp: Vec<(i32, (String, (String, String)))>| {
+    let fe_jn = Fn!(|vp: Vec<(i32, (String, (String, String)))>| {
         let len = vp.len();
         let mut buf0 = Vec::with_capacity(len);
         let mut buf1 = Vec::with_capacity(len);
@@ -164,7 +165,7 @@ pub fn join_sec_1() -> usize {
         (buf0, (buf1, (buf2, buf3)))
     });
 
-    let fd_jn = Box::new(|ve: (Vec<i32>, (Vec<String>, (Vec<String>, Vec<String>)))| {
+    let fd_jn = Fn!(|ve: (Vec<i32>, (Vec<String>, (Vec<String>, Vec<String>)))| {
         let (mut pt0, (mut pt1, (mut pt2, mut pt3))) = ve;
         let len = pt0.len() | pt1.len() | pt2.len() | pt3.len();
         pt0.resize_with(len, Default::default);
@@ -188,7 +189,7 @@ pub fn join_sec_1() -> usize {
 
 pub fn join_sec_2() -> usize {
     let sc = Context::new();
-    let fe = Box::new(|vp: Vec<(i32, i32)> | -> (Vec<u8>, Vec<u8>) {
+    let fe = Fn!(|vp: Vec<(i32, i32)> | -> (Vec<u8>, Vec<u8>) {
         let len = vp.len();
         let mut buf0 = Vec::with_capacity(len);
         let mut buf1 = Vec::with_capacity(len);
@@ -201,7 +202,7 @@ pub fn join_sec_2() -> usize {
         (buf0, buf1)
     });
 
-    let fd = Box::new(|ve: (Vec<u8>, Vec<u8>)| -> Vec<(i32, i32)> {
+    let fd = Fn!(|ve: (Vec<u8>, Vec<u8>)| -> Vec<(i32, i32)> {
         let (buf0, buf1) = ve;
         let mut pt0: Vec<i32> = ser_decrypt::<>(buf0); 
         let mut pt1: Vec<i32> = ser_decrypt::<>(buf1);
@@ -211,7 +212,7 @@ pub fn join_sec_2() -> usize {
         pt0.into_iter().zip(pt1.into_iter()).collect::<Vec<_>>() 
     });
     
-    let fe_jn = Box::new(|vp: Vec<(i32, (i32, i32))>| {
+    let fe_jn = Fn!(|vp: Vec<(i32, (i32, i32))>| {
         let len = vp.len();
         let mut buf0 = Vec::with_capacity(len);
         let mut buf1 = Vec::with_capacity(len);
@@ -227,7 +228,7 @@ pub fn join_sec_2() -> usize {
         (buf0, (buf1, buf2))
     });
 
-    let fd_jn = Box::new(|ve: (Vec<u8>, (Vec<u8>, Vec<u8>))| {
+    let fd_jn = Fn!(|ve: (Vec<u8>, (Vec<u8>, Vec<u8>))| {
         let (buf0, (buf1, buf2)) = ve;
         let mut pt0: Vec<i32> = ser_decrypt::<>(buf0); 
         let mut pt1: Vec<i32> = ser_decrypt::<>(buf1);

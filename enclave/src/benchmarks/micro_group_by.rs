@@ -2,10 +2,11 @@ use std::boxed::Box;
 use std::string::String;
 use std::vec::Vec;
 use crate::op::*;
+use crate::Fn;
 
 pub fn group_by_sec_0() -> usize {
     let sc = Context::new();
-    let fe = Box::new(|vp: Vec<(String, i32)>| {
+    let fe = Fn!(|vp: Vec<(String, i32)>| {
         let len = vp.len();
         let mut buf0 = Vec::with_capacity(len);
         let mut buf1 = Vec::with_capacity(len);
@@ -18,7 +19,7 @@ pub fn group_by_sec_0() -> usize {
         (buf0, buf1)
     });
 
-    let fd = Box::new(|ve: (Vec<u8>, Vec<u8>)| {
+    let fd = Fn!(|ve: (Vec<u8>, Vec<u8>)| {
         let (buf0, buf1) = ve;
         let mut pt0: Vec<String> = ser_decrypt::<>(buf0); 
         let mut pt1: Vec<i32> = ser_decrypt::<>(buf1);
@@ -28,7 +29,7 @@ pub fn group_by_sec_0() -> usize {
         pt0.into_iter().zip(pt1.into_iter()).collect::<Vec<_>>() 
     });
 
-    let fe_gb = Box::new(|vp: Vec<(String, Vec<i32>)>| {
+    let fe_gb = Fn!(|vp: Vec<(String, Vec<i32>)>| {
         let len = vp.len();
         let mut buf0 = Vec::with_capacity(len);
         let mut buf1 = Vec::with_capacity(len);
@@ -41,7 +42,7 @@ pub fn group_by_sec_0() -> usize {
         (buf0, buf1)
     });
 
-    let fd_gb = Box::new(|ve: (Vec<u8>, Vec<u8>)| {
+    let fd_gb = Fn!(|ve: (Vec<u8>, Vec<u8>)| {
         let (buf0, buf1) = ve;
         let mut pt0: Vec<String> = ser_decrypt::<>(buf0); 
         let mut pt1: Vec<Vec<i32>> = ser_decrypt::<>(buf1);

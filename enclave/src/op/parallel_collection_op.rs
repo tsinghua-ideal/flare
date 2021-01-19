@@ -119,6 +119,10 @@ where
         self.next_deps.clone()
     }
 
+    fn has_spec_oppty(&self, matching_id: usize) -> bool {
+        false
+    }
+
     fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         
 		self.compute_start(tid, call_seq, data_ptr, is_shuffle)

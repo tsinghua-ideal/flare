@@ -12,11 +12,11 @@ use std::time::Instant;
 use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 
-use aes_gcm::{Aes128Gcm, aead::generic_array::functional::MappedGenericSequence};
+use aes_gcm::Aes128Gcm;
 use aes_gcm::aead::{Aead, NewAead, generic_array::GenericArray};
 use sgx_types::*;
 
-use crate::{CACHE, lp_boundary, opmap};
+use crate::{BRANCH_HIS, CACHE, lp_boundary, opmap};
 use crate::basic::{AnyData, Arc as SerArc, Data, Func, SerFunc};
 use crate::dependency::Dependency;
 use crate::partitioner::Partitioner;
@@ -431,13 +431,15 @@ pub trait OpBase: Send + Sync {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8);
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8);
     fn call_free_res_enc(&self, res_ptr: *mut u8, is_shuffle: u8);
+    fn dep_type(&self, is_shuffle: u8) -> u8 {
+        is_shuffle / 10
+    }
     fn get_id(&self) -> usize;
     fn get_context(&self) -> Arc<Context>;
     fn get_deps(&self) -> Vec<Dependency>;
     fn get_next_deps(&self) -> Arc<Mutex<Vec<Dependency>>>;
-    fn dep_type(&self, is_shuffle: u8) -> u8 {
-        is_shuffle / 10
-    }
+    //has speculative opportunity
+    fn has_spec_oppty(&self, matching_id: usize) -> bool;
     fn need_encryption(&self, is_shuffle: u8) -> bool {
         match is_shuffle % 10 {
             0 => false,
@@ -507,6 +509,9 @@ impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     }
     fn get_next_deps(&self) -> Arc<Mutex<Vec<Dependency>>> {
         (**self).get_op_base().get_next_deps()
+    }
+    fn has_spec_oppty(&self, matching_id: usize) -> bool {
+        (**self).get_op_base().has_spec_oppty(matching_id)
     }
     fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         (**self).get_op_base().iterator_start(tid, call_seq, data_ptr, is_shuffle)

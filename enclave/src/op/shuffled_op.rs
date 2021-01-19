@@ -159,6 +159,10 @@ where
         self.next_deps.clone()
     }
 
+    fn has_spec_oppty(&self, matching_id: usize) -> bool {
+        false
+    }
+
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
         Some(self.part.clone())
     }

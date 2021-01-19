@@ -49,6 +49,7 @@ extern crate lazy_static;
 #[macro_use]
 extern crate downcast_rs; 
 use serde_derive::{Deserialize, Serialize};
+use serde_closure::Fn;
 
 use sgx_tcrypto::*;
 use std::boxed::Box;
@@ -84,6 +85,7 @@ struct Captured {
 }
 
 lazy_static! {
+    static ref BRANCH_HIS: Arc<RwLock<HashMap<usize, usize>>> = Arc::new(RwLock::new(HashMap::new()));
     static ref CACHE: OpCache = OpCache::new();
     static ref CAVE: Arc<Mutex<HashMap<u64, usize>>> = Arc::new(Mutex::new(HashMap::new()));
     /// loop boundary: (lower bound after maping, upper bound after mapping, iteration number)

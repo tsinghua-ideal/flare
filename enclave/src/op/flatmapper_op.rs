@@ -1,14 +1,7 @@
-use std::boxed::Box;
-use std::collections::hash_map::HashMap;
-use std::mem::forget;
-use std::raw::TraitObject;
-use std::sync::{Arc, SgxMutex, SgxRwLock as RwLock};
-use std::vec::Vec;
-use crate::basic::{AnyData, Data, Func, SerFunc };
-use crate::dependency::{Dependency, OneToOneDependency};
+use sgx_trts::c_str::IntoStringError;
+
+use crate::dependency::OneToOneDependency;
 use crate::op::*;
-use crate::serialization_free::{Construct, Idx, SizeBuf};
-use crate::custom_thread::PThread;
 
 pub struct FlatMapper<T: Data, U: Data, UE: Data, F, FE, FD>
 where
@@ -17,7 +10,7 @@ where
     FD: Func(UE) -> Vec<U> + Clone,
 {
     vals: Arc<OpVals>,
-    next_deps: Arc<SgxMutex<Vec<Dependency>>>,
+    next_deps: Arc<Mutex<Vec<Dependency>>>,
     prev: Arc<dyn Op<Item = T>>,
     f: F,
     fe: FE,
@@ -62,7 +55,7 @@ where
         );
         FlatMapper {
             vals,
-            next_deps: Arc::new(SgxMutex::new(Vec::<Dependency>::new())),
+            next_deps: Arc::new(Mutex::new(Vec::<Dependency>::new())),
             prev,
             f,
             fe,
@@ -118,8 +111,19 @@ where
         self.vals.deps.clone()
     }
     
-    fn get_next_deps(&self) -> Arc<SgxMutex<Vec<Dependency>>> {
+    fn get_next_deps(&self) -> Arc<Mutex<Vec<Dependency>>> {
         self.next_deps.clone()
+    }
+
+    fn has_spec_oppty(&self, matching_id: usize) -> bool {
+        let cur_op_id = self.get_id();
+        let prev_op_id = self.prev.get_id();
+        let mut flag = match BRANCH_HIS.read().unwrap().get(&cur_op_id) {
+            Some(br_op_id) => *br_op_id == matching_id || prev_op_id == matching_id,
+            None => prev_op_id == matching_id,
+        };
+        //flag = flag && !has_captured_var;
+        flag
     }
     
     fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
@@ -186,6 +190,7 @@ where
         let (res_iter, handle) = if opb.get_id() == self.prev.get_id() {
             self.prev.compute(call_seq, data_ptr)
         } else {
+            BRANCH_HIS.write().unwrap().insert(self.get_id(), opb.get_id());
             let op = opb.to_arc_op::<dyn Op<Item = T>>().unwrap();
             op.compute(call_seq, data_ptr)
         };

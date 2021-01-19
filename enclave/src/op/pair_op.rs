@@ -371,6 +371,17 @@ where
     fn get_next_deps(&self) -> Arc<Mutex<Vec<Dependency>>> {
         self.next_deps.clone()
     }    
+
+    fn has_spec_oppty(&self, matching_id: usize) -> bool {
+        let cur_op_id = self.get_id();
+        let prev_op_id = self.prev.get_id();
+        let mut flag = match BRANCH_HIS.read().unwrap().get(&cur_op_id) {
+            Some(br_op_id) => *br_op_id == matching_id || prev_op_id == matching_id,
+            None => prev_op_id == matching_id,
+        };
+        //flag = flag && !has_captured_var;
+        flag
+    }
     
     fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         
@@ -444,6 +455,7 @@ where
         let (res_iter, handle) = if opb.get_id() == self.prev.get_id() {
             self.prev.compute(call_seq, data_ptr)
         } else {
+            BRANCH_HIS.write().unwrap().insert(self.get_id(), opb.get_id());
             let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
             op.compute(call_seq, data_ptr)
         };
@@ -624,6 +636,17 @@ where
     fn get_next_deps(&self) -> Arc<Mutex<Vec<Dependency>>> {
         self.next_deps.clone()
     }
+
+    fn has_spec_oppty(&self, matching_id: usize) -> bool {
+        let cur_op_id = self.get_id();
+        let prev_op_id = self.prev.get_id();
+        let mut flag = match BRANCH_HIS.read().unwrap().get(&cur_op_id) {
+            Some(br_op_id) => *br_op_id == matching_id || prev_op_id == matching_id,
+            None => prev_op_id == matching_id,
+        };
+        //flag = flag && !has_captured_var;
+        flag
+    }
     
     fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         
@@ -695,6 +718,7 @@ where
         let (res_iter, handle) = if opb.get_id() == self.prev.get_id() {
             self.prev.compute(call_seq, data_ptr)
         } else {
+            BRANCH_HIS.write().unwrap().insert(self.get_id(), opb.get_id());
             let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
             op.compute(call_seq, data_ptr)
         };
