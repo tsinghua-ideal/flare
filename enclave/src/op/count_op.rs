@@ -38,8 +38,11 @@ where
     TE: Data,
 {
     pub(crate) fn new(prev: Arc<dyn OpE<Item = T, ItemE = TE>>) -> Self {
-        let mut prev_ids = prev.get_prev_ids();
-        prev_ids.insert(prev.get_id()); 
+        prev.get_next_deps().lock().unwrap().push(
+            Dependency::NarrowDependency(
+                Arc::new(OneToOneDependency::new(true))
+            )
+        );
         Count {
             prev,
         }

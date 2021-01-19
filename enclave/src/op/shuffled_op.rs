@@ -77,14 +77,12 @@ where
         fe: FE,
         fd: FD,
     ) -> Self {
-        let mut prev_ids = parent.get_prev_ids();
-        prev_ids.insert(parent.get_id());
         let dep = Dependency::ShuffleDependency(Arc::new(
             ShuffleDependency::new(
                 false,
                 aggregator.clone(),
                 part.clone(),
-                prev_ids,
+                false,
                 Box::new(fe.clone()),
                 Box::new(fd.clone()),
             ),

@@ -20,10 +20,10 @@ pub enum Dependency {
 }
 
 impl Dependency {
-    pub fn get_prev_ids(&self) -> HashSet<usize> {
+    pub fn is_end_of_job(&self) -> bool {
         match self {
-            Dependency::NarrowDependency(nar) => nar.get_prev_ids(),
-            Dependency::ShuffleDependency(shuf) => shuf.get_prev_ids(),
+            Dependency::NarrowDependency(nar) => nar.is_end_of_job(),
+            Dependency::ShuffleDependency(shuf) => shuf.is_end_of_job(),
         }
     }
 }
@@ -42,24 +42,24 @@ where
 }
 
 pub trait NarrowDependencyTrait: DowncastSync + Send + Sync {
-    fn get_prev_ids(&self) -> HashSet<usize>;
+    fn is_end_of_job(&self) -> bool;
 }
 impl_downcast!(sync NarrowDependencyTrait);
 
 #[derive(Clone)]
 pub struct OneToOneDependency {
-    prev_ids: HashSet<usize>, 
+    end_of_job: bool, 
 }
 
 impl OneToOneDependency {
-    pub fn new(prev_ids: HashSet<usize>) -> Self {
-        OneToOneDependency{ prev_ids }
+    pub fn new(end_of_job: bool) -> Self {
+        OneToOneDependency{ end_of_job }
     }
 }
 
 impl NarrowDependencyTrait for OneToOneDependency {
-    fn get_prev_ids(&self) -> HashSet<usize> {
-        self.prev_ids.clone()
+    fn is_end_of_job(&self) -> bool {
+        self.end_of_job
     }
 }
 
@@ -68,18 +68,18 @@ pub struct RangeDependency {
     in_start: usize,
     out_start: usize,
     length: usize,
-    prev_ids: HashSet<usize>,
+    end_of_job: bool,
 }
 
 impl RangeDependency {
-    pub fn new(in_start: usize, out_start: usize, length: usize, prev_ids: HashSet<usize>) -> Self {
-        RangeDependency { in_start, out_start, length, prev_ids}
+    pub fn new(in_start: usize, out_start: usize, length: usize, end_of_job: bool) -> Self {
+        RangeDependency { in_start, out_start, length, end_of_job}
     }
 }
 
 impl NarrowDependencyTrait for RangeDependency {
-    fn get_prev_ids(&self) -> HashSet<usize> {
-        self.prev_ids.clone()
+    fn is_end_of_job(&self) -> bool {
+        self.end_of_job
     }
 }
 
@@ -88,8 +88,9 @@ pub trait ShuffleDependencyTrait: DowncastSync + Send + Sync  {
     fn send_sketch(&self, buf: &mut SizeBuf, p_data_enc: *mut u8);
     fn send_enc_data(&self, p_out: usize, p_data_enc: *mut u8);
     fn free_res_enc(&self, res_ptr: *mut u8);
-    fn get_prev_ids(&self) -> HashSet<usize>;
+    fn is_end_of_job(&self) -> bool; 
 }
+
 impl_downcast!(sync ShuffleDependencyTrait);
 
 pub struct ShuffleDependency<K, V, C, KE, CE> 
@@ -103,7 +104,7 @@ where
     pub is_cogroup: bool,
     pub aggregator: Arc<Aggregator<K, V, C>>,
     pub partitioner: Box<dyn Partitioner>,
-    prev_ids: HashSet<usize>,
+    pub end_of_job: bool,
     pub fe: Box<dyn Func(Vec<(K, C)>) -> (KE, CE)>,
     pub fd: Box<dyn Func((KE, CE)) -> Vec<(K, C)>>,
 }
@@ -120,7 +121,7 @@ where
         is_cogroup: bool,
         aggregator: Arc<Aggregator<K, V, C>>,
         partitioner: Box<dyn Partitioner>,
-        prev_ids: HashSet<usize>,
+        end_of_job: bool,
         fe: Box<dyn Func(Vec<(K, C)>) -> (KE, CE)>,
         fd: Box<dyn Func((KE, CE)) -> Vec<(K, C)>>,
     ) -> Self {
@@ -128,7 +129,7 @@ where
             is_cogroup,
             aggregator,
             partitioner,
-            prev_ids,
+            end_of_job,
             fe,
             fd,
         }
@@ -214,8 +215,8 @@ where
         crate::ALLOCATOR.lock().set_switch(false);
     }
 
-    fn get_prev_ids(&self) -> HashSet<usize> {
-        self.prev_ids.clone()
+    fn is_end_of_job(&self) -> bool {
+        self.end_of_job
     }
 
 }

@@ -294,17 +294,15 @@ where
     FD: Func((KE, UE)) -> Vec<(K, U)> + Clone,
 {
     fn new(prev: Arc<dyn Op<Item = (K, V)>>, f: F, fe: FE, fd: FD) -> Self {
-        let mut prev_ids = prev.get_prev_ids();
-        prev_ids.insert(prev.get_id());
         let mut vals = OpVals::new(prev.get_context());
         vals.deps
             .push(Dependency::NarrowDependency(Arc::new(
-                OneToOneDependency::new(prev_ids.clone()),
+                OneToOneDependency::new(false),
             )));
         let vals = Arc::new(vals);
         prev.get_next_deps().lock().unwrap().push(
             Dependency::NarrowDependency(
-                Arc::new(OneToOneDependency::new(prev_ids))
+                Arc::new(OneToOneDependency::new(false))
             )
         ); 
         MappedValues {
@@ -544,17 +542,15 @@ where
     FD: Func((KE, UE)) -> Vec<(K, U)> + Clone,
 {
     fn new(prev: Arc<dyn Op<Item = (K, V)>>, f: F, fe: FE, fd: FD) -> Self {
-        let mut prev_ids = prev.get_prev_ids();
-        prev_ids.insert(prev.get_id());
         let mut vals = OpVals::new(prev.get_context());
         vals.deps
             .push(Dependency::NarrowDependency(Arc::new(
-                OneToOneDependency::new(prev_ids.clone()),
+                OneToOneDependency::new(false),
             )));
         let vals = Arc::new(vals);
         prev.get_next_deps().lock().unwrap().push(
             Dependency::NarrowDependency(
-                Arc::new(OneToOneDependency::new(prev_ids))
+                Arc::new(OneToOneDependency::new(false))
             )
         );
         FlatMappedValues {

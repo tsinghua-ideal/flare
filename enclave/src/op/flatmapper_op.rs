@@ -50,16 +50,14 @@ where
 {
     pub(crate) fn new(prev: Arc<dyn Op<Item = T>>, f: F, fe: FE, fd: FD) -> Self {
         let mut vals = OpVals::new(prev.get_op_base().get_context());
-        let mut prev_ids = prev.get_prev_ids();
-        prev_ids.insert(prev.get_id()); 
         vals.deps
             .push(Dependency::NarrowDependency(Arc::new(
-                OneToOneDependency::new(prev_ids.clone())
+                OneToOneDependency::new(false)
             )));
         let vals = Arc::new(vals);
         prev.get_next_deps().lock().unwrap().push(
             Dependency::NarrowDependency(
-                Arc::new(OneToOneDependency::new(prev_ids))
+                Arc::new(OneToOneDependency::new(false))
             )
         );
         FlatMapper {
@@ -183,7 +181,6 @@ where
             let val = self.get_and_remove_cached_data(key);
             return (Box::new(val.into_iter()), None); 
         }
-        
 
         let opb = call_seq.get_next_op().clone();
         let (res_iter, handle) = if opb.get_id() == self.prev.get_id() {

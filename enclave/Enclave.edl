@@ -27,6 +27,7 @@ enclave {
         size_t cached_rdd_id;
         size_t part_id;
         size_t sub_part_id;
+        uint8_t is_survivor;
     };
     
     trusted {

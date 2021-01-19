@@ -63,15 +63,11 @@ where
     FD: Func(UE) -> Vec<U> + Clone,
 {
     pub(crate) fn new(prev: Arc<dyn OpE<Item = T, ItemE = TE>>, sf: SF, cf: CF, fe: FE, fd: FD) -> Self {
-        let mut prev_ids = prev.get_prev_ids();
-        prev_ids.insert(prev.get_id()); 
-        /*
         prev.get_next_deps().lock().unwrap().push(
             Dependency::NarrowDependency(
-                Arc::new(OneToOneDependency::new(prev_ids))
+                Arc::new(OneToOneDependency::new(true))
             )
         );
-        */
         Aggregated {
             prev,
             sf,

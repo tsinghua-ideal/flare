@@ -55,18 +55,16 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
         let mut vals = OpVals::new(context.clone());
         let mut deps = Vec::new();
              
-        let mut prev_ids = op0.get_prev_ids();
-        prev_ids.insert(op0.get_id()); 
         if op0
             .partitioner()
             .map_or(false, |p| p.equals(&part as &dyn Any))
         {
             deps.push(Dependency::NarrowDependency(
-                Arc::new(OneToOneDependency::new(prev_ids.clone())) as Arc<dyn NarrowDependencyTrait>,
+                Arc::new(OneToOneDependency::new(false)) as Arc<dyn NarrowDependencyTrait>,
             ));
             op0.get_next_deps().lock().unwrap().push(
                 Dependency::NarrowDependency(
-                    Arc::new(OneToOneDependency::new(prev_ids.clone()))
+                    Arc::new(OneToOneDependency::new(false))
                 )
             );
         } else {
@@ -100,7 +98,7 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
                     true,
                     aggr.clone(),
                     part.clone(),
-                    prev_ids.clone(),
+                    false,
                     fe_wrapper.clone(),
                     fd_wrapper.clone(),
                 )) as Arc<dyn ShuffleDependencyTrait>,
@@ -111,7 +109,7 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
                         true,
                         aggr,
                         part.clone(),
-                        prev_ids,
+                        false,
                         fe_wrapper,
                         fd_wrapper,
                     ))
@@ -119,19 +117,16 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
             );
         }
 
-
-        let mut prev_ids = op1.get_prev_ids();
-        prev_ids.insert(op1.get_id()); 
         if op1
             .partitioner()
             .map_or(false, |p| p.equals(&part as &dyn Any))
         {
             deps.push(Dependency::NarrowDependency(
-                Arc::new(OneToOneDependency::new(prev_ids.clone())) as Arc<dyn NarrowDependencyTrait>,
+                Arc::new(OneToOneDependency::new(false)) as Arc<dyn NarrowDependencyTrait>,
             ));
             op1.get_next_deps().lock().unwrap().push(
                 Dependency::NarrowDependency(
-                    Arc::new(OneToOneDependency::new(prev_ids.clone()))
+                    Arc::new(OneToOneDependency::new(false))
                 )
             ); 
         } else {
@@ -165,7 +160,7 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
                     true,
                     aggr.clone(),
                     part.clone(),
-                    prev_ids.clone(),
+                    false,
                     fe_wrapper.clone(),
                     fd_wrapper.clone(),
                 )) as Arc<dyn ShuffleDependencyTrait>,
@@ -176,7 +171,7 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
                         true,
                         aggr,
                         part.clone(),
-                        prev_ids,
+                        false,
                         fe_wrapper,
                         fd_wrapper,
                     ))
@@ -318,7 +313,7 @@ where
             2 => {      //shuffle read
                 let mut dur_sum = 0.0;
                 //TODO need revision if fe & fd of group_by is passed 
-                let data_enc = unsafe{ 
+                let data_enc = unsafe { 
                     Box::from_raw(data_ptr as *mut (
                         Vec<(KE, VE)>, 
                         Vec<Vec<(KE, Vec<u8>)>>, 

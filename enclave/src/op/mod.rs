@@ -74,6 +74,7 @@ pub struct CacheMeta {
     cached_rdd_id: usize,
     part_id: usize,
     sub_part_id: usize,
+    is_survivor: u8,
 }
 
 impl CacheMeta {
@@ -86,7 +87,8 @@ impl CacheMeta {
             caching_rdd_id,
             cached_rdd_id,
             part_id,
-            sub_part_id: 0, 
+            sub_part_id: 0,
+            is_survivor: 0,
         }
     }
 
@@ -424,24 +426,16 @@ pub trait OpBase: Send + Sync {
     fn get_context(&self) -> Arc<Context>;
     fn get_deps(&self) -> Vec<Dependency>;
     fn get_next_deps(&self) -> Arc<Mutex<Vec<Dependency>>>;
-    fn get_prev_ids(&self) -> HashSet<usize> {
-        let deps = self.get_deps();
-        let mut set = HashSet::new();
-        for dep in deps {
-            for i in dep.get_prev_ids() {
-                set.insert(i);
-            }  
-        };
-        set
-    }
     fn need_encryption(&self) -> bool {
         let mut flag = true;
         let next_deps = self.get_next_deps().lock().unwrap().clone();
         assert!(next_deps.len() == 1 || next_deps.len() == 0);
         for dep in next_deps {
             flag = match dep {
+                //for shuffle write, based on the assumption that action cannot append shuffle dependency
                 Dependency::ShuffleDependency(_) => false,
-                Dependency::NarrowDependency(_) => true,
+                //for multi jobs && union_rdd
+                Dependency::NarrowDependency(nar) => nar.is_end_of_job(),
             };
         }
         flag
@@ -508,9 +502,6 @@ impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     }
     fn get_next_deps(&self) -> Arc<Mutex<Vec<Dependency>>> {
         (**self).get_op_base().get_next_deps()
-    }
-    fn get_prev_ids(&self) -> HashSet<usize> {
-        (**self).get_op_base().get_prev_ids()
     }
     fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         (**self).get_op_base().iterator_start(tid, call_seq, data_ptr, is_shuffle)

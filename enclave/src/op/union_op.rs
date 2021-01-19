@@ -37,15 +37,13 @@ impl<T: Data, TE: Data> Union<T, TE>
         let mut vals = OpVals::new(ops[0].get_context());
 
         for prev in ops {
-            let mut prev_ids = prev.get_prev_ids();
-            prev_ids.insert(prev.get_id()); 
             vals.deps
                 .push(Dependency::NarrowDependency(Arc::new(
-                    OneToOneDependency::new(prev_ids.clone())
+                    OneToOneDependency::new(false)
                 )));
             prev.get_next_deps().lock().unwrap().push(
                 Dependency::NarrowDependency(
-                    Arc::new(OneToOneDependency::new(prev_ids))
+                    Arc::new(OneToOneDependency::new(false))
                 )
             );
         } 
