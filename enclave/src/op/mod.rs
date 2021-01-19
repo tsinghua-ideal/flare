@@ -614,7 +614,7 @@ pub trait OpE: Op {
         let val = match CACHE.remove(key) {
             //cache inside enclave
             Some(val) => {
-                //println!("get cached data inside enclave");
+                println!("get cached data inside enclave");
                 CACHE.remove_subpid(key.0, key.1, key.2);
                 *unsafe {
                     Box::from_raw(val as *mut u8 as *mut Vec<Self::Item>)
@@ -622,7 +622,7 @@ pub trait OpE: Op {
             },
             //cache outside enclave
             None => {
-                //println!("get cached data outside enclave");
+                println!("get cached data outside enclave");
                 self.cache_from_outside(key)
             },
         };
