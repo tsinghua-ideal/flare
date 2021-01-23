@@ -1,6 +1,7 @@
 use std::{
 	any, boxed, borrow::{Borrow, BorrowMut}, error, fmt, marker, ops::{self, Deref, DerefMut}, sync, vec::Vec,
 };
+pub use serde_closure::structs::Peep;
 
 pub trait Data:
     Clone
@@ -223,6 +224,7 @@ pub trait SerFunc<Args>:
     + Sync
     + Clone
     + 'static
+    + Peep
 {
 }
 
@@ -232,16 +234,17 @@ impl<Args, T> SerFunc<Args> for T where
         + Sync
         + Clone
         + 'static
+        + Peep
 {
 }
 
 pub trait Func<Args>:
-    ops::Fn<Args> + Send + Sync + 'static + dyn_clone::DynClone
+    ops::Fn<Args> + Send + Sync + 'static + dyn_clone::DynClone + Peep
 {
 }
 
 impl<T: ?Sized, Args> Func<Args> for T where
-    T: ops::Fn<Args> + Send + Sync + 'static + dyn_clone::DynClone
+    T: ops::Fn<Args> + Send + Sync + 'static + dyn_clone::DynClone + Peep
 {
 }
 
@@ -330,4 +333,22 @@ impl<T: fmt::Display + ?Sized> fmt::Display for Arc<T> {
 		self.0.fmt(f)
 	}
 }
+
+
+impl<Args: 'static, Output: 'static> Peep for boxed::Box<dyn Func<Args, Output = Output>>
+{
+    fn get_ser_captured_var(&self) -> Vec<Vec<u8>> {
+        (**self).get_ser_captured_var()
+    }
+    
+    fn deser_captured_var(&mut self, ser: &Vec<Vec<u8>>) {
+        (**self).deser_captured_var(ser)
+    }
+
+    fn has_captured_var(&self) -> bool {
+        (**self).has_captured_var()
+    }
+    
+}
+
 

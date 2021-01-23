@@ -36,6 +36,7 @@ lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
 serde = { git = "https://github.com/mesalock-linux/serde-sgx" }
 serde_derive = { git = "https://github.com/mesalock-linux/serde-sgx" }
 serde_closure = { git = "https://github.com/AmbitionXiang/serde_closure", branch = "sgx" }
+#serde_closure = { path = "../../../sgx/ported/serde_closure" }
 spin = "0.7.0"
 
 [patch.'https://github.com/apache/teaclave-sgx-sdk.git']

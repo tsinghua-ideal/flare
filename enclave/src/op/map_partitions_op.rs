@@ -132,7 +132,7 @@ where
             Some(br_op_id) => *br_op_id == matching_id || prev_op_id == matching_id,
             None => prev_op_id == matching_id,
         };
-        //flag = flag && !has_captured_var;
+        flag = flag && !self.f.has_captured_var();
         flag
     }
 
@@ -211,7 +211,12 @@ where
         };
 
         let index = call_seq.get_part_id();
-        let res_iter = self.f.clone()(index, res_iter);
+        let mut f = self.f.clone();
+        match call_seq.get_ser_captured_var() {
+            Some(ser) => f.deser_captured_var(ser),
+            None  => (),
+        }
+        let res_iter = f(index, res_iter);
 
         if need_cache {
             assert!(handle.is_none());

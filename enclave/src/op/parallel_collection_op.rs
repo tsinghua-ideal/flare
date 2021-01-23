@@ -182,7 +182,7 @@ where
         //println!("In parallel_collection_op(after decryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
         forget(data_enc);
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("in enclave decrypt {:?} s", dur);    
+        println!("in enclave decrypt {:?} s", dur);   
         (Box::new(data.into_iter()), None)
     }
 

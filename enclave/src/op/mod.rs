@@ -16,7 +16,7 @@ use aes_gcm::Aes128Gcm;
 use aes_gcm::aead::{Aead, NewAead, generic_array::GenericArray};
 use sgx_types::*;
 
-use crate::{BRANCH_HIS, CACHE, lp_boundary, opmap};
+use crate::{BRANCH_HIS, CACHE, Fn, lp_boundary, opmap};
 use crate::basic::{AnyData, Arc as SerArc, Data, Func, SerFunc};
 use crate::dependency::Dependency;
 use crate::partitioner::Partitioner;
@@ -180,15 +180,17 @@ pub struct NextOpId<'a> {
     cur_seg: usize,
     cur_rdd_id: usize,
     cache_meta: CacheMeta,
+    captured_vars: HashMap<usize, Vec<Vec<u8>>>,
 }
 
 impl<'a> NextOpId<'a> {
-    pub fn new(rdd_ids: &'a Vec<(usize, usize)>, cache_meta: CacheMeta) -> Self {
+    pub fn new(rdd_ids: &'a Vec<(usize, usize)>, cache_meta: CacheMeta, captured_vars: HashMap<usize, Vec<Vec<u8>>>) -> Self {
         NextOpId {
             rdd_ids,
             cur_seg: 0,
             cur_rdd_id: rdd_ids[0].0,
             cache_meta,
+            captured_vars,
         }
     }
 
@@ -218,6 +220,11 @@ impl<'a> NextOpId<'a> {
         let next_rdd_id = self.get_cur_rdd_id();
         let id = map_id(next_rdd_id);
         load_opmap().get(&id).unwrap()
+    }
+
+    pub fn get_ser_captured_var(&mut self) -> Option<&Vec<Vec<u8>>> {
+        let cur_rdd_id = self.get_cur_rdd_id();
+        self.captured_vars.get(&cur_rdd_id)
     }
 
     pub fn get_caching_triplet(&self) -> (usize, usize, usize) {
@@ -861,37 +868,43 @@ pub trait OpE: Op {
         new_op
     }
 
-    fn reduce<F>(&self, f: F) -> SerArc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>
+    fn reduce<F, UE, FE, FD>(&self, f: F, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = Self::Item, ItemE = UE>>
     where
         Self: Sized,
+        UE: Data,
         F: SerFunc(Self::Item, Self::Item) -> Self::Item,
+        FE: SerFunc(Vec<Self::Item>) -> UE,
+        FD: SerFunc(UE) -> Vec<Self::Item>,
     {
         // cloned cause we will use `f` later.
         let cf = f.clone();        
-        let reduce_partition = Box::new(move |iter: Box<dyn Iterator<Item = Self::Item>>| {
+        let reduce_partition = Fn!(move |iter: Box<dyn Iterator<Item = Self::Item>>| {
             let acc = iter.reduce(&cf);
             match acc { 
                 None => vec![],
                 Some(e) => vec![e],
             }
         });         
-        let new_op = SerArc::new(Reduced::new(self.get_op(), reduce_partition, self.get_fe(), self.get_fd()));
+        let new_op = SerArc::new(Reduced::new(self.get_ope(), reduce_partition, fe, fd));
         insert_opmap(new_op.get_id(), new_op.get_op_base());
         new_op
     }
 
-    fn fold<F>(&self, init: Self::Item, f: F) -> SerArc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>
+    fn fold<F, UE, FE, FD>(&self, init: Self::Item, f: F, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = Self::Item, ItemE = UE>>
     where
         Self: Sized,
+        UE: Data,
         F: SerFunc(Self::Item, Self::Item) -> Self::Item,
+        FE: SerFunc(Vec<Self::Item>) -> UE,
+        FD: SerFunc(UE) -> Vec<Self::Item>,
     {
         let cf = f.clone();
         let zero = init.clone();
-        let reduce_partition = Box::new(
+        let reduce_partition = Fn!(
             move |iter: Box<dyn Iterator<Item = Self::Item>>| {
                 vec![iter.fold(zero.clone(), &cf)]
         });
-        let new_op = SerArc::new(Fold::new(self.get_op(), reduce_partition, self.get_fe(), self.get_fd()));
+        let new_op = SerArc::new(Fold::new(self.get_ope(), reduce_partition, fe, fd));
         insert_opmap(new_op.get_id(), new_op.get_op_base());
         new_op
     }
@@ -907,11 +920,11 @@ pub trait OpE: Op {
         FD: SerFunc(UE) -> Vec<U>,
     {
         let zero = init.clone();
-        let reduce_partition = Box::new(
+        let reduce_partition = Fn!(
             move |iter: Box<dyn Iterator<Item = Self::Item>>| iter.fold(zero.clone(), &seq_fn)
         );
         let zero = init.clone();
-        let combine = Box::new(
+        let combine = Fn!(
             move |iter: Box<dyn Iterator<Item = U>>| vec![iter.fold(zero.clone(), &comb_fn)]
         );
         let new_op = SerArc::new(Aggregated::new(self.get_ope(), reduce_partition, combine, fe, fd));

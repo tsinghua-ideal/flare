@@ -15,20 +15,13 @@
 // specific language governing permissions and limitations
 // under the License..
 #![feature(proc_macro_hygiene)]
+#![feature(specialization)]
 
-use std::time::Instant;
 use vega::*;
-use rand::Rng;
-use serde_derive::{Deserialize, Serialize};
 
 pub mod benchmarks;
 use benchmarks::*;
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Point {
-    x: f32,
-    y: f32,
-}
 
 
 fn main() -> Result<()> {
@@ -49,44 +42,15 @@ fn main() -> Result<()> {
     //join_unsec_2()?;
 
     /* reduce */
-    //reduce_sec_0()?;
+    reduce_sec_0()?;
 
     /* count */
     //count_unsec_0()?;
-    count_sec_0()?;
+    //count_sec_0()?;
 
     /* linear regression */
-    /*
-    let mut rng = rand::thread_rng();
-    let point_num = 1_000_000;
-    let mut points: Vec<Point> = Vec::with_capacity(point_num);
-    for i in 0..point_num { 
-        let point = Point { x: rng.gen(), y: rng.gen() };
-        points.push(point);
-    } 
-    let sc = Context::new()?;
-    let points_rdd = sc.make_rdd(vec![], points, Fn!(|i| i), Fn!(|i| i), 1);
-    let mut w = rng.gen::<f32>();
-    let iter_num = 3;
-    let now = Instant::now();
-    for i in 0..iter_num {
-        let g = points_rdd.map(Fn!(move |p: Point| 
-                p.x * (1f32/(1f32+(-p.y * (w * p.x)).exp())-1f32) * p.y
-            ),
-            Fn!(|v: Vec<f32>|
-                v
-            ),
-            Fn!(|v: Vec<f32>|
-                v
-            )
-        ).secure_reduce(Fn!(|x, y| x+y)).unwrap();
-        w -= g.unwrap();
-        println!("{:?}: w = {:?}", i, w);
-    } 
-    let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    println!("Total time {:?} s", dur);
-    println!("w = {:?}", w);
-    */
+    //lr_sec()?;
+    //lr_unsec()?;
 
 
 

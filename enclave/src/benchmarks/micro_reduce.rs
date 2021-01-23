@@ -16,7 +16,14 @@ pub fn reduce_sec_0() -> usize {
         pt0
     });
 
+    let fe_rd = Fn!(|vp: Vec<i32>| {
+        vp
+    });
+    let fd_rd = Fn!(|ve: Vec<i32>| {
+        ve
+    });
+
     let rdd0 = sc.make_op(fe, fd);
-    let rdd1 = rdd0.reduce(Fn!(|x, y| x+y));
+    let rdd1 = rdd0.reduce(Fn!(|x, y| x+y), fe_rd, fd_rd);
     rdd1.get_id() 
 }

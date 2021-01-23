@@ -15,7 +15,14 @@ pub fn reduce_sec_0() -> Result<()> {
         pt0
     });
 
-    let mut data = (0..1_000_000).collect::<Vec<_>>();
+    let fe_rd = Fn!(|vp: Vec<i32>| {
+        vp
+    });
+    let fd_rd = Fn!(|ve: Vec<i32>| {
+        ve
+    });
+
+    let mut data = (0..10).collect::<Vec<_>>();
     let mut len = data.len();
     let mut data_enc = Vec::with_capacity(len);
     while len >= MAX_ENC_BL {
@@ -29,8 +36,8 @@ pub fn reduce_sec_0() -> Result<()> {
         data_enc.push(fe(data));
     }
 
-    let rdd0 = sc.make_rdd(vec![], data_enc, fe, fd, 2);
-    let res = rdd0.secure_reduce(Fn!(|x: i32, y: i32| x + y))?;
-    println!("result: {:?}", rdd0.get_fd()(res.unwrap()));
+    let rdd0 = sc.make_rdd(vec![], data_enc, fe, fd, 1);
+    let res = rdd0.secure_reduce(Fn!(|x: i32, y: i32| x + y), fe_rd, fd_rd)?;
+    println!("result: {:?}", res.unwrap());
     Ok(())
 }

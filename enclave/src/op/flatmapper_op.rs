@@ -122,7 +122,7 @@ where
             Some(br_op_id) => *br_op_id == matching_id || prev_op_id == matching_id,
             None => prev_op_id == matching_id,
         };
-        //flag = flag && !has_captured_var;
+        flag = flag && !self.f.has_captured_var();
         flag
     }
     
@@ -195,7 +195,12 @@ where
             op.compute(call_seq, data_ptr)
         };
         
-        let res_iter = Box::new(res_iter.flat_map(self.f.clone()));
+        let mut f = self.f.clone();
+        match call_seq.get_ser_captured_var() {
+            Some(ser) => f.deser_captured_var(ser),
+            None  => (),
+        }
+        let res_iter = Box::new(res_iter.flat_map(f));
 
         if need_cache {
             assert!(handle.is_none());

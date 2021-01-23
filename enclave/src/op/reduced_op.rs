@@ -8,31 +8,33 @@ use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::basic::{Data, Func, SerFunc};
 use crate::dependency::{Dependency, OneToOneDependency};
-use crate::op::{CacheMeta, Context, NextOpId, Op, OpE, OpBase};
+use crate::op::{CacheMeta, Context, NextOpId, Op, OpE, OpBase, res_enc_to_ptr};
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use crate::custom_thread::PThread;
 
-pub struct Reduced<T, TE, F, FE, FD>
+pub struct Reduced<T, TE, UE, F, FE, FD>
 where
     T: Data, 
     TE: Data, 
+    UE: Data,
     F: Func(Box<dyn Iterator<Item = T>>) -> Vec<T> + Clone,
-    FE: Func(Vec<T>) -> TE + Clone,
-    FD: Func(TE) -> Vec<T> + Clone,
+    FE: Func(Vec<T>) -> UE + Clone,
+    FD: Func(UE) -> Vec<T> + Clone,
 {
-    prev: Arc<dyn Op<Item = T>>,
+    prev: Arc<dyn OpE<Item = T, ItemE = TE>>,
     f: F,
     fe: FE,
     fd: FD,
 }
 
-impl<T, TE, F, FE, FD> Clone for Reduced<T, TE, F, FE, FD>
+impl<T, TE, UE, F, FE, FD> Clone for Reduced<T, TE, UE, F, FE, FD>
 where
     T: Data, 
     TE: Data, 
+    UE: Data,
     F: Func(Box<dyn Iterator<Item = T>>) -> Vec<T> + Clone,
-    FE: Func(Vec<T>) -> TE + Clone,
-    FD: Func(TE) -> Vec<T> + Clone,
+    FE: Func(Vec<T>) -> UE + Clone,
+    FD: Func(UE) -> Vec<T> + Clone,
 {
     fn clone(&self) -> Self {
         Reduced {
@@ -44,15 +46,16 @@ where
     }
 }
 
-impl<T, TE, F, FE, FD> Reduced<T, TE, F, FE, FD>
+impl<T, TE, UE, F, FE, FD> Reduced<T, TE, UE, F, FE, FD>
 where
     T: Data, 
     TE: Data, 
+    UE: Data,
     F: Func(Box<dyn Iterator<Item = T>>) -> Vec<T> + Clone,
-    FE: Func(Vec<T>) -> TE + Clone,
-    FD: Func(TE) -> Vec<T> + Clone,
+    FE: Func(Vec<T>) -> UE + Clone,
+    FD: Func(UE) -> Vec<T> + Clone,
 {
-    pub(crate) fn new(prev: Arc<dyn Op<Item = T>>, f: F, fe: FE, fd: FD) -> Self {
+    pub(crate) fn new(prev: Arc<dyn OpE<Item = T, ItemE = TE>>, f: F, fe: FE, fd: FD) -> Self {
         /*         
         prev.get_next_deps().lock().unwrap().push(
             Dependency::NarrowDependency(
@@ -69,13 +72,14 @@ where
     }
 }
 
-impl<T, TE, F, FE, FD> OpBase for Reduced<T, TE, F, FE, FD>
+impl<T, TE, UE, F, FE, FD> OpBase for Reduced<T, TE, UE, F, FE, FD>
 where
     T: Data,
     TE: Data,
+    UE: Data,
     F: SerFunc(Box<dyn Iterator<Item = T>>) -> Vec<T>,
-    FE: SerFunc(Vec<T>) -> TE,
-    FD: SerFunc(TE) -> Vec<T>,
+    FE: SerFunc(Vec<T>) -> UE,
+    FD: SerFunc(UE) -> Vec<T>,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
         match self.dep_type(is_shuffle) {
@@ -127,13 +131,14 @@ where
     }
 }
 
-impl<T, TE, F, FE, FD> Op for Reduced<T, TE, F, FE, FD>
+impl<T, TE, UE, F, FE, FD> Op for Reduced<T, TE, UE, F, FE, FD>
 where
     T: Data,
     TE: Data,
+    UE: Data,
     F: SerFunc(Box<dyn Iterator<Item = T>>) -> Vec<T>,
-    FE: SerFunc(Vec<T>) -> TE,
-    FD: SerFunc(TE) -> Vec<T>,
+    FE: SerFunc(Vec<T>) -> UE,
+    FD: SerFunc(UE) -> Vec<T>,
 {
     type Item = T;
     
@@ -145,41 +150,66 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
   
-    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8{
+    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
         //3 is only for reduce & fold
         if self.dep_type(is_shuffle) == 3 {
             let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<TE>) };
-            let data = self.batch_decrypt(*data_enc.clone()); //need to check security
+            let data = self.prev.batch_decrypt(*data_enc.clone()); //need to check security
             forget(data_enc);
             let result = (self.f)(Box::new(data.into_iter()));
             let now = Instant::now();
             let result_enc = self.batch_encrypt(result); 
             let dur = now.elapsed().as_nanos() as f64 * 1e-9;
             println!("in enclave encrypt {:?} s", dur); 
-            let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
-            return result_ptr;  
+            res_enc_to_ptr(result_enc) 
         }
         else {
-            self.narrow(call_seq, data_ptr, is_shuffle)
+            if call_seq.need_cache() {
+                self.prev.compute_start(tid, call_seq, data_ptr, is_shuffle)
+            } else {
+                let (result_iter, handle) = self.compute(call_seq, data_ptr);
+                let result = result_iter.collect::<Vec<Self::Item>>();
+                //println!("In narrow(before encryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
+                let result_ptr = match self.prev.need_encryption(is_shuffle) {
+                    true => {
+                        let now = Instant::now();
+                        let result_enc = self.prev.batch_encrypt(result); 
+                        //println!("In narrow(after encryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
+                        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+                        println!("in enclave encrypt {:?} s", dur); 
+                        res_enc_to_ptr(result_enc) 
+                    },
+                    false => {
+                        let result_ptr = Box::into_raw(Box::new(result)) as *mut u8;
+                        result_ptr
+                    },
+                };
+                if let Some(handle) = handle {
+                    handle.join();
+                }   
+                result_ptr
+            }
         }
     }
 
     fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+        //move some parts in compute start to this part, this part is originally used to reduce ahead to shrink size
         let (res_iter, handle) = self.prev.compute(call_seq, data_ptr);
         (Box::new((self.f)(res_iter).into_iter()), handle)        
     }
 
 }
 
-impl<T, TE, F, FE, FD> OpE for Reduced<T, TE, F, FE, FD>
+impl<T, TE, UE, F, FE, FD> OpE for Reduced<T, TE, UE, F, FE, FD>
 where
     T: Data,
     TE: Data,   
+    UE: Data,
     F: SerFunc(Box<dyn Iterator<Item = T>>) -> Vec<T>,
-    FE: SerFunc(Vec<T>) -> TE,
-    FD: SerFunc(TE) -> Vec<T>,
+    FE: SerFunc(Vec<T>) -> UE,
+    FD: SerFunc(UE) -> Vec<T>,
 {
-    type ItemE = TE;
+    type ItemE = UE;
     fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
         Arc::new(self.clone())
     }
