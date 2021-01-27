@@ -24,7 +24,7 @@ where
     FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
 {
     pub(crate) vals: Arc<OpVals>,
-    pub(crate) next_deps: Arc<Mutex<Vec<Dependency>>>,
+    pub(crate) next_deps: Arc<RwLock<HashMap<(usize, usize), Dependency>>>,
     pub(crate) op0: Arc<dyn OpE<Item = (K, V), ItemE = (KE, VE)>>,
     pub(crate) op1: Arc<dyn OpE<Item = (K, W), ItemE = (KE, WE)>>,
     pub(crate) part: Box<dyn Partitioner>,
@@ -54,17 +54,21 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
         let context = op1.get_context();
         let mut vals = OpVals::new(context.clone());
         let mut deps = Vec::new();
+        let cur_id = vals.id;
+        let op0_id = op0.get_id();
+        let op1_id = op1.get_id();
              
         if op0
             .partitioner()
             .map_or(false, |p| p.equals(&part as &dyn Any))
         {
             deps.push(Dependency::NarrowDependency(
-                Arc::new(OneToOneDependency::new(false)) as Arc<dyn NarrowDependencyTrait>,
+                Arc::new(OneToOneDependency::new(op0_id, cur_id)) as Arc<dyn NarrowDependencyTrait>,
             ));
-            op0.get_next_deps().lock().unwrap().push(
+            op0.get_next_deps().write().unwrap().insert(
+                (op0_id, cur_id),
                 Dependency::NarrowDependency(
-                    Arc::new(OneToOneDependency::new(false))
+                    Arc::new(OneToOneDependency::new(op0_id, cur_id))
                 )
             );
         } else {
@@ -93,27 +97,22 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
             });
 
             let aggr = Arc::new(Aggregator::<K, V, _>::default());
-            deps.push(Dependency::ShuffleDependency(
+            let dep = Dependency::ShuffleDependency(
                 Arc::new(ShuffleDependency::new(
                     true,
-                    aggr.clone(),
+                    aggr,
                     part.clone(),
-                    false,
-                    fe_wrapper.clone(),
-                    fd_wrapper.clone(),
+                    0,
+                    op0_id,
+                    cur_id,
+                    fe_wrapper,
+                    fd_wrapper,
                 )) as Arc<dyn ShuffleDependencyTrait>,
-            ));
-            op0.get_next_deps().lock().unwrap().push(
-                Dependency::ShuffleDependency(
-                    Arc::new(ShuffleDependency::new(
-                        true,
-                        aggr,
-                        part.clone(),
-                        false,
-                        fe_wrapper,
-                        fd_wrapper,
-                    ))
-                )
+            );
+            deps.push(dep.clone());
+            op0.get_next_deps().write().unwrap().insert(
+                (op0_id, cur_id),
+                dep,
             );
         }
 
@@ -122,11 +121,12 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
             .map_or(false, |p| p.equals(&part as &dyn Any))
         {
             deps.push(Dependency::NarrowDependency(
-                Arc::new(OneToOneDependency::new(false)) as Arc<dyn NarrowDependencyTrait>,
+                Arc::new(OneToOneDependency::new(op1_id, cur_id)) as Arc<dyn NarrowDependencyTrait>,
             ));
-            op1.get_next_deps().lock().unwrap().push(
+            op1.get_next_deps().write().unwrap().insert(
+                (op1_id, cur_id),
                 Dependency::NarrowDependency(
-                    Arc::new(OneToOneDependency::new(false))
+                    Arc::new(OneToOneDependency::new(op1_id, cur_id))
                 )
             ); 
         } else {
@@ -155,27 +155,22 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
             });
 
             let aggr = Arc::new(Aggregator::<K, W, _>::default());
-            deps.push(Dependency::ShuffleDependency(
+            let dep = Dependency::ShuffleDependency(
                 Arc::new(ShuffleDependency::new(
                     true,
-                    aggr.clone(),
+                    aggr,
                     part.clone(),
-                    false,
-                    fe_wrapper.clone(),
-                    fd_wrapper.clone(),
+                    1,
+                    op1_id,
+                    cur_id,
+                    fe_wrapper,
+                    fd_wrapper,
                 )) as Arc<dyn ShuffleDependencyTrait>,
-            ));
-            op1.get_next_deps().lock().unwrap().push(
-                Dependency::ShuffleDependency(
-                    Arc::new(ShuffleDependency::new(
-                        true,
-                        aggr,
-                        part.clone(),
-                        false,
-                        fe_wrapper,
-                        fd_wrapper,
-                    ))
-                )
+            );
+            deps.push(dep.clone());
+            op1.get_next_deps().write().unwrap().insert(
+                (op1_id, cur_id),
+                dep,
             );
         }
         
@@ -183,7 +178,7 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
         let vals = Arc::new(vals);
         CoGrouped {
             vals,
-            next_deps: Arc::new(Mutex::new(Vec::<Dependency>::new())),
+            next_deps: Arc::new(RwLock::new(HashMap::new())),
             op0,
             op1,
             fe,
@@ -206,29 +201,25 @@ where
     FE: Func(Vec<(K, (Vec<V>, Vec<W>))>) -> (KE, (CE, DE)) + Clone, 
     FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
 {
-    fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
-        match self.dep_type(is_shuffle) {
-            0 | 1 | 2  => self.step0_of_clone(p_buf, p_data_enc, is_shuffle),
+    fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
+        match dep_info.dep_type() {
+            0 | 1 | 2  => self.step0_of_clone(p_buf, p_data_enc, dep_info),
             _ => panic!("invalid is_shuffle"),
         }
     }
 
-    fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8) {
-        match self.dep_type(is_shuffle) {
-            0 | 1 | 2 => self.step1_of_clone(p_out, p_data_enc, is_shuffle),
+    fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo) {
+        match dep_info.dep_type() {
+            0 | 1 | 2 => self.step1_of_clone(p_out, p_data_enc, dep_info),
             _ => panic!("invalid is_shuffle"),
         }   
     }
 
-    fn call_free_res_enc(&self, res_ptr: *mut u8, is_shuffle: u8) {
-        match self.dep_type(is_shuffle) {
+    fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo) {
+        match dep_info.dep_type() {
             0 | 2 => self.free_res_enc(res_ptr),
             1 => {
-                let next_deps = self.get_next_deps().lock().unwrap().clone();
-                let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
-                    Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
-                    Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
-                };
+                let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
                 shuf_dep.free_res_enc(res_ptr);
             },
             _ => panic!("invalid is_shuffle"),
@@ -247,8 +238,12 @@ where
         self.vals.deps.clone()
     }
 
-    fn get_next_deps(&self) -> Arc<Mutex<Vec<Dependency>>> {
+    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(usize, usize), Dependency>>> {
         self.next_deps.clone()
+    }
+
+    fn number_of_splits(&self) -> usize {
+        self.part.get_num_of_partitions()
     }
 
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
@@ -260,9 +255,9 @@ where
         false
     }
     
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8{
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8{
         
-		self.compute_start(tid, call_seq, data_ptr, is_shuffle)
+		self.compute_start(tid, call_seq, data_ptr, dep_info)
     }
 
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
@@ -306,13 +301,13 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-        match self.dep_type(is_shuffle) {
+    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+        match dep_info.dep_type() {
             0 => {       //No shuffle
-                self.narrow(call_seq, data_ptr, is_shuffle)
+                self.narrow(call_seq, data_ptr, dep_info)
             },
             1 => {      //Shuffle write
-                self.shuffle(call_seq, data_ptr)
+                self.shuffle(call_seq, data_ptr, dep_info)
             },
             2 => {      //shuffle read
                 let mut dur_sum = 0.0;

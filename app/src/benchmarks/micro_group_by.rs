@@ -129,7 +129,7 @@ pub fn group_by_sec_1() -> Result<()> {
     let mut len = 1_000_000;
     let mut vec: Vec<(i32, i32)> = Vec::with_capacity(len);
     let mut rng = rand::thread_rng();
-    for _ in (0..len) {
+    for _ in 0..len {
         vec.push((rng.gen(), rng.gen()));
     }
     let mut data_enc = Vec::with_capacity(len);
@@ -150,6 +150,6 @@ pub fn group_by_sec_1() -> Result<()> {
     let res = g.secure_collect().unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
-    println!("result.len(): {:?}", g.batch_decrypt(res));
+    println!("result.len(): {:?}", g.batch_decrypt(res).len());
     Ok(())
 }

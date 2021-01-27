@@ -2,6 +2,7 @@ use std::any::{Any, TypeId};
 use std::boxed::Box;
 use std::collections::{btree_map::BTreeMap, HashMap, HashSet};
 use std::cmp::{min, Ordering, Reverse};
+use std::hash::Hash;
 use std::mem::forget;
 use std::raw::TraitObject;
 use std::sync::{
@@ -16,9 +17,9 @@ use aes_gcm::Aes128Gcm;
 use aes_gcm::aead::{Aead, NewAead, generic_array::GenericArray};
 use sgx_types::*;
 
-use crate::{BRANCH_HIS, CACHE, Fn, lp_boundary, opmap};
+use crate::{BRANCH_OP_HIS, CACHE, Fn, lp_boundary, opmap};
 use crate::basic::{AnyData, Arc as SerArc, Data, Func, SerFunc};
-use crate::dependency::Dependency;
+use crate::dependency::{Dependency, ShuffleDependencyTrait};
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use crate::custom_thread::PThread;
@@ -68,7 +69,7 @@ extern "C" {
 }
 
 #[repr(C)]
-#[derive(Clone)]
+#[derive(Clone, Copy, Debug)]
 pub struct CacheMeta {
     caching_rdd_id: usize,
     cached_rdd_id: usize,
@@ -96,9 +97,66 @@ impl CacheMeta {
         self.sub_part_id = sub_part_id;
     }
 
+    pub fn transform(self) -> Self {
+        CacheMeta {
+            caching_rdd_id: 0,
+            cached_rdd_id: self.caching_rdd_id,
+            part_id: self.part_id,
+            sub_part_id: self.sub_part_id,
+            is_survivor: self.is_survivor,
+        }
+    }
+
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct DepInfo {
+    is_shuffle: u8,
+    identifier: usize,
+    parent_rdd_id: usize,
+    child_rdd_id: usize, 
+}
 
+impl DepInfo {
+    pub fn new(is_shuffle: u8,
+        identifier: usize,
+        parent_rdd_id: usize,
+        child_rdd_id: usize
+    ) -> Self {
+        // The last three items is useful only when is_shuffle == 1x, x == 0 or x == 1
+        DepInfo {
+            is_shuffle,
+            identifier,
+            parent_rdd_id,
+            child_rdd_id, 
+        }
+    }
+
+    pub fn get_key(&self) -> (usize, usize) {
+        (
+            map_id(self.parent_rdd_id),
+            map_id(self.child_rdd_id)
+        )
+    }
+
+    pub fn get_identifier(&self) -> usize {
+        self.identifier
+    }
+
+    pub fn dep_type(&self) -> u8 {
+        self.is_shuffle / 10
+    }
+
+    fn need_encryption(&self) -> bool {
+        match self.is_shuffle % 10 {
+            0 => false,
+            1 => true,
+            _ => true,
+        }
+    }
+
+}
 
 #[derive(Clone)]
 pub struct OpCache {
@@ -181,16 +239,18 @@ pub struct NextOpId<'a> {
     cur_rdd_id: usize,
     cache_meta: CacheMeta,
     captured_vars: HashMap<usize, Vec<Vec<u8>>>,
+    is_spec: bool,
 }
 
 impl<'a> NextOpId<'a> {
-    pub fn new(rdd_ids: &'a Vec<(usize, usize)>, cache_meta: CacheMeta, captured_vars: HashMap<usize, Vec<Vec<u8>>>) -> Self {
+    pub fn new(rdd_ids: &'a Vec<(usize, usize)>, cache_meta: CacheMeta, captured_vars: HashMap<usize, Vec<Vec<u8>>>, is_spec: bool) -> Self {
         NextOpId {
             rdd_ids,
             cur_seg: 0,
             cur_rdd_id: rdd_ids[0].0,
             cache_meta,
             captured_vars,
+            is_spec,
         }
     }
 
@@ -261,6 +321,74 @@ impl<'a> NextOpId<'a> {
             1 => true,
             _ => panic!("invalid is_survivor"),
         }
+    }
+}
+
+pub struct SpecOpId {
+    cur_rdd_id: usize,
+    spec_call_seq: Vec<usize>,
+    end: bool,
+}
+
+impl SpecOpId {
+    pub fn new(start_rdd_id: usize, cache_meta: CacheMeta) -> Self {
+        if cache_meta.caching_rdd_id != 0 {
+            SpecOpId {
+                cur_rdd_id: start_rdd_id,
+                spec_call_seq: vec![cache_meta.caching_rdd_id],
+                end: false,
+            }
+        } else {
+            SpecOpId {
+                cur_rdd_id: start_rdd_id,
+                spec_call_seq: Vec::new(),
+                end: true,
+            }
+        }
+    }
+
+    pub fn advance(&mut self) -> bool {
+        self.cur_rdd_id += 1;
+        let child_rdd_id = self.cur_rdd_id;
+        let child_op_id = map_id(child_rdd_id);
+        let parent_rdd_id = *self.spec_call_seq.last().unwrap();
+        let parent_op_id = map_id(parent_rdd_id);
+        let child_op = if let Some(child_op) = load_opmap().get(&child_op_id) {
+            child_op
+        } else {
+            self.end = false;
+            return true;
+        };
+        let parent_op = load_opmap().get(&parent_op_id).unwrap();
+        let flag = child_op.has_spec_oppty(parent_op_id);
+        if flag {
+            self.spec_call_seq.push(child_rdd_id);  
+        } else {
+            //or move it to co_grouped, parallel, etc
+            //padding with 0, 0
+            let dep_info = DepInfo::new(0, 0, parent_rdd_id, child_rdd_id);
+            if let Some(shuf_dep) = parent_op.get_next_shuf_dep(&dep_info) {
+                self.spec_call_seq.push(child_rdd_id); 
+                self.end = true;
+            } 
+        }
+        self.end
+    }
+
+    pub fn get_spec_call_seq(&self, dep_info: &DepInfo) -> Vec<usize> {
+        let mut flag = !(
+            self.spec_call_seq == vec![dep_info.parent_rdd_id, dep_info.child_rdd_id]
+            && dep_info.dep_type() == 1
+        ) && self.end;
+        
+        match flag {
+            true => self.spec_call_seq.clone(),
+            false => Vec::new(),
+        }
+    }
+
+    pub fn is_end(&self) -> bool {
+        self.end
     }
 
 }
@@ -382,14 +510,14 @@ impl Context {
         self.next_op_id.fetch_add(1, atomic::Ordering::SeqCst)
     }
 
-    pub fn make_op<T, TE, FE, FD>(self: &Arc<Self>, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = T, ItemE = TE>> 
+    pub fn make_op<T, TE, FE, FD>(self: &Arc<Self>, fe: FE, fd: FD, num_splits: usize) -> SerArc<dyn OpE<Item = T, ItemE = TE>> 
     where
         T: Data,
         TE: Data,
         FE: SerFunc(Vec<T>) -> TE,
         FD: SerFunc(TE) -> Vec<T>,
     {
-        let new_op = SerArc::new(ParallelCollection::new(self.clone(), fe, fd));
+        let new_op = SerArc::new(ParallelCollection::new(self.clone(), fe, fd, num_splits));
         insert_opmap(new_op.get_id(), new_op.get_op_base());
         new_op
     }
@@ -435,29 +563,57 @@ impl OpVals {
 }
 
 pub trait OpBase: Send + Sync {
-    fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8);
-    fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8);
-    fn call_free_res_enc(&self, res_ptr: *mut u8, is_shuffle: u8);
-    fn dep_type(&self, is_shuffle: u8) -> u8 {
-        is_shuffle / 10
-    }
+    fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo);
+    fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo);
+    fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo);
     fn get_id(&self) -> usize;
     fn get_context(&self) -> Arc<Context>;
     fn get_deps(&self) -> Vec<Dependency>;
-    fn get_next_deps(&self) -> Arc<Mutex<Vec<Dependency>>>;
+    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(usize, usize), Dependency>>>;
+    fn get_next_shuf_dep(&self, dep_info: &DepInfo) -> Option<Arc<dyn ShuffleDependencyTrait>> {
+        let cur_key = dep_info.get_key();
+        let next_deps = self.get_next_deps().read().unwrap().clone();
+        let mut res = None; 
+        match next_deps.get(&cur_key) {
+            Some(dep) => match dep {
+                Dependency::ShuffleDependency(shuf_dep) => res = Some(shuf_dep.clone()),
+                Dependency::NarrowDependency(nar_dep) => res = None,
+            },
+            None => res = None,
+        };
+        res
+    }
+    //supplement
+    fn sup_next_shuf_dep(&self, dep_info: &DepInfo) {
+        let cur_key = dep_info.get_key();
+        let next_deps = self.get_next_deps().read().unwrap().clone();
+        if next_deps.get(&cur_key).is_none() && cur_key.0 > cur_key.1 {
+            let child = load_opmap().get(&cur_key.1).unwrap();
+            for value in child.get_deps() {
+                match value {
+                    Dependency::ShuffleDependency(shuf_dep) => {
+                        if dep_info.identifier == shuf_dep.get_identifier() {
+                            self.get_next_deps().write().unwrap().insert(
+                                cur_key, 
+                                Dependency::ShuffleDependency(
+                                    shuf_dep.set_parent_and_child(cur_key.0, cur_key.1)
+                                )
+                            );
+                            break;
+                        }
+                    },
+                    Dependency::NarrowDependency(_) => (),
+                };
+            }  
+        };
+    }
     //has speculative opportunity
     fn has_spec_oppty(&self, matching_id: usize) -> bool;
-    fn need_encryption(&self, is_shuffle: u8) -> bool {
-        match is_shuffle % 10 {
-            0 => false,
-            1 => true,
-            _ => true,
-        }
-    }
+    fn number_of_splits(&self) -> usize;
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
         None
     }
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8;
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8;
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject>;
 }
 
@@ -495,15 +651,15 @@ impl Ord for dyn OpBase {
 
 impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     //need to avoid freeing the encrypted data for subsequent "clone_enc_data_out"
-    fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
-        (**self).build_enc_data_sketch(p_buf, p_data_enc, is_shuffle);
+    fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
+        (**self).build_enc_data_sketch(p_buf, p_data_enc, dep_info);
     }
     //need to free the encrypted data. But how to deal with task failure?
-    fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8) {
-        (**self).clone_enc_data_out(p_out, p_data_enc, is_shuffle);
+    fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo) {
+        (**self).clone_enc_data_out(p_out, p_data_enc, dep_info);
     }
-    fn call_free_res_enc(&self, res_ptr: *mut u8, is_shuffle: u8) {
-        (**self).call_free_res_enc(res_ptr, is_shuffle);
+    fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo) {
+        (**self).call_free_res_enc(res_ptr, dep_info);
     }
     fn get_id(&self) -> usize {
         (**self).get_op_base().get_id()
@@ -514,14 +670,17 @@ impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     fn get_deps(&self) -> Vec<Dependency> {
         (**self).get_op_base().get_deps()
     }
-    fn get_next_deps(&self) -> Arc<Mutex<Vec<Dependency>>> {
+    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(usize, usize), Dependency>>> {
         (**self).get_op_base().get_next_deps()
     }
     fn has_spec_oppty(&self, matching_id: usize) -> bool {
         (**self).get_op_base().has_spec_oppty(matching_id)
     }
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-        (**self).get_op_base().iterator_start(tid, call_seq, data_ptr, is_shuffle)
+    fn number_of_splits(&self) -> usize {
+        (**self).get_op_base().number_of_splits()
+    }
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+        (**self).get_op_base().iterator_start(tid, call_seq, data_ptr, dep_info)
     }
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
         (**self).clone().__to_arc_op(id)
@@ -536,8 +695,8 @@ impl<I: OpE + ?Sized> Op for SerArc<I> {
     fn get_op_base(&self) -> Arc<dyn OpBase> {
         (**self).get_op_base()
     }
-    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-        (**self).compute_start(tid, call_seq, data_ptr, is_shuffle)
+    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+        (**self).compute_start(tid, call_seq, data_ptr, dep_info)
     }
     fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
         (**self).compute(call_seq, data_ptr)
@@ -567,7 +726,7 @@ pub trait Op: OpBase + 'static {
     type Item: Data;
     fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>>;
     fn get_op_base(&self) -> Arc<dyn OpBase>;
-    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8;
+    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8;
     fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>);
     fn cache(&self, data: Vec<Self::Item>) {
         ()
@@ -660,11 +819,11 @@ pub trait OpE: Op {
         }
     }
 
-    fn step0_of_clone(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
+    fn step0_of_clone(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         let mut buf = unsafe{ Box::from_raw(p_buf as *mut SizeBuf) };
-        match self.dep_type(is_shuffle) {
+        match dep_info.dep_type() {
             0 | 2  => {
-                let encrypted = self.need_encryption(is_shuffle);
+                let encrypted = dep_info.need_encryption();
                 if encrypted {
                     let mut idx = Idx::new();
                     let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::ItemE>) };
@@ -679,11 +838,7 @@ pub trait OpE: Op {
                 }
             }, 
             1 => {
-                let next_deps = self.get_next_deps().lock().unwrap().clone();
-                let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
-                    Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
-                    Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
-                };
+                let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
                 shuf_dep.send_sketch(&mut buf, p_data_enc);
             },
             3 => {
@@ -697,11 +852,11 @@ pub trait OpE: Op {
         forget(buf);
     }
 
-    fn step1_of_clone(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8) {
-        match self.dep_type(is_shuffle) {
+    fn step1_of_clone(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo) {
+        match dep_info.dep_type() {
             0 | 2 => {
                 let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<Self::ItemE>) };
-                let encrypted = self.need_encryption(is_shuffle);
+                let encrypted = dep_info.need_encryption();
                 if encrypted {
                     let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::ItemE>) };
                     v_out.clone_in_place(&data_enc);
@@ -714,11 +869,7 @@ pub trait OpE: Op {
                 forget(v_out);
             }, 
             1 => {
-                let next_deps = self.get_next_deps().lock().unwrap().clone();
-                let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
-                    Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
-                    Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
-                };
+                let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
                 shuf_dep.send_enc_data(p_out, p_data_enc);
             },
             3 => {
@@ -740,7 +891,7 @@ pub trait OpE: Op {
 
     fn batch_encrypt(&self, mut data: Vec<Self::Item>) -> Vec<Self::ItemE> {
         let mut len = data.len();
-        let mut data_enc = Vec::with_capacity(len/MAX_ENC_BL);
+        let mut data_enc = Vec::with_capacity(len/MAX_ENC_BL+1);
         while len >= MAX_ENC_BL {
             len -= MAX_ENC_BL;
             let remain = data.split_off(MAX_ENC_BL);
@@ -756,7 +907,7 @@ pub trait OpE: Op {
 
     fn batch_encrypt_ref(&self, data: &Vec<Self::Item>) -> Vec<Self::ItemE> {
         let len = data.len();
-        let mut data_enc = Vec::with_capacity(len/MAX_ENC_BL);
+        let mut data_enc = Vec::with_capacity(len/MAX_ENC_BL+1);
         let mut cur = 0;
         while cur < len {
             let next = min(len, cur + MAX_ENC_BL);
@@ -775,7 +926,7 @@ pub trait OpE: Op {
         data
     }
 
-    fn narrow(&self, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+    fn narrow(&self, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
         let (result_iter, handle) = self.compute(call_seq, data_ptr);
         /*
         println!("In narrow(before join), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
@@ -786,14 +937,16 @@ pub trait OpE: Op {
         
         let result = result_iter.collect::<Vec<Self::Item>>();
         //println!("In narrow(before encryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
-        let result_ptr = match self.need_encryption(is_shuffle) {
+        let result_ptr = match dep_info.need_encryption() {
             true => {
                 let now = Instant::now();
                 let result_enc = self.batch_encrypt(result); 
                 //println!("In narrow(after encryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
                 let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-                println!("in enclave encrypt {:?} s", dur); 
-                res_enc_to_ptr(result_enc) 
+                println!("cur mem before copy out: {:?}, encrypt {:?} s", crate::ALLOCATOR.lock().get_memory_usage(), dur); 
+                let res_ptr = res_enc_to_ptr(result_enc);
+                println!("cur mem after copy out: {:?}", crate::ALLOCATOR.lock().get_memory_usage()); 
+                res_ptr
             },
             false => {
                 let result_ptr = Box::into_raw(Box::new(result)) as *mut u8;
@@ -808,16 +961,13 @@ pub trait OpE: Op {
         result_ptr
     } 
 
-    fn shuffle(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> *mut u8 {
+    fn shuffle(&self, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
         let (data_iter, handle) = self.compute(call_seq, data_ptr);
         let data = data_iter.collect::<Vec<Self::Item>>();
-        let next_deps = self.get_next_deps().lock().unwrap().clone();
-        let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
-        let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
-            Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
-            Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
-        };
-        let result_ptr = shuf_dep.do_shuffle_task(iter);
+        //let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
+        let iter = Box::new(data) as Box<dyn Any>;
+        let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
+        let result_ptr = shuf_dep.do_shuffle_task(iter, call_seq.is_spec);
         if let Some(handle) = handle {
             handle.join();
         }
@@ -940,6 +1090,68 @@ pub trait OpE: Op {
         insert_opmap(new_op.get_id(), new_op.get_op_base());
         new_op
     } 
+
+    /// Return a new RDD containing the distinct elements in this RDD.
+    fn distinct_with_num_partitions(
+        &self,
+        num_partitions: usize,
+    ) -> SerArc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>
+    where
+        Self: Sized,
+        Self::Item: Data + Eq + Hash + Ord,
+        Self::ItemE: Data + Eq + Hash + Ord,
+    {
+        let fe_c = self.get_fe();
+        let fe_wrapper_mp0 = Box::new(move |v: Vec<(Option<Self::Item>, Option<Self::Item>)>| {
+            let (vx, vy): (Vec<Option<Self::Item>>, Vec<Option<Self::Item>>) = v.into_iter().unzip();
+            let ct_x = (fe_c)(vx.into_iter().map(|x| x.unwrap()).collect::<Vec<_>>());
+            (ct_x, vy)
+        }); 
+        let fd_c = self.get_fd();
+        let fd_wrapper_mp0 = Box::new(move |v: (Self::ItemE, Vec<Option<Self::Item>>)| {
+            let (vx, vy) = v;
+            let pt_x = (fd_c)(vx).into_iter().map(|x| Some(x));
+            pt_x.zip(vy.into_iter()).collect::<Vec<_>>()
+        });
+        let fe_wrapper_rd = fe_wrapper_mp0.clone();
+        let fd_wrapper_rd = fd_wrapper_mp0.clone();
+        let fe = self.get_fe();       
+        let fe_wrapper_mp1 = Box::new(move |v: Vec<Self::Item>| {
+            let ct = (fe)(v);
+            ct
+        });
+        let fd = self.get_fd();
+        let fd_wrapper_mp1 = Box::new(move |v: Self::ItemE| {
+            let pt = (fd)(v);
+            pt
+        });
+        
+        self.map(Box::new(Fn!(|x| (Some(x), None)))
+            as Box<
+                dyn Func(Self::Item) -> (Option<Self::Item>, Option<Self::Item>),
+            >, fe_wrapper_mp0, fd_wrapper_mp0)
+        .reduce_by_key(Box::new(Fn!(|(_x, y)| y)),
+            num_partitions,
+            fe_wrapper_rd,
+            fd_wrapper_rd)
+        .map(Box::new(Fn!(|x: (
+            Option<Self::Item>,
+            Option<Self::Item>
+        )| {
+            let (x, _y) = x;
+            x.unwrap()
+        })), fe_wrapper_mp1, fd_wrapper_mp1)
+    }
+
+    /// Return a new RDD containing the distinct elements in this RDD.
+    fn distinct(&self) -> SerArc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>
+    where
+        Self: Sized,
+        Self::Item: Data + Eq + Hash + Ord,
+        Self::ItemE: Data + Eq + Hash + Ord,
+    {
+        self.distinct_with_num_partitions(self.number_of_splits())
+    }
 
     fn union(
         &self,

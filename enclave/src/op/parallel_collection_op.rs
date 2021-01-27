@@ -1,17 +1,5 @@
-use std::any::TypeId;
-use std::boxed::Box;
 use std::marker::PhantomData;
-use std::mem::{forget, drop};
-use std::raw::TraitObject;
-use std::sync::{Arc, SgxMutex};
-use std::time::Instant;
-use std::untrusted::time::InstantEx;
-use std::vec::Vec;
-use crate::basic::{AnyData, Data, Func, SerFunc};
-use crate::dependency::{Dependency};
-use crate::op::{CacheMeta, Context, NextOpId, Op, OpE, OpBase, OpVals};
-use crate::serialization_free::{Construct, Idx, SizeBuf};
-use crate::custom_thread::PThread;
+use crate::op::*;
 
 pub struct ParallelCollection<T, TE, FE, FD> 
 where
@@ -21,9 +9,10 @@ where
     FD: Func(TE) -> Vec<T> + Clone,
 {
     vals: Arc<OpVals>, 
-    next_deps: Arc<SgxMutex<Vec<Dependency>>>,
+    next_deps: Arc<RwLock<HashMap<(usize, usize), Dependency>>>,
     fe: FE,
     fd: FD,
+    num_splits: usize,
     _marker_t: PhantomData<T>,
     _marker_te: PhantomData<TE>,
 }
@@ -41,6 +30,7 @@ where
             next_deps: self.next_deps.clone(),
             fe: self.fe.clone(),
             fd: self.fd.clone(),
+            num_splits: self.num_splits,
             _marker_t: PhantomData,
             _marker_te: PhantomData,
         }
@@ -54,13 +44,14 @@ where
     FE: Func(Vec<T>) -> TE + Clone,
     FD: Func(TE) -> Vec<T> + Clone,
 {
-    pub fn new(context: Arc<Context>, fe: FE, fd: FD) -> Self {
+    pub fn new(context: Arc<Context>, fe: FE, fd: FD, num_splits: usize) -> Self {
         let vals = OpVals::new(context.clone());
         ParallelCollection {
             vals: Arc::new(vals),
-            next_deps: Arc::new(SgxMutex::new(Vec::<Dependency>::new())),
+            next_deps: Arc::new(RwLock::new(HashMap::new())),
             fe,
             fd,
+            num_splits,
             _marker_t: PhantomData,
             _marker_te: PhantomData,
         }
@@ -74,29 +65,25 @@ where
     FE: SerFunc(Vec<T>) -> TE,
     FD: SerFunc(TE) -> Vec<T>,
 {
-    fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
-        match self.dep_type(is_shuffle) {
-            0 | 1 => self.step0_of_clone(p_buf, p_data_enc, is_shuffle),
+    fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
+        match dep_info.dep_type() {
+            0 | 1 => self.step0_of_clone(p_buf, p_data_enc, dep_info),
             _ => panic!("invalid is_shuffle"),
         }
     }
 
-    fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8) {
-        match self.dep_type(is_shuffle) {
-            0 | 1 => self.step1_of_clone(p_out, p_data_enc, is_shuffle), 
+    fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo) {
+        match dep_info.dep_type() {
+            0 | 1 => self.step1_of_clone(p_out, p_data_enc, dep_info), 
             _ => panic!("invalid is_shuffle"),
         }   
     }
 
-    fn call_free_res_enc(&self, res_ptr: *mut u8, is_shuffle: u8) {
-        match self.dep_type(is_shuffle) {
+    fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo) {
+        match dep_info.dep_type() {
             0 => self.free_res_enc(res_ptr),
             1 => {
-                let next_deps = self.get_next_deps().lock().unwrap().clone();
-                let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
-                    Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
-                    Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
-                };
+                let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
                 shuf_dep.free_res_enc(res_ptr);
             },
             _ => panic!("invalid is_shuffle"),
@@ -115,7 +102,7 @@ where
         self.vals.deps.clone()
     }
 
-    fn get_next_deps(&self) -> Arc<SgxMutex<Vec<Dependency>>> {
+    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(usize, usize), Dependency>>> {
         self.next_deps.clone()
     }
 
@@ -123,9 +110,13 @@ where
         false
     }
 
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+    fn number_of_splits(&self) -> usize {
+        self.num_splits
+    }
+
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
         
-		self.compute_start(tid, call_seq, data_ptr, is_shuffle)
+		self.compute_start(tid, call_seq, data_ptr, dep_info)
     }
 
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
@@ -162,13 +153,13 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-        match self.dep_type(is_shuffle) {
+    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+        match dep_info.dep_type() {
             0 => {       //No shuffle later
-                self.narrow(call_seq, data_ptr, is_shuffle)
+                self.narrow(call_seq, data_ptr, dep_info)
             },
             1 => {      //Shuffle write
-                self.shuffle(call_seq, data_ptr)
+                self.shuffle(call_seq, data_ptr, dep_info)
             },
             _ => panic!("Invalid is_shuffle")
         }

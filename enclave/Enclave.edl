@@ -29,31 +29,51 @@ enclave {
         size_t sub_part_id;
         uint8_t is_survivor;
     };
+
+    struct dep_info_t {
+        uint8_t is_shuffle;
+        size_t identifier;
+        size_t parent_rdd_id;
+        size_t child_rdd_id;
+    };
     
     trusted {
         /* define ECALLs here. */
         public size_t get_lp_boundary();
         public void free_lp_boundary([user_check] uint8_t* lp_bd_ptr);
-        public size_t secure_executing(uint64_t tid,
+        public size_t secure_execute(uint64_t tid,
             [user_check] uint8_t* rdd_id, 
             cache_meta_t cache_meta,
-            uint8_t is_shuffle, 
+            dep_info_t dep_info, 
 		    [user_check] uint8_t* input, 
 		    [user_check] uint8_t* captured_vars);
+        public size_t exploit_spec_oppty(uint64_t tid,
+            size_t start_rdd_id, 
+            cache_meta_t cache_meta,
+            dep_info_t dep_info);
+        public size_t spec_execute(uint64_t tid,
+            size_t spec_call_seq,
+            cache_meta_t cache_meta, 
+		    [user_check] uint8_t* input,
+            [user_check] size_t* parent_rdd_id,
+            [user_check] size_t* child_rdd_id);
         public void free_res_enc(size_t op_id,
-            uint8_t is_shuffle,
-		    [user_check] uint8_t* input);
+            dep_info_t dep_info,
+		    [user_check] uint8_t* input,
+            uint8_t is_spec);
         void priv_free_res_enc(size_t op_id,
-            uint8_t is_shuffle,
+            dep_info_t dep_info,
 		    [user_check] uint8_t* input);
         public void get_sketch(size_t rdd_id,
-            uint8_t is_shuffle,
+            dep_info_t dep_info,
             [user_check] uint8_t* p_buf,
-            [user_check] uint8_t* p_data_enc);
+            [user_check] uint8_t* p_data_enc,
+            uint8_t is_spec);
         public void clone_out(size_t rdd_id,
-            uint8_t is_shuffle,
+            dep_info_t dep_info,
             size_t p_out,
-            [user_check] uint8_t* p_data_enc);
+            [user_check] uint8_t* p_data_enc,
+            uint8_t is_spec);
         public size_t probe_caching(size_t rdd_id,
             size_t part,
             [user_check] uint8_t* cached_sub_parts,

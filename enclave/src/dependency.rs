@@ -1,3 +1,4 @@
+use std::any::Any;
 use std::boxed::Box;
 use std::collections::{BTreeMap, HashSet};
 use std::hash::Hash;
@@ -20,10 +21,17 @@ pub enum Dependency {
 }
 
 impl Dependency {
-    pub fn is_end_of_job(&self) -> bool {
+    pub fn get_parent(&self) -> usize {
         match self {
-            Dependency::NarrowDependency(nar) => nar.is_end_of_job(),
-            Dependency::ShuffleDependency(shuf) => shuf.is_end_of_job(),
+            Dependency::NarrowDependency(nar) => nar.get_parent(),
+            Dependency::ShuffleDependency(shuf) => shuf.get_parent(),
+        }
+    }
+
+    pub fn get_child(&self) -> usize {
+        match self {
+            Dependency::NarrowDependency(nar) => nar.get_child(),
+            Dependency::ShuffleDependency(shuf) => shuf.get_child(),
         }
     }
 }
@@ -42,25 +50,33 @@ where
 }
 
 pub trait NarrowDependencyTrait: DowncastSync + Send + Sync {
-    fn is_end_of_job(&self) -> bool;
+    fn get_parent(&self) -> usize;
+
+    fn get_child(&self) -> usize;
 }
 impl_downcast!(sync NarrowDependencyTrait);
 
 #[derive(Clone)]
 pub struct OneToOneDependency {
-    end_of_job: bool, 
+    parent: usize,
+    child: usize, 
 }
 
 impl OneToOneDependency {
-    pub fn new(end_of_job: bool) -> Self {
-        OneToOneDependency{ end_of_job }
+    pub fn new(parent: usize, child: usize) -> Self {
+        OneToOneDependency{ parent, child }
     }
 }
 
 impl NarrowDependencyTrait for OneToOneDependency {
-    fn is_end_of_job(&self) -> bool {
-        self.end_of_job
+    fn get_parent(&self) -> usize {
+        self.parent
     }
+
+    fn get_child(&self) -> usize {
+        self.child
+    }
+
 }
 
 #[derive(Clone)]
@@ -68,27 +84,36 @@ pub struct RangeDependency {
     in_start: usize,
     out_start: usize,
     length: usize,
-    end_of_job: bool,
+    parent: usize,
+    child: usize,
 }
 
 impl RangeDependency {
-    pub fn new(in_start: usize, out_start: usize, length: usize, end_of_job: bool) -> Self {
-        RangeDependency { in_start, out_start, length, end_of_job}
+    pub fn new(in_start: usize, out_start: usize, length: usize, parent: usize, child: usize) -> Self {
+        RangeDependency { in_start, out_start, length, parent, child}
     }
 }
 
 impl NarrowDependencyTrait for RangeDependency {
-    fn is_end_of_job(&self) -> bool {
-        self.end_of_job
+    fn get_parent(&self) -> usize {
+        self.parent
+    }
+
+    fn get_child(&self) -> usize {
+        self.child
     }
 }
 
 pub trait ShuffleDependencyTrait: DowncastSync + Send + Sync  { 
-    fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>) -> *mut u8;
+    //fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>, is_spec: bool) -> *mut u8;
+    fn do_shuffle_task(&self, iter: Box<dyn Any>, is_spec: bool) -> *mut u8;
     fn send_sketch(&self, buf: &mut SizeBuf, p_data_enc: *mut u8);
     fn send_enc_data(&self, p_out: usize, p_data_enc: *mut u8);
     fn free_res_enc(&self, res_ptr: *mut u8);
-    fn is_end_of_job(&self) -> bool; 
+    fn get_parent(&self) -> usize;
+    fn get_child(&self) -> usize;
+    fn get_identifier(&self) -> usize;
+    fn set_parent_and_child(&self, parent_op_id: usize, child_op_id: usize) -> Arc<dyn ShuffleDependencyTrait>;
 }
 
 impl_downcast!(sync ShuffleDependencyTrait);
@@ -104,7 +129,9 @@ where
     pub is_cogroup: bool,
     pub aggregator: Arc<Aggregator<K, V, C>>,
     pub partitioner: Box<dyn Partitioner>,
-    pub end_of_job: bool,
+    pub identifier: usize,
+    pub parent: usize,
+    pub child: usize,
     pub fe: Box<dyn Func(Vec<(K, C)>) -> (KE, CE)>,
     pub fd: Box<dyn Func((KE, CE)) -> Vec<(K, C)>>,
 }
@@ -121,7 +148,9 @@ where
         is_cogroup: bool,
         aggregator: Arc<Aggregator<K, V, C>>,
         partitioner: Box<dyn Partitioner>,
-        end_of_job: bool,
+        identifier: usize,
+        parent: usize,
+        child: usize,
         fe: Box<dyn Func(Vec<(K, C)>) -> (KE, CE)>,
         fd: Box<dyn Func((KE, CE)) -> Vec<(K, C)>>,
     ) -> Self {
@@ -129,50 +158,21 @@ where
             is_cogroup,
             aggregator,
             partitioner,
-            end_of_job,
+            identifier,
+            parent,
+            child,
             fe,
             fd,
         }
     }
-}
 
-impl<K, V, C, KE, CE> ShuffleDependencyTrait for ShuffleDependency<K, V, C, KE, CE>
-where
-    K: Data + Eq + Hash + Ord, 
-    V: Data, 
-    C: Data,
-    KE: Data,
-    CE: Data,
-{
-    fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>) -> *mut u8 {
-        let aggregator = self.aggregator.clone();
-        let num_output_splits = self.partitioner.get_num_of_partitions();
-        let partitioner = self.partitioner.clone();
-        let mut buckets: Vec<BTreeMap<K, C>> = (0..num_output_splits)
-            .map(|_| BTreeMap::new())
-            .collect::<Vec<_>>();
-
-        for (count, i) in iter.enumerate() {
-            let b = i.into_any().downcast::<(K, V)>().unwrap();
-            let (k, v) = *b;
-            let bucket_id = partitioner.get_partition(&k);
-            let bucket = &mut buckets[bucket_id];
-            if let Some(old_v) = bucket.get_mut(&k) {
-                let input = ((old_v.clone(), v),);
-                let output = aggregator.merge_value.call(input);
-                *old_v = output;
-            } else {
-                bucket.insert(k, aggregator.create_combiner.call((v,)));
-            }
-        }
-
-        let now = Instant::now();
+    pub fn encrypt_buckets(&self, buckets: Vec<BTreeMap<K, C>>) -> Vec<Vec<(KE, CE)>> {
         let result = buckets.into_iter()
             .map(|bucket| {
                 //batch encrypt
                 let mut bucket = bucket.into_iter().collect::<Vec<_>>();
                 let mut len = bucket.len();
-                let mut data_enc = Vec::with_capacity(len);
+                let mut data_enc = Vec::with_capacity(len/MAX_ENC_BL+1);
                 //TODO: need to adjust the block size
                 while len >= MAX_ENC_BL {    
                     len -= MAX_ENC_BL;
@@ -187,10 +187,102 @@ where
                 data_enc
             })
             .collect::<Vec<_>>();  //BTreeMap to Vec
+        result
+    }
 
-        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("in enclave encrypt {:?} s", dur); 
-        return res_enc_to_ptr(result);
+    pub fn encrypt_buckets_spec(&self, buckets: Vec<BTreeMap<K, C>>) -> Vec<Vec<u8>> {
+        let result = buckets.into_iter()
+            .map(|bucket| {
+                //batch encrypt
+                let mut bucket = bucket.into_iter().collect::<Vec<_>>();
+                let mut len = bucket.len();
+                let mut data_enc = Vec::with_capacity(len/MAX_ENC_BL+1);
+                //TODO: need to adjust the block size
+                while len >= MAX_ENC_BL {    
+                    len -= MAX_ENC_BL;
+                    let remain = bucket.split_off(MAX_ENC_BL);
+                    let input = bucket;
+                    bucket = remain;
+                    data_enc.push((self.fe)(input));
+                }
+                if len != 0 {
+                    data_enc.push((self.fe)(bucket));
+                }
+                bincode::serialize(&data_enc).unwrap()
+            })
+            .collect::<Vec<_>>();  //BTreeMap to Vec
+        result
+    }
+
+
+}
+
+impl<K, V, C, KE, CE> ShuffleDependencyTrait for ShuffleDependency<K, V, C, KE, CE>
+where
+    K: Data + Eq + Hash + Ord, 
+    V: Data, 
+    C: Data,
+    KE: Data,
+    CE: Data,
+{
+    //fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>, is_spec: bool) -> *mut u8 {
+    fn do_shuffle_task(&self, iter: Box<dyn Any>, is_spec: bool) -> *mut u8 {
+        let aggregator = self.aggregator.clone();
+        let num_output_splits = self.partitioner.get_num_of_partitions();
+        let partitioner = self.partitioner.clone();
+        let mut buckets: Vec<BTreeMap<K, C>> = (0..num_output_splits)
+            .map(|_| BTreeMap::new())
+            .collect::<Vec<_>>();
+
+        println!("cur mem before shuffle write: {:?}", crate::ALLOCATOR.lock().get_memory_usage()); 
+        /* 
+        for (count, i) in iter.enumerate() {
+            let b = i.into_any().downcast::<(K, V)>().unwrap();
+            let (k, v) = *b;
+            let bucket_id = partitioner.get_partition(&k);
+            let bucket = &mut buckets[bucket_id];
+            if let Some(old_v) = bucket.get_mut(&k) {
+                let input = ((old_v.clone(), v),);
+                let output = aggregator.merge_value.call(input);
+                *old_v = output;
+            } else {
+                bucket.insert(k, aggregator.create_combiner.call((v,)));
+            }
+        }
+        */
+        
+        for (count, i) in iter.downcast::<Vec<(K, V)>>().unwrap().into_iter().enumerate() {
+            let (k, v) = i;
+            let bucket_id = partitioner.get_partition(&k);
+            let bucket = &mut buckets[bucket_id];
+            if let Some(old_v) = bucket.get_mut(&k) {
+                let input = ((old_v.clone(), v),);
+                let output = aggregator.merge_value.call(input);
+                *old_v = output;
+            } else {
+                bucket.insert(k, aggregator.create_combiner.call((v,)));
+            }
+        }
+
+        println!("cur mem after shuffle write: {:?}", crate::ALLOCATOR.lock().get_memory_usage());
+
+        if is_spec {
+            let now = Instant::now();
+            let result = self.encrypt_buckets_spec(buckets);
+            let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+            println!("cur mem before copy out: {:?}, encrypt {:?} s", crate::ALLOCATOR.lock().get_memory_usage(), dur); 
+            let res_ptr = res_enc_to_ptr(result);
+            println!("cur mem after copy out: {:?}", crate::ALLOCATOR.lock().get_memory_usage()); 
+            res_ptr
+        } else {
+            let now = Instant::now();
+            let result = self.encrypt_buckets(buckets);
+            let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+            println!("cur mem before copy out: {:?}, encrypt {:?} s", crate::ALLOCATOR.lock().get_memory_usage(), dur); 
+            let res_ptr = res_enc_to_ptr(result);
+            println!("cur mem after copy out: {:?}", crate::ALLOCATOR.lock().get_memory_usage()); 
+            res_ptr
+        }
     }
 
     fn send_sketch(&self, buf: &mut SizeBuf, p_data_enc: *mut u8){
@@ -215,8 +307,29 @@ where
         crate::ALLOCATOR.lock().set_switch(false);
     }
 
-    fn is_end_of_job(&self) -> bool {
-        self.end_of_job
+    fn get_parent(&self) -> usize {
+        self.parent
+    }
+
+    fn get_child(&self) -> usize {
+        self.child
+    }
+
+    fn get_identifier(&self) -> usize {
+        self.identifier
+    }
+
+    fn set_parent_and_child(&self, parent_op_id: usize, child_op_id: usize) -> Arc<dyn ShuffleDependencyTrait> {
+        Arc::new(ShuffleDependency::new(
+            self.is_cogroup,
+            self.aggregator.clone(),
+            self.partitioner.clone(),
+            self.identifier,
+            parent_op_id,
+            child_op_id,
+            self.fe.clone(),
+            self.fd.clone(),
+        )) as Arc<dyn ShuffleDependencyTrait>
     }
 
 }

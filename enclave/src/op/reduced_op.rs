@@ -1,16 +1,4 @@
-use std::any::TypeId;
-use std::boxed::Box;
-use std::mem::forget;
-use std::raw::TraitObject;
-use std::sync::{Arc, SgxMutex};
-use std::time::{Duration, Instant};
-use std::untrusted::time::InstantEx;
-use std::vec::Vec;
-use crate::basic::{Data, Func, SerFunc};
-use crate::dependency::{Dependency, OneToOneDependency};
-use crate::op::{CacheMeta, Context, NextOpId, Op, OpE, OpBase, res_enc_to_ptr};
-use crate::serialization_free::{Construct, Idx, SizeBuf};
-use crate::custom_thread::PThread;
+use crate::op::*;
 
 pub struct Reduced<T, TE, UE, F, FE, FD>
 where
@@ -81,24 +69,24 @@ where
     FE: SerFunc(Vec<T>) -> UE,
     FD: SerFunc(UE) -> Vec<T>,
 {
-    fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
-        match self.dep_type(is_shuffle) {
-            3 => self.step0_of_clone(p_buf, p_data_enc, is_shuffle), 
-            _ => self.prev.build_enc_data_sketch(p_buf, p_data_enc, is_shuffle),
+    fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
+        match dep_info.dep_type() {
+            3 => self.step0_of_clone(p_buf, p_data_enc, dep_info), 
+            _ => self.prev.build_enc_data_sketch(p_buf, p_data_enc, dep_info),
         }
     }
 
-    fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8) {
-        match self.dep_type(is_shuffle) {
-            3 => self.step1_of_clone(p_out, p_data_enc, is_shuffle), 
-            _ => self.prev.clone_enc_data_out(p_out, p_data_enc, is_shuffle),
+    fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo) {
+        match dep_info.dep_type() {
+            3 => self.step1_of_clone(p_out, p_data_enc, dep_info), 
+            _ => self.prev.clone_enc_data_out(p_out, p_data_enc, dep_info),
         } 
     }
 
-    fn call_free_res_enc(&self, res_ptr: *mut u8, is_shuffle: u8) {
-        match self.dep_type(is_shuffle) {
+    fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo) {
+        match dep_info.dep_type() {
             3 => self.free_res_enc(res_ptr),
-            _ => self.prev.call_free_res_enc(res_ptr, is_shuffle),
+            _ => self.prev.call_free_res_enc(res_ptr, dep_info),
         };
     }
 
@@ -114,7 +102,7 @@ where
         self.prev.get_deps()
     }
     
-    fn get_next_deps(&self) -> Arc<SgxMutex<Vec<Dependency>>> {
+    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(usize, usize), Dependency>>> {
         self.prev.get_next_deps()
     }
 
@@ -122,8 +110,12 @@ where
         self.prev.has_spec_oppty(matching_id)
     }
 
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-		self.compute_start(tid, call_seq, data_ptr, is_shuffle)
+    fn number_of_splits(&self) -> usize {
+        self.prev.number_of_splits()
+    }
+
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+		self.compute_start(tid, call_seq, data_ptr, dep_info)
     }
 
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
@@ -150,9 +142,9 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
   
-    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
         //3 is only for reduce & fold
-        if self.dep_type(is_shuffle) == 3 {
+        if dep_info.dep_type() == 3 {
             let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<TE>) };
             let data = self.prev.batch_decrypt(*data_enc.clone()); //need to check security
             forget(data_enc);
@@ -165,12 +157,12 @@ where
         }
         else {
             if call_seq.need_cache() {
-                self.prev.compute_start(tid, call_seq, data_ptr, is_shuffle)
+                self.prev.compute_start(tid, call_seq, data_ptr, dep_info)
             } else {
                 let (result_iter, handle) = self.compute(call_seq, data_ptr);
                 let result = result_iter.collect::<Vec<Self::Item>>();
                 //println!("In narrow(before encryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
-                let result_ptr = match self.prev.need_encryption(is_shuffle) {
+                let result_ptr = match dep_info.need_encryption() {
                     true => {
                         let now = Instant::now();
                         let result_enc = self.prev.batch_encrypt(result); 

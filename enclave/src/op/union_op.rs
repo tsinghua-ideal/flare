@@ -1,21 +1,11 @@
-use std::any::TypeId;
-use std::boxed::Box;
-use std::mem::forget;
-use std::raw::TraitObject;
-use std::sync::{Arc, SgxMutex};
-use std::vec::Vec;
-use crate::basic::{Data, Func, SerFunc};
-use crate::dependency::{Dependency, OneToOneDependency};
-use crate::op::{CacheMeta, Context, NextOpId, Op, OpE, OpBase, OpVals};
-use crate::partitioner::Partitioner;
-use crate::serialization_free::{Construct, Idx, SizeBuf};
-use crate::custom_thread::PThread;
+use crate::dependency::OneToOneDependency;
+use crate::op::*;
 
 pub struct Union<T: Data, TE: Data>
 {
     ops: Vec<Arc<dyn OpE<Item = T, ItemE = TE>>>,
     vals: Arc<OpVals>,
-    next_deps: Arc<SgxMutex<Vec<Dependency>>>,
+    next_deps: Arc<RwLock<HashMap<(usize, usize), Dependency>>>,
     part: Option<Box<dyn Partitioner>>,
 }
 
@@ -35,15 +25,18 @@ impl<T: Data, TE: Data> Union<T, TE>
 {
     pub(crate) fn new(ops: &[Arc<dyn OpE<Item = T, ItemE = TE>>]) -> Self {
         let mut vals = OpVals::new(ops[0].get_context());
+        let cur_id = vals.id;
 
         for prev in ops {
+            let prev_id = prev.get_id();
             vals.deps
                 .push(Dependency::NarrowDependency(Arc::new(
-                    OneToOneDependency::new(false)
+                    OneToOneDependency::new(prev_id, cur_id)
                 )));
-            prev.get_next_deps().lock().unwrap().push(
+            prev.get_next_deps().write().unwrap().insert(
+                (prev_id, cur_id),
                 Dependency::NarrowDependency(
-                    Arc::new(OneToOneDependency::new(false))
+                    Arc::new(OneToOneDependency::new(prev_id, cur_id))
                 )
             );
         } 
@@ -58,7 +51,7 @@ impl<T: Data, TE: Data> Union<T, TE>
         Union {
             ops,
             vals,
-            next_deps: Arc::new(SgxMutex::new(Vec::<Dependency>::new())),
+            next_deps: Arc::new(RwLock::new(HashMap::new())),
             part,
         }
     }
@@ -90,29 +83,25 @@ impl<T: Data, TE: Data> Union<T, TE>
 
 impl<T: Data, TE: Data> OpBase for Union<T, TE>
 {
-    fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
-        match self.dep_type(is_shuffle) {
-            0 | 1 => self.step0_of_clone(p_buf, p_data_enc, is_shuffle),
+    fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
+        match dep_info.dep_type() {
+            0 | 1 => self.step0_of_clone(p_buf, p_data_enc, dep_info),
             _ => panic!("invalid is_shuffle"),
         }
     }
 
-    fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8) {
-        match self.dep_type(is_shuffle) {
-            0 | 1 => self.step1_of_clone(p_out, p_data_enc, is_shuffle), 
+    fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo) {
+        match dep_info.dep_type() {
+            0 | 1 => self.step1_of_clone(p_out, p_data_enc, dep_info), 
             _ => panic!("invalid is_shuffle"),
         }   
     }
 
-    fn call_free_res_enc(&self, res_ptr: *mut u8, is_shuffle: u8) {
-        match self.dep_type(is_shuffle) {
+    fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo) {
+        match dep_info.dep_type() {
             0 => self.free_res_enc(res_ptr),
             1 => {
-                let next_deps = self.get_next_deps().lock().unwrap().clone();
-                let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
-                    Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
-                    Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
-                };
+                let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
                 shuf_dep.free_res_enc(res_ptr);
             },
             _ => panic!("invalid is_shuffle"),
@@ -131,7 +120,7 @@ impl<T: Data, TE: Data> OpBase for Union<T, TE>
         self.vals.deps.clone()
     }
     
-    fn get_next_deps(&self) -> Arc<SgxMutex<Vec<Dependency>>> {
+    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(usize, usize), Dependency>>> {
         self.next_deps.clone()
     }
     
@@ -139,9 +128,13 @@ impl<T: Data, TE: Data> OpBase for Union<T, TE>
         todo!()
     }
 
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+    fn number_of_splits(&self) -> usize {
+        todo!()
+    }
+
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
         
-		self.compute_start(tid, call_seq, data_ptr, is_shuffle)
+		self.compute_start(tid, call_seq, data_ptr, dep_info)
     }
 
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
@@ -174,13 +167,13 @@ impl<T: Data, TE: Data> Op for Union<T, TE>
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
-        match self.dep_type(is_shuffle) {
+    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+        match dep_info.dep_type() {
             0 => {       //No shuffle later
-                self.narrow(call_seq, data_ptr, is_shuffle)
+                self.narrow(call_seq, data_ptr, dep_info)
             },
             1 => {      //Shuffle write
-                self.shuffle(call_seq, data_ptr)
+                self.shuffle(call_seq, data_ptr, dep_info)
             },
             _ => panic!("Invalid is_shuffle"),
         }

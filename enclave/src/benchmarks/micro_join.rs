@@ -98,8 +98,8 @@ pub fn join_sec_0() -> usize {
             )
             .collect::<Vec<_>>() 
     });
-    let rdd0 = sc.make_op(rdd0_fe, rdd0_fd);
-    let rdd1 = sc.make_op(rdd1_fe, rdd1_fd);
+    let rdd0 = sc.make_op(rdd0_fe, rdd0_fd, 1);
+    let rdd1 = sc.make_op(rdd1_fe, rdd1_fd, 1);
     let rdd2 = rdd1.join(rdd0.clone(), fe_jn, fd_jn, 1);
     rdd2.get_id()
 }
@@ -180,8 +180,8 @@ pub fn join_sec_1() -> usize {
             )
             .collect::<Vec<_>>() 
     });
-    let rdd0 = sc.make_op(rdd0_fe, rdd0_fd);
-    let rdd1 = sc.make_op(rdd1_fe, rdd1_fd);
+    let rdd0 = sc.make_op(rdd0_fe, rdd0_fd, 1);
+    let rdd1 = sc.make_op(rdd1_fe, rdd1_fd, 1);
     let rdd2 = rdd1.join(rdd0.clone(), fe_jn, fd_jn, 1);
     rdd2.get_id()
     
@@ -245,8 +245,8 @@ pub fn join_sec_2() -> usize {
             .collect::<Vec<_>>() 
     });
 
-    let rdd0 = sc.make_op(fe.clone(), fd.clone());
-    let rdd1 = sc.make_op(fe.clone(), fd.clone());
+    let rdd0 = sc.make_op(fe.clone(), fd.clone(), 1);
+    let rdd1 = sc.make_op(fe.clone(), fd.clone(), 1);
     let rdd2 = rdd1.join(rdd0.clone(), fe_jn, fd_jn, 1);
     rdd2.get_id()   
 }

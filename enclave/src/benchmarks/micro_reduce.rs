@@ -23,7 +23,7 @@ pub fn reduce_sec_0() -> usize {
         ve
     });
 
-    let rdd0 = sc.make_op(fe, fd);
+    let rdd0 = sc.make_op(fe, fd, 1);
     let rdd1 = rdd0.reduce(Fn!(|x, y| x+y), fe_rd, fd_rd);
     rdd1.get_id() 
 }

@@ -86,29 +86,25 @@ impl<T: Data> LocalFsReader<T> {
 
 macro_rules! impl_common_lfs_opb_funcs {
     () => {
-        fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, is_shuffle: u8) {
-            match self.dep_type(is_shuffle) {
-                0 | 1 => self.step0_of_clone(p_buf, p_data_enc, is_shuffle),
+        fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
+            match dep_info.dep_type() {
+                0 | 1 => self.step0_of_clone(p_buf, p_data_enc, dep_info),
                 _ => panic!("invalid is_shuffle"),
             } 
         }
     
-        fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, is_shuffle: u8) {
-            match self.dep_type(is_shuffle) {
-                0 | 1 => self.step1_of_clone(p_out, p_data_enc, is_shuffle),
+        fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo) {
+            match dep_info.dep_type() {
+                0 | 1 => self.step1_of_clone(p_out, p_data_enc, dep_info),
                 _ => panic!("invalid is_shuffle"),
             } 
         }
 
-        fn call_free_res_enc(&self, res_ptr: *mut u8, is_shuffle: u8) {
-            match self.dep_type(is_shuffle) {
+        fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo) {
+            match dep_info.dep_type() {
                 0 => self.free_res_enc(res_ptr),
                 1 => {
-                    let next_deps = self.get_next_deps().lock().unwrap().clone();
-                    let shuf_dep = match &next_deps[0] {  //TODO maybe not zero
-                        Dependency::ShuffleDependency(shuf_dep) => shuf_dep,
-                        Dependency::NarrowDependency(nar_dep) => panic!("dep not match"),
-                    };
+                    let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
                     shuf_dep.free_res_enc(res_ptr);
                 },
                 _ => panic!("invalid is_shuffle"),
@@ -127,17 +123,21 @@ macro_rules! impl_common_lfs_opb_funcs {
             vec![]
         }
 
-        fn get_next_deps(&self) -> Arc<Mutex<Vec<Dependency>>> {
-            Arc::new(Mutex::new(Vec::new()))
+        fn get_next_deps(&self) -> Arc<RwLock<HashMap<(usize, usize), Dependency>>> {
+            Arc::new(RwLock::new(HashMap::new()))
         }
 
         fn has_spec_oppty(&self, matching_id: usize) -> bool {
             false
         }
 
-        fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+        fn number_of_splits(&self) -> usize {
+            todo!()
+        }
+
+        fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
                 
-		    self.compute_start(tid, call_seq, data_ptr, is_shuffle)
+		    self.compute_start(tid, call_seq, data_ptr, dep_info)
         }
 
         fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
@@ -191,9 +191,9 @@ impl<T: Data> Op for LocalFsReader<T> {
         (Box::new(data.into_iter()), None)
     }
 
-    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, is_shuffle: u8) -> *mut u8 {
+    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
         //suppose no shuffle will happen after this rdd
-        self.narrow(call_seq, data_ptr, is_shuffle)
+        self.narrow(call_seq, data_ptr, dep_info)
     }
 
 }

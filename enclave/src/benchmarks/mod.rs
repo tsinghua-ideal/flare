@@ -10,3 +10,7 @@ mod micro_reduce;
 pub use micro_reduce::*;
 mod lr;
 pub use lr::*;
+mod tc;
+pub use tc::*;
+mod test0;
+pub use test0::*;

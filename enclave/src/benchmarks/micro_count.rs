@@ -17,7 +17,7 @@ pub fn count_sec_0() -> usize {
         let pt0: Vec<i32> = ser_decrypt::<>(buf0); 
         pt0
     });
-    let rdd0 = sc.make_op(fe.clone(), fd.clone());
+    let rdd0 = sc.make_op(fe.clone(), fd.clone(), 1);
     let rdd1 = rdd0.map(Fn!(|i: i32|  i % (1 << 10) * 4399 / (i % 71 + 1) ), fe.clone(), fd.clone());
     let _res = rdd1.count();
     let rdd2 = rdd1.map(Fn!(|i: i32|  i % (1 << 10) * 8765 / (i % 97 + 1) ), fe, fd);

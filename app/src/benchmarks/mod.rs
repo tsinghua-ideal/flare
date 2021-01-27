@@ -18,3 +18,5 @@ mod pagerank;
 pub use pagerank::*;
 mod tc;
 pub use tc::*;
+mod test0;
+pub use test0::*;

@@ -42,17 +42,18 @@ fn main() -> Result<()> {
     //join_unsec_2()?;
 
     /* reduce */
-    reduce_sec_0()?;
+    //reduce_sec_0()?;
 
     /* count */
-    //count_unsec_0()?;
     //count_sec_0()?;
+    //count_unsec_0()?;
 
     /* linear regression */
     //lr_sec()?;
     //lr_unsec()?;
 
-
+    // test the speculative execution in loop
+    test0_sec_0()?;
 
     Ok(())
 }
