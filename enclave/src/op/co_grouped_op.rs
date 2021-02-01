@@ -24,7 +24,7 @@ where
     FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
 {
     pub(crate) vals: Arc<OpVals>,
-    pub(crate) next_deps: Arc<RwLock<HashMap<(usize, usize), Dependency>>>,
+    pub(crate) next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     pub(crate) op0: Arc<dyn OpE<Item = (K, V), ItemE = (KE, VE)>>,
     pub(crate) op1: Arc<dyn OpE<Item = (K, W), ItemE = (KE, WE)>>,
     pub(crate) part: Box<dyn Partitioner>,
@@ -45,6 +45,7 @@ DE: Data,
 FE: Func(Vec<(K, (Vec<V>, Vec<W>))>) -> (KE, (CE, DE)) + Clone, 
 FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
 {
+    #[track_caller]
     pub fn new(op0: Arc<dyn OpE<Item = (K, V), ItemE = (KE, VE)>>,
                op1: Arc<dyn OpE<Item = (K, W), ItemE = (KE, WE)>>,
                fe: FE,
@@ -55,8 +56,8 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
         let mut vals = OpVals::new(context.clone());
         let mut deps = Vec::new();
         let cur_id = vals.id;
-        let op0_id = op0.get_id();
-        let op1_id = op1.get_id();
+        let op0_id = op0.get_op_id();
+        let op1_id = op1.get_op_id();
              
         if op0
             .partitioner()
@@ -226,7 +227,7 @@ where
         }
     }
 
-    fn get_id(&self) -> usize {
+    fn get_op_id(&self) -> OpId {
         self.vals.id
     }
 
@@ -238,7 +239,7 @@ where
         self.vals.deps.clone()
     }
 
-    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(usize, usize), Dependency>>> {
+    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(OpId, OpId), Dependency>>> {
         self.next_deps.clone()
     }
 
@@ -251,8 +252,8 @@ where
         Some(part)
     }
 
-    fn has_spec_oppty(&self, matching_id: usize) -> bool {
-        false
+    fn has_spec_oppty(&self) -> bool {
+        true
     }
     
     fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8{

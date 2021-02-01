@@ -9,7 +9,7 @@ where
     FD: Func(TE) -> Vec<T> + Clone,
 {
     vals: Arc<OpVals>, 
-    next_deps: Arc<RwLock<HashMap<(usize, usize), Dependency>>>,
+    next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     fe: FE,
     fd: FD,
     num_splits: usize,
@@ -44,6 +44,7 @@ where
     FE: Func(Vec<T>) -> TE + Clone,
     FD: Func(TE) -> Vec<T> + Clone,
 {
+    #[track_caller]
     pub fn new(context: Arc<Context>, fe: FE, fd: FD, num_splits: usize) -> Self {
         let vals = OpVals::new(context.clone());
         ParallelCollection {
@@ -90,7 +91,7 @@ where
         }
     }
 
-    fn get_id(&self) -> usize {
+    fn get_op_id(&self) -> OpId {
         self.vals.id
     }
 
@@ -102,12 +103,12 @@ where
         self.vals.deps.clone()
     }
 
-    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(usize, usize), Dependency>>> {
+    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(OpId, OpId), Dependency>>> {
         self.next_deps.clone()
     }
 
-    fn has_spec_oppty(&self, matching_id: usize) -> bool {
-        false
+    fn has_spec_oppty(&self) -> bool {
+        true
     }
 
     fn number_of_splits(&self) -> usize {

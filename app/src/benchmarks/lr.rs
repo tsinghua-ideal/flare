@@ -63,9 +63,8 @@ pub fn lr_sec() -> Result<()> {
 
     let points_rdd = sc.make_rdd(vec![], data_enc, fe, fd, 1);
     let mut w = rng.gen::<f32>();
-    let iter_num = 3;
     let now = Instant::now();
-    for i in 0..iter_num {
+    for i in 0..3 {
         let g = points_rdd.map(Fn!(move |p: Point| 
                 p.x * (1f32/(1f32+(-p.y * (w * p.x)).exp())-1f32) * p.y
             ),

@@ -51,7 +51,7 @@ pub fn test0_sec_0() -> Result<()> {
         pt0.into_iter().zip(pt1.into_iter()).collect::<Vec<_>>() 
     });
     
-    let mut len = 100_0;
+    let mut len = 100_000;
     let mut vec: Vec<(i32, i32)> = Vec::with_capacity(len);
     let mut rng = rand::thread_rng();
     for _ in 0..len {
@@ -71,8 +71,7 @@ pub fn test0_sec_0() -> Result<()> {
 
     let now = Instant::now();
     let mut rdd0 = sc.make_rdd(vec![], data_enc, fe.clone(), fd.clone(),1);
-    let iter_num = 4;
-    for _ in 0..iter_num {
+    for _ in 0..3 {
         let rdd1 = rdd0.group_by_key(fe_gb, fd_gb, 1);
         rdd0 = rdd1.flat_map(Fn!(|(k, vv): (i32, Vec<i32>)| {
                 let mut res = Vec::with_capacity(vv.len());

@@ -5,7 +5,7 @@ pub struct Union<T: Data, TE: Data>
 {
     ops: Vec<Arc<dyn OpE<Item = T, ItemE = TE>>>,
     vals: Arc<OpVals>,
-    next_deps: Arc<RwLock<HashMap<(usize, usize), Dependency>>>,
+    next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     part: Option<Box<dyn Partitioner>>,
 }
 
@@ -23,12 +23,13 @@ impl<T: Data, TE: Data> Clone for Union<T, TE>
 
 impl<T: Data, TE: Data> Union<T, TE>
 {
+    #[track_caller]
     pub(crate) fn new(ops: &[Arc<dyn OpE<Item = T, ItemE = TE>>]) -> Self {
         let mut vals = OpVals::new(ops[0].get_context());
         let cur_id = vals.id;
 
         for prev in ops {
-            let prev_id = prev.get_id();
+            let prev_id = prev.get_op_id();
             vals.deps
                 .push(Dependency::NarrowDependency(Arc::new(
                     OneToOneDependency::new(prev_id, cur_id)
@@ -108,7 +109,7 @@ impl<T: Data, TE: Data> OpBase for Union<T, TE>
         }
     }
 
-    fn get_id(&self) -> usize {
+    fn get_op_id(&self) -> OpId {
         self.vals.id
     }
 
@@ -120,11 +121,11 @@ impl<T: Data, TE: Data> OpBase for Union<T, TE>
         self.vals.deps.clone()
     }
     
-    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(usize, usize), Dependency>>> {
+    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(OpId, OpId), Dependency>>> {
         self.next_deps.clone()
     }
     
-    fn has_spec_oppty(&self, matching_id: usize) -> bool {
+    fn has_spec_oppty(&self) -> bool {
         todo!()
     }
 

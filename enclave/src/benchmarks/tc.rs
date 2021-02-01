@@ -1,14 +1,26 @@
 use std::collections::HashSet;
-use std::sync::atomic::Ordering;
-use std::time::Instant;
-use std::vec::Vec;
 
-use crate::op::*;
-use crate::Fn;
+use crate::*;
 
-pub fn transitive_closure_sec() -> usize {
-    let sc = Context::new();
 
+pub fn transitive_closure_sec() -> Result<()> {
+    let sc = Context::new()?;
+
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     let fe = Fn!(|vp: Vec<(u32, u32)> | -> (Vec<u8>, Vec<u8>) {
         let len = vp.len();
         let mut buf0 = Vec::with_capacity(len);
@@ -66,26 +78,26 @@ pub fn transitive_closure_sec() -> usize {
     });
     
     let mut tc = sc.make_op(fe.clone(), fd.clone(), 2);
-    let edges = tc.map(
-        Fn!(|x: (u32, u32)| (x.1, x.0)), 
-        fe.clone(), 
-        fd.clone()
-    );
     
-    // This join is iterated until a fixed point is reached.
-    let mut next_count = tc.count();
-    let iter_num = 1_000_000;   //need to manually change now
-    let lower_bound = edges.get_id();  //0 
+    
+    
+    
+    
+    
+    let edges = tc.map(Fn!(|x: (u32, u32)| (x.1, x.0)), fe.clone(), fd.clone());
+    
+
+    let mut old_count = 0;
+    let mut next_count = tc.count().unwrap();
+
+    old_count = next_count;
     tc = tc.union(
         tc.join(edges.clone(), fe_jn.clone(), fd_jn.clone(), 1)
             .map(Fn!(|x: (u32, (u32, u32))| (x.1.1, x.1.0)), fe.clone(), fd.clone())
             .distinct().into()
     );
-    next_count = tc.count();
-    let upper_bound =tc.get_id();   //1
-    unsafe{ crate::lp_boundary.load(Ordering::Relaxed).as_mut()}
-        .unwrap()
-        .push((lower_bound, upper_bound, iter_num));
+    next_count = tc.count().unwrap();
 
-    tc.get_id()
+    
+    Ok(())
 }

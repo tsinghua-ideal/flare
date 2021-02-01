@@ -1,4 +1,3 @@
-use crate::dependency::OneToOneDependency;
 use crate::op::*;
 
 pub struct Mapper<T: Data, U: Data, UE: Data, F, FE, FD>
@@ -8,7 +7,7 @@ where
     FD: Func(UE) -> Vec<U> + Clone,
 {
     vals: Arc<OpVals>,
-    next_deps: Arc<RwLock<HashMap<(usize, usize), Dependency>>>,
+    next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     prev: Arc<dyn Op<Item = T>>,
     f: F,
     fe: FE,
@@ -39,10 +38,12 @@ where
     FE: Func(Vec<U>) -> UE + Clone,
     FD: Func(UE) -> Vec<U> + Clone,
 {
+    #[track_caller]
     pub(crate) fn new(prev: Arc<dyn Op<Item = T>>, f: F, fe: FE, fd: FD) -> Self {
+        println!("new MapperOp: {:?}", Location::caller());
         let mut vals = OpVals::new(prev.get_context());
         let cur_id = vals.id;
-        let prev_id = prev.get_id();
+        let prev_id = prev.get_op_id();
         vals.deps
             .push(Dependency::NarrowDependency(Arc::new(
                 OneToOneDependency::new(prev_id, cur_id)
@@ -96,7 +97,7 @@ where
         }
     }
 
-    fn get_id(&self) -> usize {
+    fn get_op_id(&self) -> OpId {
         self.vals.id
     }
 
@@ -108,20 +109,12 @@ where
         self.vals.deps.clone()
     }
     
-    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(usize, usize), Dependency>>> {
+    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(OpId, OpId), Dependency>>> {
         self.next_deps.clone()
     }
     
-    fn has_spec_oppty(&self, matching_id: usize) -> bool {
-        let cur_op_id = self.get_id();
-        let prev_op_id = self.prev.get_id();
-        println!("BRANCH_OP_HIS = {:?}", BRANCH_OP_HIS.read().unwrap().clone());
-        let mut flag = match BRANCH_OP_HIS.read().unwrap().get(&cur_op_id) {
-            Some(br_op_id) => *br_op_id == matching_id || prev_op_id == matching_id,
-            None => prev_op_id == matching_id,
-        };
-        flag = flag && !self.f.has_captured_var();
-        flag
+    fn has_spec_oppty(&self) -> bool {
+        !self.f.has_captured_var()
     }
 
     fn number_of_splits(&self) -> usize {
@@ -192,10 +185,9 @@ where
         }
         
         let opb = call_seq.get_next_op().clone();
-        let (res_iter, handle) = if opb.get_id() == self.prev.get_id() {
+        let (res_iter, handle) = if opb.get_op_id() == self.prev.get_op_id() {
             self.prev.compute(call_seq, data_ptr)
         } else {
-            BRANCH_OP_HIS.write().unwrap().insert(self.get_id(), opb.get_id());
             let op = opb.to_arc_op::<dyn Op<Item = T>>().unwrap();
             op.compute(call_seq, data_ptr)
         };

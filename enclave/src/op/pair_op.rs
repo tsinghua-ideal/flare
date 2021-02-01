@@ -1,6 +1,5 @@
 use std::hash::Hash;
 use crate::aggregator::Aggregator;
-use crate::dependency::OneToOneDependency;
 use crate::partitioner::HashPartitioner;
 use crate::op::*;
 
@@ -11,6 +10,7 @@ where
     KE: Data + Eq + Hash + Ord, 
     VE: Data,
 {
+    #[track_caller]
     fn combine_by_key<KE2: Data, C: Data, CE: Data, FE, FD>(
         &self,
         aggregator: Aggregator<K, V, C>,
@@ -30,10 +30,11 @@ where
             fe,
             fd,
         ));
-        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         new_op
     }
 
+    #[track_caller]
     fn group_by_key<CE, FE, FD>(&self, fe: FE, fd: FD, num_splits: usize) -> SerArc<dyn OpE<Item = (K, Vec<V>), ItemE = (KE, CE)>>
     where
         Self: Sized + 'static,
@@ -48,6 +49,7 @@ where
         )
     }
 
+    #[track_caller]
     fn group_by_key_using_partitioner<CE, FE, FD>(
         &self,
         fe: FE,
@@ -63,6 +65,7 @@ where
         self.combine_by_key(Aggregator::<K, V, _>::default(), partitioner, fe, fd)
     }
 
+    #[track_caller]
     fn reduce_by_key<KE2, VE2, F, FE, FD>(&self, func: F, num_splits: usize, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = (K, V), ItemE = (KE2, VE2)>>
     where
         Self: Sized + 'static,
@@ -80,6 +83,7 @@ where
         )
     }
 
+    #[track_caller]
     fn reduce_by_key_using_partitioner<KE2, VE2, F, FE, FD>(
         &self,
         func: F,
@@ -103,6 +107,7 @@ where
         self.combine_by_key(aggregator, partitioner, fe, fd)
     }
 
+    #[track_caller]
     fn map_values<U, UE, F, FE, FD>(
         &self,
         f: F,
@@ -118,10 +123,11 @@ where
         FD: SerFunc((KE, UE)) -> Vec<(K, U)>,
     {
         let new_op = SerArc::new(MappedValues::new(self.get_op(), f, fe, fd));
-        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         new_op
     }
 
+    #[track_caller]
     fn flat_map_values<U, UE, F, FE, FD>(
         &self,
         f: F,
@@ -137,10 +143,11 @@ where
         FD: SerFunc((KE, UE)) -> Vec<(K, U)>,
     {
         let new_op = SerArc::new(FlatMappedValues::new(self.get_op(), f, fe, fd));
-        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         new_op
     }
 
+    #[track_caller]
     fn join<W, WE, FE, FD>(
         &self,
         other: SerArc<dyn OpE<Item = (K, W), ItemE = (KE, WE)>>,
@@ -190,15 +197,17 @@ where
                 ).collect::<Vec<_>>()
         });
 
-        self.cogroup(
+        let cogrouped = self.cogroup(
             other,
             fe_cg,
             fd_cg,
             Box::new(HashPartitioner::<K>::new(num_splits)) as Box<dyn Partitioner>,
-        )
-        .flat_map_values(Box::new(f), fe, fd)
+        );
+        self.get_context().add_num(1);
+        cogrouped.flat_map_values(Box::new(f), fe, fd)
     }
 
+    #[track_caller]
     fn cogroup<W, WE, CE, DE, FE, FD>(
         &self,
         other: SerArc<dyn OpE<Item = (K, W), ItemE = (KE, WE)>>,
@@ -215,7 +224,7 @@ where
         FD: SerFunc((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))>, 
     {
         let new_op = SerArc::new(CoGrouped::new(self.get_ope(), other.get_ope(), fe, fd, partitioner));
-        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         new_op
     }
 
@@ -252,7 +261,7 @@ where
     FD: Func((KE, UE)) -> Vec<(K, U)> + Clone,
 { 
     vals: Arc<OpVals>,
-    next_deps: Arc<RwLock<HashMap<(usize, usize), Dependency>>>,
+    next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     prev: Arc<dyn Op<Item = (K, V)>>,
     f: F,
     fe: FE,
@@ -293,10 +302,11 @@ where
     FE: Func(Vec<(K, U)>) -> (KE, UE) + Clone,
     FD: Func((KE, UE)) -> Vec<(K, U)> + Clone,
 {
+    #[track_caller]
     fn new(prev: Arc<dyn Op<Item = (K, V)>>, f: F, fe: FE, fd: FD) -> Self {
         let mut vals = OpVals::new(prev.get_context());
         let cur_id = vals.id;
-        let prev_id = prev.get_id();
+        let prev_id = prev.get_op_id();
         vals.deps
             .push(Dependency::NarrowDependency(Arc::new(
                 OneToOneDependency::new(prev_id, cur_id),
@@ -355,7 +365,7 @@ where
         }
     }
 
-    fn get_id(&self) -> usize {
+    fn get_op_id(&self) -> OpId {
         self.vals.id
     }
 
@@ -367,19 +377,12 @@ where
         self.vals.deps.clone()
     }
 
-    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(usize, usize), Dependency>>> {
+    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(OpId, OpId), Dependency>>> {
         self.next_deps.clone()
     }    
 
-    fn has_spec_oppty(&self, matching_id: usize) -> bool {
-        let cur_op_id = self.get_id();
-        let prev_op_id = self.prev.get_id();
-        let mut flag = match BRANCH_OP_HIS.read().unwrap().get(&cur_op_id) {
-            Some(br_op_id) => *br_op_id == matching_id || prev_op_id == matching_id,
-            None => prev_op_id == matching_id,
-        };
-        flag = flag && !self.f.has_captured_var();
-        flag
+    fn has_spec_oppty(&self) -> bool {
+        !self.f.has_captured_var()
     }
 
     fn number_of_splits(&self) -> usize {
@@ -455,10 +458,9 @@ where
         }
         
         let opb = call_seq.get_next_op().clone();
-        let (res_iter, handle) = if opb.get_id() == self.prev.get_id() {
+        let (res_iter, handle) = if opb.get_op_id() == self.prev.get_op_id() {
             self.prev.compute(call_seq, data_ptr)
         } else {
-            BRANCH_OP_HIS.write().unwrap().insert(self.get_id(), opb.get_id());
             let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
             op.compute(call_seq, data_ptr)
         };
@@ -524,7 +526,7 @@ where
     FD: Func((KE, UE)) -> Vec<(K, U)> + Clone,
 {
     vals: Arc<OpVals>,
-    next_deps: Arc<RwLock<HashMap<(usize, usize), Dependency>>>,
+    next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     prev: Arc<dyn Op<Item = (K, V)>>,
     f: F,    
     fe: FE,
@@ -565,10 +567,11 @@ where
     FE: Func(Vec<(K, U)>) -> (KE, UE) + Clone,
     FD: Func((KE, UE)) -> Vec<(K, U)> + Clone,
 {
+    #[track_caller]
     fn new(prev: Arc<dyn Op<Item = (K, V)>>, f: F, fe: FE, fd: FD) -> Self {
         let mut vals = OpVals::new(prev.get_context());
         let cur_id = vals.id;
-        let prev_id = prev.get_id();
+        let prev_id = prev.get_op_id();
         vals.deps
             .push(Dependency::NarrowDependency(Arc::new(
                 OneToOneDependency::new(prev_id, cur_id),
@@ -627,7 +630,7 @@ where
         }
     }
 
-    fn get_id(&self) -> usize {
+    fn get_op_id(&self) -> OpId {
         self.vals.id
     }
 
@@ -639,19 +642,12 @@ where
         self.vals.deps.clone()
     }
 
-    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(usize, usize), Dependency>>> {
+    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(OpId, OpId), Dependency>>> {
         self.next_deps.clone()
     }
 
-    fn has_spec_oppty(&self, matching_id: usize) -> bool {
-        let cur_op_id = self.get_id();
-        let prev_op_id = self.prev.get_id();
-        let mut flag = match BRANCH_OP_HIS.read().unwrap().get(&cur_op_id) {
-            Some(br_op_id) => *br_op_id == matching_id || prev_op_id == matching_id,
-            None => prev_op_id == matching_id,
-        };
-        flag = flag && !self.f.has_captured_var();
-        flag
+    fn has_spec_oppty(&self) -> bool {
+        !self.f.has_captured_var()
     }
     
     fn number_of_splits(&self) -> usize {
@@ -725,10 +721,9 @@ where
         }
 
         let opb = call_seq.get_next_op().clone();
-        let (res_iter, handle) = if opb.get_id() == self.prev.get_id() {
+        let (res_iter, handle) = if opb.get_op_id() == self.prev.get_op_id() {
             self.prev.compute(call_seq, data_ptr)
         } else {
-            BRANCH_OP_HIS.write().unwrap().insert(self.get_id(), opb.get_id());
             let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
             op.compute(call_seq, data_ptr)
         };

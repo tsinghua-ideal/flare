@@ -17,7 +17,7 @@ where
     FD: Func((KE, CE)) -> Vec<(K, C)> + Clone,
 {
     vals: Arc<OpVals>,
-    next_deps: Arc<RwLock<HashMap<(usize, usize), Dependency>>>,
+    next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     parent: Arc<dyn Op<Item = (K, V)>>,
     aggregator: Arc<Aggregator<K, V, C>>,
     part: Box<dyn Partitioner>,
@@ -58,6 +58,7 @@ where
     FE: Func(Vec<(K, C)>) -> (KE, CE) + Clone,
     FD: Func((KE, CE)) -> Vec<(K, C)> + Clone,
 {
+    #[track_caller]
     pub(crate) fn new(
         parent: Arc<dyn Op<Item = (K, V)>>,
         aggregator: Arc<Aggregator<K, V, C>>,
@@ -68,7 +69,7 @@ where
         let ctx = parent.get_context();
         let mut vals = OpVals::new(ctx);
         let cur_id = vals.id;
-        let prev_id = parent.get_id();
+        let prev_id = parent.get_op_id();
         let dep = Dependency::ShuffleDependency(Arc::new(
             ShuffleDependency::new(
                 false,
@@ -132,7 +133,7 @@ where
         }
     }
 
-    fn get_id(&self) -> usize {
+    fn get_op_id(&self) -> OpId {
         self.vals.id
     }
 
@@ -144,12 +145,12 @@ where
         self.vals.deps.clone()
     }
 
-    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(usize, usize), Dependency>>> {
+    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(OpId, OpId), Dependency>>> {
         self.next_deps.clone()
     }
 
-    fn has_spec_oppty(&self, matching_id: usize) -> bool {
-        false
+    fn has_spec_oppty(&self) -> bool {
+        true
     }
 
     fn number_of_splits(&self) -> usize {
@@ -213,7 +214,8 @@ where
             2 => {      //Shuffle read
                 let aggregator = self.aggregator.clone(); 
                 let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<Vec<(KE, CE)>>) };
-                println!("cur mem before decryption: {:?}", crate::ALLOCATOR.lock().get_memory_usage()); 
+                println!("cur mem before decryption: {:?}", crate::ALLOCATOR.lock().get_memory_usage());
+                let now = Instant::now(); 
                 let data = data_enc.clone()
                     .into_iter()
                     .map(|v | {
@@ -225,7 +227,8 @@ where
                         }
                         data
                     }).collect::<Vec<_>>();
-                println!("cur mem after decryption: {:?}", crate::ALLOCATOR.lock().get_memory_usage());
+                let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+                println!("cur mem after decryption: {:?}, in enclave decrypt: {:?} s", crate::ALLOCATOR.lock().get_memory_usage(), dur);
                 forget(data_enc);
                 let remained_ptr = CAVE.lock().unwrap().remove(&tid);
                 let mut combiners: BTreeMap<K, Option<C>> = match remained_ptr {

@@ -3,7 +3,7 @@ use std::time::Instant;
 use vega::*;
 use rand::Rng;
 
-pub fn transitive_closure() -> Result<()> {
+pub fn transitive_closure_sec() -> Result<()> {
     let sc = Context::new()?;
     let num_edges = 200;
     let num_vertices = 100;
@@ -77,7 +77,6 @@ pub fn transitive_closure() -> Result<()> {
             .collect::<Vec<_>>() 
     });
     
-
     let mut tc = sc.parallelize(data, vec![], fe.clone(), fd.clone(), 2);
     // Linear transitive closure: each round grows paths by one edge,
     // by joining the graph's edges with the already-discovered paths.

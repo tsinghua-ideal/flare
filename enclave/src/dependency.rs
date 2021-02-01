@@ -1,3 +1,4 @@
+use core::ops;
 use std::any::Any;
 use std::boxed::Box;
 use std::collections::{BTreeMap, HashSet};
@@ -9,7 +10,7 @@ use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
 use crate::basic::{AnyData, Data, Func};
-use crate::op::{res_enc_to_ptr, MAX_ENC_BL};
+use crate::op::{res_enc_to_ptr, MAX_ENC_BL, OpId};
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use downcast_rs::DowncastSync;
@@ -21,14 +22,14 @@ pub enum Dependency {
 }
 
 impl Dependency {
-    pub fn get_parent(&self) -> usize {
+    pub fn get_parent(&self) -> OpId {
         match self {
             Dependency::NarrowDependency(nar) => nar.get_parent(),
             Dependency::ShuffleDependency(shuf) => shuf.get_parent(),
         }
     }
 
-    pub fn get_child(&self) -> usize {
+    pub fn get_child(&self) -> OpId {
         match self {
             Dependency::NarrowDependency(nar) => nar.get_child(),
             Dependency::ShuffleDependency(shuf) => shuf.get_child(),
@@ -50,30 +51,30 @@ where
 }
 
 pub trait NarrowDependencyTrait: DowncastSync + Send + Sync {
-    fn get_parent(&self) -> usize;
+    fn get_parent(&self) -> OpId;
 
-    fn get_child(&self) -> usize;
+    fn get_child(&self) -> OpId;
 }
 impl_downcast!(sync NarrowDependencyTrait);
 
 #[derive(Clone)]
 pub struct OneToOneDependency {
-    parent: usize,
-    child: usize, 
+    parent: OpId,
+    child: OpId, 
 }
 
 impl OneToOneDependency {
-    pub fn new(parent: usize, child: usize) -> Self {
+    pub fn new(parent: OpId, child: OpId) -> Self {
         OneToOneDependency{ parent, child }
     }
 }
 
 impl NarrowDependencyTrait for OneToOneDependency {
-    fn get_parent(&self) -> usize {
+    fn get_parent(&self) -> OpId {
         self.parent
     }
 
-    fn get_child(&self) -> usize {
+    fn get_child(&self) -> OpId {
         self.child
     }
 
@@ -84,22 +85,22 @@ pub struct RangeDependency {
     in_start: usize,
     out_start: usize,
     length: usize,
-    parent: usize,
-    child: usize,
+    parent: OpId,
+    child: OpId,
 }
 
 impl RangeDependency {
-    pub fn new(in_start: usize, out_start: usize, length: usize, parent: usize, child: usize) -> Self {
+    pub fn new(in_start: usize, out_start: usize, length: usize, parent: OpId, child: OpId) -> Self {
         RangeDependency { in_start, out_start, length, parent, child}
     }
 }
 
 impl NarrowDependencyTrait for RangeDependency {
-    fn get_parent(&self) -> usize {
+    fn get_parent(&self) -> OpId {
         self.parent
     }
 
-    fn get_child(&self) -> usize {
+    fn get_child(&self) -> OpId {
         self.child
     }
 }
@@ -110,10 +111,10 @@ pub trait ShuffleDependencyTrait: DowncastSync + Send + Sync  {
     fn send_sketch(&self, buf: &mut SizeBuf, p_data_enc: *mut u8);
     fn send_enc_data(&self, p_out: usize, p_data_enc: *mut u8);
     fn free_res_enc(&self, res_ptr: *mut u8);
-    fn get_parent(&self) -> usize;
-    fn get_child(&self) -> usize;
+    fn get_parent(&self) -> OpId;
+    fn get_child(&self) -> OpId;
     fn get_identifier(&self) -> usize;
-    fn set_parent_and_child(&self, parent_op_id: usize, child_op_id: usize) -> Arc<dyn ShuffleDependencyTrait>;
+    fn set_parent_and_child(&self, parent_op_id: OpId, child_op_id: OpId) -> Arc<dyn ShuffleDependencyTrait>;
 }
 
 impl_downcast!(sync ShuffleDependencyTrait);
@@ -130,8 +131,8 @@ where
     pub aggregator: Arc<Aggregator<K, V, C>>,
     pub partitioner: Box<dyn Partitioner>,
     pub identifier: usize,
-    pub parent: usize,
-    pub child: usize,
+    pub parent: OpId,
+    pub child: OpId,
     pub fe: Box<dyn Func(Vec<(K, C)>) -> (KE, CE)>,
     pub fd: Box<dyn Func((KE, CE)) -> Vec<(K, C)>>,
 }
@@ -149,8 +150,8 @@ where
         aggregator: Arc<Aggregator<K, V, C>>,
         partitioner: Box<dyn Partitioner>,
         identifier: usize,
-        parent: usize,
-        child: usize,
+        parent: OpId,
+        child: OpId,
         fe: Box<dyn Func(Vec<(K, C)>) -> (KE, CE)>,
         fd: Box<dyn Func((KE, CE)) -> Vec<(K, C)>>,
     ) -> Self {
@@ -307,11 +308,11 @@ where
         crate::ALLOCATOR.lock().set_switch(false);
     }
 
-    fn get_parent(&self) -> usize {
+    fn get_parent(&self) -> OpId {
         self.parent
     }
 
-    fn get_child(&self) -> usize {
+    fn get_child(&self) -> OpId {
         self.child
     }
 
@@ -319,7 +320,7 @@ where
         self.identifier
     }
 
-    fn set_parent_and_child(&self, parent_op_id: usize, child_op_id: usize) -> Arc<dyn ShuffleDependencyTrait> {
+    fn set_parent_and_child(&self, parent_op_id: OpId, child_op_id: OpId) -> Arc<dyn ShuffleDependencyTrait> {
         Arc::new(ShuffleDependency::new(
             self.is_cogroup,
             self.aggregator.clone(),

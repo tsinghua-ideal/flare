@@ -1,11 +1,10 @@
-use std::boxed::Box;
-use std::string::String;
-use std::vec::Vec;
-use crate::op::*;
-use crate::Fn;
 
-pub fn join_sec_0() -> usize {
-    let sc = Context::new();
+use crate::*;
+
+
+// test simple case
+pub fn join_sec_0() -> Result<()> {
+    let sc = Context::new()?;
     let rdd0_fe = Fn!(|vp: Vec<(i32, (String, String))> | -> (Vec<u8>, (Vec<u8>, Vec<u8>)) {
         let len = vp.len();
         let mut buf0 = Vec::with_capacity(len);
@@ -98,14 +97,42 @@ pub fn join_sec_0() -> usize {
             )
             .collect::<Vec<_>>() 
     });
+    
+    
+    
+    
+    
+    
+    
     let rdd0 = sc.make_op(rdd0_fe, rdd0_fd, 1);
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     let rdd1 = sc.make_op(rdd1_fe, rdd1_fd, 1);
+    
+    
+    
+    
     let rdd2 = rdd1.join(rdd0.clone(), fe_jn, fd_jn, 1);
-    rdd2.get_id()
+    let _res = rdd2.collect().unwrap();
+    
+    Ok(())
 }
-        
-pub fn join_sec_1() -> usize {
-    let sc = Context::new();
+   
+//test with identical map
+pub fn join_sec_1() -> Result<()> {
+    let sc = Context::new()?;
     let rdd0_fe = Fn!(|vp: Vec<(i32, (String, String))> | -> (Vec<i32>, (Vec<String>, Vec<String>)) {
         let len = vp.len();
         let mut buf0 = Vec::with_capacity(len);
@@ -180,15 +207,53 @@ pub fn join_sec_1() -> usize {
             )
             .collect::<Vec<_>>() 
     });
-    let rdd0 = sc.make_op(rdd0_fe, rdd0_fd, 1);
-    let rdd1 = sc.make_op(rdd1_fe, rdd1_fd, 1);
-    let rdd2 = rdd1.join(rdd0.clone(), fe_jn, fd_jn, 1);
-    rdd2.get_id()
     
+    
+    
+    
+    
+    
+    
+    
+    let rdd0 = sc.make_op(rdd0_fe, rdd0_fd, 1);
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    let rdd1 = sc.make_op(rdd1_fe, rdd1_fd, 1);
+    
+    
+    
+    
+    let rdd2 = rdd1.join(rdd0.clone(), fe_jn, fd_jn, 1);
+    let _res = rdd2.collect().unwrap();
+    
+    Ok(())
 }
 
-pub fn join_sec_2() -> usize {
-    let sc = Context::new();
+//massive data
+pub fn join_sec_2() -> Result<()> {
+    let sc = Context::new()?;
+
+    
+    
+    
+    
+    
+    
+    
+    
+    
     let fe = Fn!(|vp: Vec<(i32, i32)> | -> (Vec<u8>, Vec<u8>) {
         let len = vp.len();
         let mut buf0 = Vec::with_capacity(len);
@@ -245,8 +310,35 @@ pub fn join_sec_2() -> usize {
             .collect::<Vec<_>>() 
     });
 
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     let rdd0 = sc.make_op(fe.clone(), fd.clone(), 1);
     let rdd1 = sc.make_op(fe.clone(), fd.clone(), 1);
     let rdd2 = rdd1.join(rdd0.clone(), fe_jn, fd_jn, 1);
-    rdd2.get_id()   
+    let _res = rdd2.collect().unwrap();
+    
+    
+    
+    Ok(())   
 }

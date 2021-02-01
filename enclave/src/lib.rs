@@ -54,6 +54,7 @@ use serde_closure::Fn;
 use std::boxed::Box;
 use std::collections::{btree_map::BTreeMap, HashMap};
 use std::mem::forget;
+use std::string::String;
 use std::sync::{atomic::Ordering, Arc, SgxRwLock as RwLock, SgxMutex as Mutex};
 use std::thread;
 use std::time::Instant;
@@ -81,13 +82,11 @@ static ALLOCATOR: Locked<Allocator> = Locked::new(Allocator::new());
 static immediate_cout: bool = true;
 
 lazy_static! {
-    static ref BRANCH_OP_HIS: Arc<RwLock<HashMap<usize, usize>>> = Arc::new(RwLock::new(HashMap::new())); //(cur_op_id, prev_op_id)
+    static ref BRANCH_OP_HIS: Arc<RwLock<HashMap<OpId, OpId>>> = Arc::new(RwLock::new(HashMap::new())); //(prev_op_id, cur_op_id)
     static ref CACHE: OpCache = OpCache::new();
     static ref CAVE: Arc<Mutex<HashMap<u64, usize>>> = Arc::new(Mutex::new(HashMap::new()));
-    /// loop boundary: (lower bound after maping, upper bound after mapping, iteration number)
-    static ref lp_boundary: AtomicPtrWrapper<Vec<(usize, usize, usize)>> = AtomicPtrWrapper::new(Box::into_raw(Box::new(Vec::new()))); 
-    static ref opmap: AtomicPtrWrapper<BTreeMap<usize, Arc<dyn OpBase>>> = AtomicPtrWrapper::new(Box::into_raw(Box::new(BTreeMap::new()))); 
-    static ref final_id: usize = {
+    static ref opmap: AtomicPtrWrapper<BTreeMap<OpId, Arc<dyn OpBase>>> = AtomicPtrWrapper::new(Box::into_raw(Box::new(BTreeMap::new()))); 
+    static ref init: Result<()> = {
         /* map */
         //map_sec_0()
 
@@ -115,39 +114,22 @@ lazy_static! {
 }
 
 #[no_mangle]
-pub extern "C" fn get_lp_boundary() -> usize {
-    let _gfinal_id = *final_id; //this is necessary to let it accually execute
-    let lp_bd = unsafe{ lp_boundary.load(Ordering::Relaxed).as_ref()}.unwrap();
-    ALLOCATOR.lock().set_switch(true);
-    let ptr = Box::into_raw(Box::new(lp_bd.to_vec())) as *mut u8 as usize;
-    ALLOCATOR.lock().set_switch(false);
-    ptr
-}
-
-#[no_mangle]
-pub extern "C" fn free_lp_boundary(lp_bd_ptr: *mut u8) {
-    ALLOCATOR.lock().set_switch(true);
-    let lp_bd = unsafe { Box::from_raw(lp_bd_ptr as *mut Vec<(usize, usize, usize)>) };
-    drop(lp_bd);
-    ALLOCATOR.lock().set_switch(false);
-}
-
-#[no_mangle]
 pub extern "C" fn secure_execute(tid: u64, 
     rdd_ids: *const u8,
+    op_ids: *const u8,
     cache_meta: CacheMeta,
     dep_info: DepInfo, 
     input: *mut u8, 
     captured_vars: *const u8
 ) -> usize {
     println!("Cur mem: {:?}, at the begining of secure execution", ALLOCATOR.lock().get_memory_usage());
-    let rdd_ids = unsafe { (rdd_ids as *const Vec<(usize, usize)>).as_ref() }.unwrap();
-    let final_rdd_id = rdd_ids[0].0;
+    let rdd_ids = unsafe { (rdd_ids as *const Vec<usize>).as_ref() }.unwrap();
+    let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();
     let captured_vars = unsafe { (captured_vars as *const HashMap<usize, Vec<Vec<u8>>>).as_ref() }.unwrap();
-    println!("rdd id = {:?}, dep_info = {:?}, cache_meta = {:?}", final_rdd_id, dep_info, cache_meta);
+    println!("rdd id = {:?}, dep_info = {:?}, cache_meta = {:?}", rdd_ids[0], dep_info, cache_meta);
     
     let now = Instant::now();
-    let mut call_seq = NextOpId::new(rdd_ids, cache_meta.clone(), captured_vars.clone(), false);
+    let mut call_seq = NextOpId::new(rdd_ids, op_ids, cache_meta.clone(), captured_vars.clone(), false);
     let final_op = call_seq.get_cur_op();
     let result_ptr = final_op.iterator_start(tid, &mut call_seq, input, &dep_info); //shuffle need dep_info
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
@@ -156,48 +138,48 @@ pub extern "C" fn secure_execute(tid: u64,
 }
 
 #[no_mangle]
-pub extern "C" fn exploit_spec_oppty(tid: u64, 
-    start_rdd_id: usize,
+pub extern "C" fn exploit_spec_oppty(tid: u64,
+    op_ids: *const u8,
     cache_meta: CacheMeta,
     dep_info: DepInfo,  
 ) -> usize {  //return where has an opportunity, if so, return spec_call_seq
-    let _gfinal_id = *final_id; //this is necessary to let it accually execute
-    let start_op_id = map_id(start_rdd_id);
-    let start_op = load_opmap().get(&start_op_id).unwrap();
+    let _init = *init; //this is necessary to let it accually execute
+    let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();
     if dep_info.dep_type() == 1 {
-        start_op.sup_next_shuf_dep(&dep_info);  //set shuf dep if missing when in loop
+        let (parent_id, _) = dep_info.get_op_key();
+        let parent = load_opmap().get(&parent_id).unwrap();
+        parent.sup_next_shuf_dep(&dep_info);  //set shuf dep if missing when in loop
+    }
+    let len = op_ids.len();
+    if len > 1 {
+        let mut idx = 0;
+        while idx < len - 1 {
+            let parent_id = op_ids[idx + 1];
+            let child_id = op_ids[idx];
+            BRANCH_OP_HIS.write().unwrap().insert(parent_id, child_id);
+            let parent = load_opmap().get(&parent_id).unwrap();
+            parent.or_insert_nar_child(child_id);
+            idx += 1;
+        }
     }
 
-    let mut spec_op_id = SpecOpId::new(start_rdd_id, cache_meta.clone());
+    let mut spec_op_id = SpecOpId::new(cache_meta.clone());
     
     //return 0;
     if spec_op_id.is_end() {
         return 0;
     }
 
-    let mut span = 0;
-    let lp_bd = unsafe{ lp_boundary.load(Ordering::Relaxed).as_ref()}.unwrap();
-    for (lower, upper, iter_num) in lp_bd {
-        if start_op_id > *lower && start_op_id <= *upper {
-            span = upper - lower;
-            break;
-        }
-    }
-
-    for _ in 0..span {
-        if spec_op_id.advance() {
-            break;
-        }
-    }
+    while !spec_op_id.advance() {}
 
     //The last one is the child of shuffle dependency
     let spec_call_seq = spec_op_id.get_spec_call_seq(&dep_info);
     let ptr;
-    if spec_call_seq.is_empty() {
+    if spec_call_seq.0.is_empty() && spec_call_seq.1.is_empty() {
         ptr = 0;
     } else {
         //no need to copy out
-        ptr = Box::into_raw(Box::new(spec_call_seq.clone())) as *mut u8 as usize;
+        ptr = Box::into_raw(Box::new(spec_call_seq)) as *mut u8 as usize;
     }
     ptr
 }
@@ -207,33 +189,25 @@ pub extern "C" fn spec_execute(tid: u64,
     spec_call_seq: usize,
     cache_meta: CacheMeta,
     input: *mut u8, 
-    parent_rdd_id: *mut usize,
-    child_rdd_id: *mut usize,
+    hash_ops: *mut u64,
 ) -> usize {
     println!("Cur mem: {:?}, at the begining of speculative execution", ALLOCATOR.lock().get_memory_usage());
     let now = Instant::now();
-    let mut spec_call_seq = unsafe { Box::from_raw(spec_call_seq as *mut u8 as *mut Vec<usize>) };
-    spec_call_seq.reverse();
-    let parent_rdd_id = unsafe { parent_rdd_id.as_mut() }.unwrap();
-    let child_rdd_id = unsafe { child_rdd_id.as_mut() }.unwrap();
+    let mut spec_call_seq = unsafe { Box::from_raw(spec_call_seq as *mut u8 as *mut (Vec<usize>, Vec<OpId>)) };
+    //should return the hash of op_ids
+    let hash_ops = unsafe { hash_ops.as_mut() }.unwrap();
+    *hash_ops = default_hash(&spec_call_seq.1);
+
     //the child rdd id of shuffle dependency
-    *child_rdd_id = spec_call_seq.remove(0);
-    *parent_rdd_id = spec_call_seq[0];
+    let child_op_id = {
+        spec_call_seq.0.remove(0);
+        spec_call_seq.1.remove(0)
+    };
+    let parent_op_id = spec_call_seq.1[0];
     //identifier is not used, so set it 0 
-    let dep_info = DepInfo::new(11, 0, *parent_rdd_id, *child_rdd_id);
-    let mut rdd_ids = vec![(*parent_rdd_id, *parent_rdd_id)];
-    let mut cur_cont_seg = 0;
-    for rdd_id in spec_call_seq.into_iter() {
-        let lower = &mut rdd_ids[cur_cont_seg].1;
-        if rdd_id == *lower - 1 || rdd_id == *lower {
-            *lower = rdd_id;
-        } else {
-            rdd_ids.push((rdd_id, rdd_id));
-            cur_cont_seg += 1;
-        }
-    }
+    let dep_info = DepInfo::new(11, 0, 0, 0, parent_op_id, child_op_id);
     let cache_meta = cache_meta.transform();
-    let mut call_seq = NextOpId::new(&rdd_ids, cache_meta, HashMap::new(), true);
+    let mut call_seq = NextOpId::new(&spec_call_seq.0, &spec_call_seq.1, cache_meta, HashMap::new(), true);
     let final_op = call_seq.get_cur_op();
     let result_ptr = final_op.iterator_start(tid, &mut call_seq, input, &dep_info);
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
@@ -242,7 +216,7 @@ pub extern "C" fn spec_execute(tid: u64,
 }
 
 #[no_mangle]
-pub extern "C" fn free_res_enc(op_id: usize, dep_info: DepInfo, input: *mut u8, is_spec: u8) {
+pub extern "C" fn free_res_enc(op_id: OpId, dep_info: DepInfo, input: *mut u8, is_spec: u8) {
     match is_spec {
         0 => {
             let op = load_opmap().get(&op_id).unwrap();
@@ -261,13 +235,13 @@ pub extern "C" fn free_res_enc(op_id: usize, dep_info: DepInfo, input: *mut u8, 
 }
 
 #[no_mangle]
-pub extern "C" fn priv_free_res_enc(op_id: usize, dep_info: DepInfo, input: *mut u8) {
+pub extern "C" fn priv_free_res_enc(op_id: OpId, dep_info: DepInfo, input: *mut u8) {
     let op = load_opmap().get(&op_id).unwrap();
     op.call_free_res_enc(input, &dep_info);
 }
 
 #[no_mangle]
-pub extern "C" fn get_sketch(rdd_id: usize, 
+pub extern "C" fn get_sketch(op_id: OpId, 
     dep_info: DepInfo, 
     p_buf: *mut u8, 
     p_data_enc: *mut u8,
@@ -275,7 +249,6 @@ pub extern "C" fn get_sketch(rdd_id: usize,
 {
     match is_spec {
         0 => {
-            let op_id = map_id(rdd_id);
             let op = load_opmap().get(&op_id).unwrap();
             op.build_enc_data_sketch(p_buf, p_data_enc, &dep_info);
         },
@@ -293,7 +266,7 @@ pub extern "C" fn get_sketch(rdd_id: usize,
 }
 
 #[no_mangle]
-pub extern "C" fn clone_out(rdd_id: usize, 
+pub extern "C" fn clone_out(op_id: OpId, 
     dep_info: DepInfo,
     p_out: usize, 
     p_data_enc: *mut u8,
@@ -301,7 +274,6 @@ pub extern "C" fn clone_out(rdd_id: usize,
 {
     match is_spec {
         0 => {
-            let op_id = map_id(rdd_id);
             let op = load_opmap().get(&op_id).unwrap();
             op.clone_enc_data_out(p_out, p_data_enc, &dep_info);
         },

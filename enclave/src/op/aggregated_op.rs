@@ -100,8 +100,8 @@ where
         };
     }
 
-    fn get_id(&self) -> usize {
-        self.prev.get_id()
+    fn get_op_id(&self) -> OpId {
+        self.prev.get_op_id()
     }
     
     fn get_context(&self) -> Arc<Context> {
@@ -112,12 +112,12 @@ where
         self.prev.get_deps()
     }
     
-    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(usize, usize), Dependency>>> {
+    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(OpId, OpId), Dependency>>> {
         self.prev.get_next_deps()
     }
 
-    fn has_spec_oppty(&self, matching_id: usize) -> bool {
-        self.prev.has_spec_oppty(matching_id)
+    fn has_spec_oppty(&self) -> bool {
+        self.prev.has_spec_oppty()
     }
 
     fn number_of_splits(&self) -> usize {

@@ -1,12 +1,10 @@
-use std::sync::atomic::Ordering;
-use std::boxed::Box;
-use std::string::String;
-use std::vec::Vec;
-use crate::op::*;
-use crate::Fn;
 
-pub fn test0_sec_0() -> usize {
-    let sc = Context::new();
+use crate::*;
+
+
+pub fn test0_sec_0() -> Result<()> {
+    let sc = Context::new()?;
+
     let fe = Fn!(|vp: Vec<(i32, i32)>| {
         let len = vp.len();
         let mut buf0 = Vec::with_capacity(len);
@@ -54,9 +52,26 @@ pub fn test0_sec_0() -> usize {
     });
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     let mut rdd0 = sc.make_op(fe.clone(), fd.clone(), 1);
-    let iter_num = 4;
-    let lower_bound = rdd0.get_id();  //0 
+
     let rdd1 = rdd0.group_by_key(fe_gb, fd_gb, 1);
     rdd0 = rdd1.flat_map(Fn!(|(k, vv): (i32, Vec<i32>)| {
             let mut res = Vec::with_capacity(vv.len());
@@ -69,11 +84,11 @@ pub fn test0_sec_0() -> usize {
         fe.clone(),
         fd.clone()
     );
-    let count = rdd0.count();
-    let upper_bound = count.get_id();   //1
-    unsafe{ crate::lp_boundary.load(Ordering::Relaxed).as_mut()}
-        .unwrap()
-        .push((lower_bound, upper_bound, iter_num)); //loop 0 boundary
 
-    count.get_id()
+    let _count = rdd0.count().unwrap();
+
+
+
+
+    Ok(())
 }

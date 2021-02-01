@@ -4,6 +4,7 @@ use crate::op::*;
 use serde_derive::{Deserialize, Serialize};
 
 pub trait ReaderConfiguration<I: Data> {
+    #[track_caller]
     fn make_reader<O, OE, F, FE, FD>(self, context: Arc<Context>, decoder: F, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = O, ItemE = OE>>
     where
         O: Data,
@@ -63,20 +64,21 @@ impl ReaderConfiguration<Vec<u8>> for LocalFsReaderConfig {
 
 #[derive(Clone)]
 pub struct LocalFsReader<T> {
-    id: usize,
+    id: OpId,
     path: PathBuf,
     context: Arc<Context>,
     _marker_reader_data: PhantomData<T>,
 }
 
 impl<T: Data> LocalFsReader<T> {
+    #[track_caller]
     fn new(config: LocalFsReaderConfig, context: Arc<Context>) -> Self {
         let LocalFsReaderConfig {
             dir_path,
         } = config;
-
+        let loc = Location::caller(); 
         LocalFsReader {
-            id: context.new_op_id(),
+            id: context.new_op_id(loc),
             path: dir_path,
             context,
             _marker_reader_data: PhantomData,
@@ -111,7 +113,7 @@ macro_rules! impl_common_lfs_opb_funcs {
             }
         }
 
-        fn get_id(&self) -> usize {
+        fn get_op_id(&self) -> OpId {
             self.id
         }
 
@@ -123,12 +125,12 @@ macro_rules! impl_common_lfs_opb_funcs {
             vec![]
         }
 
-        fn get_next_deps(&self) -> Arc<RwLock<HashMap<(usize, usize), Dependency>>> {
+        fn get_next_deps(&self) -> Arc<RwLock<HashMap<(OpId, OpId), Dependency>>> {
             Arc::new(RwLock::new(HashMap::new()))
         }
 
-        fn has_spec_oppty(&self, matching_id: usize) -> bool {
-            false
+        fn has_spec_oppty(&self) -> bool {
+            true
         }
 
         fn number_of_splits(&self) -> usize {

@@ -1,10 +1,12 @@
+use core::panic::Location;
 use std::any::{Any, TypeId};
 use std::boxed::Box;
-use std::collections::{btree_map::BTreeMap, HashMap, HashSet};
+use std::collections::{btree_map::BTreeMap, hash_map::DefaultHasher, HashMap, HashSet};
 use std::cmp::{min, Ordering, Reverse};
-use std::hash::Hash;
+use std::hash::{Hash, Hasher};
 use std::mem::forget;
 use std::raw::TraitObject;
+use std::string::ToString;
 use std::sync::{
     atomic::{self, AtomicUsize},
     Arc, SgxMutex as Mutex, SgxRwLock as RwLock, Weak,
@@ -15,11 +17,12 @@ use std::vec::Vec;
 
 use aes_gcm::Aes128Gcm;
 use aes_gcm::aead::{Aead, NewAead, generic_array::GenericArray};
+use atomic::AtomicU32;
 use sgx_types::*;
 
-use crate::{BRANCH_OP_HIS, CACHE, Fn, lp_boundary, opmap};
+use crate::{BRANCH_OP_HIS, CACHE, Fn, opmap};
 use crate::basic::{AnyData, Arc as SerArc, Data, Func, SerFunc};
-use crate::dependency::{Dependency, ShuffleDependencyTrait};
+use crate::dependency::{Dependency, OneToOneDependency, ShuffleDependencyTrait};
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use crate::custom_thread::PThread;
@@ -52,6 +55,7 @@ mod union_op;
 pub use union_op::*;
 
 pub const MAX_ENC_BL: usize = 1000;
+pub type Result<T> = std::result::Result<T, &'static str>;
 
 extern "C" {
     pub fn ocall_cache_to_outside(ret_val: *mut u8,   //write successfully or not
@@ -68,11 +72,100 @@ extern "C" {
     ) -> sgx_status_t;
 }
 
+pub fn default_hash<T: Hash>(t: &T) -> u64 {
+    let mut s = DefaultHasher::new();
+    t.hash(&mut s);
+    s.finish()
+}
+
+pub fn load_opmap() -> &'static mut BTreeMap<OpId, Arc<dyn OpBase>> {
+    unsafe { 
+        opmap.load(atomic::Ordering::Relaxed)
+            .as_mut()
+    }.unwrap()
+}
+
+pub fn insert_opmap(op_id: OpId, op_base: Arc<dyn OpBase>) {
+    let op_map = load_opmap();
+    op_map.insert(op_id, op_base);
+}
+
+#[inline(always)]
+pub fn encrypt(pt: &[u8]) -> Vec<u8> {
+    let key = GenericArray::from_slice(b"abcdefg hijklmn ");
+    let cipher = Aes128Gcm::new(key);
+    let nonce = GenericArray::from_slice(b"unique nonce");
+    cipher.encrypt(nonce, pt).expect("encryption failure")
+}
+
+#[inline(always)]
+pub fn ser_encrypt<T>(pt: Vec<T>) -> Vec<u8> 
+where
+    T: serde::ser::Serialize + serde::de::DeserializeOwned + 'static
+{
+    match TypeId::of::<u8>() == TypeId::of::<T>() {
+        true => {
+            let (ptr, len, cap) = pt.into_raw_parts();
+            let rebuilt = unsafe {
+                let ptr = ptr as *mut u8;
+                Vec::from_raw_parts(ptr, len, cap)
+            };
+            encrypt(&rebuilt)
+        },
+        false => encrypt(bincode::serialize(&pt).unwrap().as_ref()),
+    } 
+}
+
+#[inline(always)]
+pub fn decrypt(ct: &[u8]) -> Vec<u8> {
+    let key = GenericArray::from_slice(b"abcdefg hijklmn ");
+    let cipher = Aes128Gcm::new(key);
+    let nonce = GenericArray::from_slice(b"unique nonce");
+    cipher.decrypt(nonce, ct).expect("decryption failure")
+}
+
+#[inline(always)]
+pub fn ser_decrypt<T>(ct: Vec<u8>) -> Vec<T> 
+where
+    T: serde::ser::Serialize + serde::de::DeserializeOwned + 'static
+{
+    if ct.len() == 0 {
+        return Vec::new();
+    }
+    match TypeId::of::<u8>() == TypeId::of::<T>() {
+        true => {
+            let pt = decrypt(&ct);
+            let (ptr, len, cap) = pt.into_raw_parts();
+            let rebuilt = unsafe {
+                let ptr = ptr as *mut T;
+                Vec::from_raw_parts(ptr, len, cap)
+            };
+            rebuilt
+        },
+        false => bincode::deserialize(decrypt(&ct).as_ref()).unwrap(),
+    }
+
+}
+
+pub fn res_enc_to_ptr<T: Clone>(result_enc: T) -> *mut u8 {
+    let result_ptr;
+    if crate::immediate_cout {
+        crate::ALLOCATOR.lock().set_switch(true);
+        result_ptr = Box::into_raw(Box::new(result_enc.clone())) as *mut u8;
+        crate::ALLOCATOR.lock().set_switch(false);
+    } else {
+        result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
+    }
+    result_ptr
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct CacheMeta {
     caching_rdd_id: usize,
+    caching_op_id: OpId,
     cached_rdd_id: usize,
+    cached_op_id: OpId,
     part_id: usize,
     sub_part_id: usize,
     is_survivor: u8,
@@ -81,12 +174,16 @@ pub struct CacheMeta {
 impl CacheMeta {
     pub fn new(
         caching_rdd_id: usize,
+        caching_op_id: OpId,
         cached_rdd_id: usize,
+        cached_op_id: OpId,
         part_id: usize,
     ) -> Self {
         CacheMeta {
             caching_rdd_id,
+            caching_op_id,
             cached_rdd_id,
+            cached_op_id,
             part_id,
             sub_part_id: 0,
             is_survivor: 0,
@@ -100,7 +197,9 @@ impl CacheMeta {
     pub fn transform(self) -> Self {
         CacheMeta {
             caching_rdd_id: 0,
+            caching_op_id: Default::default(),
             cached_rdd_id: self.caching_rdd_id,
+            cached_op_id: self.caching_op_id,
             part_id: self.part_id,
             sub_part_id: self.sub_part_id,
             is_survivor: self.is_survivor,
@@ -116,27 +215,33 @@ pub struct DepInfo {
     identifier: usize,
     parent_rdd_id: usize,
     child_rdd_id: usize, 
+    parent_op_id: OpId,
+    child_op_id: OpId,
 }
 
 impl DepInfo {
     pub fn new(is_shuffle: u8,
         identifier: usize,
         parent_rdd_id: usize,
-        child_rdd_id: usize
+        child_rdd_id: usize,
+        parent_op_id: OpId,
+        child_op_id: OpId,
     ) -> Self {
         // The last three items is useful only when is_shuffle == 1x, x == 0 or x == 1
         DepInfo {
             is_shuffle,
             identifier,
             parent_rdd_id,
-            child_rdd_id, 
+            child_rdd_id,
+            parent_op_id,
+            child_op_id, 
         }
     }
 
-    pub fn get_key(&self) -> (usize, usize) {
+    pub fn get_op_key(&self) -> (OpId, OpId) {
         (
-            map_id(self.parent_rdd_id),
-            map_id(self.child_rdd_id)
+            self.parent_op_id,
+            self.child_op_id,
         )
     }
 
@@ -232,57 +337,66 @@ impl OpCache{
         self.map.write().unwrap().remove(&(rdd_id, part_id, sub_part_id));
     }
 }
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct OpId {
+    h: u64,
+}
+
+impl OpId {
+    pub fn new(file: &'static str, line: u32, num: usize) -> Self {
+        let h = default_hash(&(file.to_string(), line, num));
+        OpId {
+            h,
+        }
+    }
+}
 
 pub struct NextOpId<'a> {
-    rdd_ids: &'a Vec<(usize, usize)>,
-    cur_seg: usize,
-    cur_rdd_id: usize,
+    rdd_ids: &'a Vec<usize>,
+    op_ids: &'a Vec<OpId>,
+    cur_idx: usize,
     cache_meta: CacheMeta,
     captured_vars: HashMap<usize, Vec<Vec<u8>>>,
     is_spec: bool,
 }
 
 impl<'a> NextOpId<'a> {
-    pub fn new(rdd_ids: &'a Vec<(usize, usize)>, cache_meta: CacheMeta, captured_vars: HashMap<usize, Vec<Vec<u8>>>, is_spec: bool) -> Self {
+    pub fn new(rdd_ids: &'a Vec<usize>, op_ids: &'a Vec<OpId>, cache_meta: CacheMeta, captured_vars: HashMap<usize, Vec<Vec<u8>>>, is_spec: bool) -> Self {
         NextOpId {
             rdd_ids,
-            cur_seg: 0,
-            cur_rdd_id: rdd_ids[0].0,
+            op_ids,
+            cur_idx: 0,
             cache_meta,
             captured_vars,
             is_spec,
         }
     }
 
-    fn get_cur_rdd_id(&mut self) -> usize {
-        let (upper, lower) = self.rdd_ids[self.cur_seg];
-        if self.cur_rdd_id >= lower && self.cur_rdd_id <= upper {
-            self.cur_rdd_id
-        } else {
-            self.cur_seg += 1;
-            self.cur_rdd_id = self.rdd_ids[self.cur_seg].0;
-            self.cur_rdd_id
-        }
+    fn get_cur_rdd_id(&self) -> usize {
+        self.rdd_ids[self.cur_idx]
+    }
+
+    fn get_cur_op_id(&self) -> OpId {
+        self.op_ids[self.cur_idx]
     }
 
     fn get_part_id(&self) -> usize {
         self.cache_meta.part_id
     }
 
-    pub fn get_cur_op(&mut self) -> &'static Arc<dyn OpBase> {
-        let cur_rdd_id = self.get_cur_rdd_id();
-        let id = map_id(cur_rdd_id);
-        load_opmap().get(&id).unwrap()
+    pub fn get_cur_op(&self) -> &'static Arc<dyn OpBase> {
+        let cur_op_id = self.get_cur_op_id();
+        load_opmap().get(&cur_op_id).unwrap()
     }
 
     pub fn get_next_op(&mut self) -> &'static Arc<dyn OpBase> {
-        self.cur_rdd_id -= 1;
-        let next_rdd_id = self.get_cur_rdd_id();
-        let id = map_id(next_rdd_id);
-        load_opmap().get(&id).unwrap()
+        self.cur_idx += 1;
+        let next_op_id = self.get_cur_op_id();
+        load_opmap().get(&next_op_id).unwrap()
     }
 
-    pub fn get_ser_captured_var(&mut self) -> Option<&Vec<Vec<u8>>> {
+    pub fn get_ser_captured_var(&self) -> Option<&Vec<Vec<u8>>> {
         let cur_rdd_id = self.get_cur_rdd_id();
         self.captured_vars.get(&cur_rdd_id)
     }
@@ -303,16 +417,16 @@ impl<'a> NextOpId<'a> {
         )
     }
 
-    pub fn have_cache(&mut self) -> bool {
+    pub fn have_cache(&self) -> bool {
         self.get_cur_rdd_id() == self.cache_meta.cached_rdd_id
     }
 
-    pub fn need_cache(&mut self) -> bool {
+    pub fn need_cache(&self) -> bool {
         self.get_cur_rdd_id() == self.cache_meta.caching_rdd_id
     }
 
     pub fn is_caching_final_rdd(&self) -> bool {
-        self.rdd_ids[0].0 == self.cache_meta.caching_rdd_id
+        self.rdd_ids[0] == self.cache_meta.caching_rdd_id
     }
 
     pub fn is_survivor(&self) -> bool {
@@ -325,65 +439,80 @@ impl<'a> NextOpId<'a> {
 }
 
 pub struct SpecOpId {
-    cur_rdd_id: usize,
-    spec_call_seq: Vec<usize>,
+    cur_op_id: OpId,
+    spec_rdd_ids: Vec<usize>,
+    spec_op_ids: Vec<OpId>,
     end: bool,
 }
 
 impl SpecOpId {
-    pub fn new(start_rdd_id: usize, cache_meta: CacheMeta) -> Self {
+    pub fn new(cache_meta: CacheMeta) -> Self {
         if cache_meta.caching_rdd_id != 0 {
             SpecOpId {
-                cur_rdd_id: start_rdd_id,
-                spec_call_seq: vec![cache_meta.caching_rdd_id],
+                cur_op_id: cache_meta.caching_op_id,
+                spec_rdd_ids: vec![cache_meta.caching_rdd_id],
+                spec_op_ids: vec![cache_meta.caching_op_id],
                 end: false,
             }
         } else {
             SpecOpId {
-                cur_rdd_id: start_rdd_id,
-                spec_call_seq: Vec::new(),
+                cur_op_id: Default::default(),
+                spec_rdd_ids: Vec::new(),
+                spec_op_ids: Vec::new(),
                 end: true,
             }
         }
     }
 
     pub fn advance(&mut self) -> bool {
-        self.cur_rdd_id += 1;
-        let child_rdd_id = self.cur_rdd_id;
-        let child_op_id = map_id(child_rdd_id);
-        let parent_rdd_id = *self.spec_call_seq.last().unwrap();
-        let parent_op_id = map_id(parent_rdd_id);
-        let child_op = if let Some(child_op) = load_opmap().get(&child_op_id) {
-            child_op
+        let parent_op_id = self.cur_op_id;
+        let parent_op = load_opmap().get(&parent_op_id).unwrap(); 
+        let may_child_op_id = BRANCH_OP_HIS.read()
+            .unwrap()
+            .get(&parent_op_id)
+            .map(|x| x.clone());
+
+        let child_op_id = if may_child_op_id.is_some() && 
+            (self.cur_op_id != self.spec_op_ids[0] || self.spec_op_ids.len() == 1) 
+        {
+            may_child_op_id.unwrap()
         } else {
             self.end = false;
             return true;
         };
-        let parent_op = load_opmap().get(&parent_op_id).unwrap();
-        let flag = child_op.has_spec_oppty(parent_op_id);
-        if flag {
-            self.spec_call_seq.push(child_rdd_id);  
-        } else {
+
+        let child_op = load_opmap().get(&child_op_id).unwrap();
+        if child_op.has_spec_oppty() {
+            self.spec_rdd_ids.push(0);  //just for padding
+            self.spec_op_ids.push(child_op_id);
             //or move it to co_grouped, parallel, etc
             //padding with 0, 0
-            let dep_info = DepInfo::new(0, 0, parent_rdd_id, child_rdd_id);
+            let dep_info = DepInfo::new(0, 0, 0, 0, parent_op_id, child_op_id);
             if let Some(shuf_dep) = parent_op.get_next_shuf_dep(&dep_info) {
-                self.spec_call_seq.push(child_rdd_id); 
                 self.end = true;
             } 
+        } else {
+            self.end = false;
+            return true;
         }
+        
+        self.cur_op_id = child_op_id;
         self.end
     }
 
-    pub fn get_spec_call_seq(&self, dep_info: &DepInfo) -> Vec<usize> {
+    pub fn get_spec_call_seq(&mut self, dep_info: &DepInfo) -> (Vec<usize>, Vec<OpId>) {
         let mut flag = !(
-            self.spec_call_seq == vec![dep_info.parent_rdd_id, dep_info.child_rdd_id]
+            self.spec_op_ids == vec![dep_info.parent_op_id, dep_info.child_op_id]
             && dep_info.dep_type() == 1
         ) && self.end;
         
         match flag {
-            true => self.spec_call_seq.clone(),
-            false => Vec::new(),
+            true => {
+                self.spec_rdd_ids.reverse();
+                self.spec_op_ids.reverse();
+                (self.spec_rdd_ids.clone(), self.spec_op_ids.clone())
+            },
+            false => (Vec::new(), Vec::new()),
         }
     }
 
@@ -393,123 +522,55 @@ impl SpecOpId {
 
 }
 
-pub fn map_id(id: usize) -> usize {
-    let lp_bd = unsafe{ lp_boundary.load(atomic::Ordering::Relaxed).as_ref()}.unwrap();
-    if lp_bd.len() == 0 {
-        return id;
-    }
-    let mut sum_rep = 0;
-    for i in lp_bd {
-        let lower_bound = i.0 + sum_rep;
-        let upper_bound = lower_bound + i.2 * (i.1 - i.0);
-        if id <= lower_bound {   //outside loop
-            return id - sum_rep;
-        } else if id > lower_bound && id <= upper_bound { //inside loop
-            let dedup_id = id - sum_rep;
-            return  (dedup_id + i.1 - 2 * i.0 - 1) % (i.1 - i.0) + i.0 + 1;
-        }
-        sum_rep += (i.2 - 1) * (i.1 - i.0);
-    }
-    return id - sum_rep;
-}
-
-pub fn load_opmap() -> &'static mut BTreeMap<usize, Arc<dyn OpBase>> {
-    unsafe { 
-        opmap.load(atomic::Ordering::Relaxed)
-            .as_mut()
-    }.unwrap()
-}
-
-pub fn insert_opmap(op_id: usize, op_base: Arc<dyn OpBase>) {
-    let op_map = load_opmap();
-    op_map.insert(op_id, op_base);
-}
-
-#[inline(always)]
-pub fn encrypt(pt: &[u8]) -> Vec<u8> {
-    let key = GenericArray::from_slice(b"abcdefg hijklmn ");
-    let cipher = Aes128Gcm::new(key);
-    let nonce = GenericArray::from_slice(b"unique nonce");
-    cipher.encrypt(nonce, pt).expect("encryption failure")
-}
-
-#[inline(always)]
-pub fn ser_encrypt<T>(pt: Vec<T>) -> Vec<u8> 
-where
-    T: serde::ser::Serialize + serde::de::DeserializeOwned + 'static
-{
-    match TypeId::of::<u8>() == TypeId::of::<T>() {
-        true => {
-            let (ptr, len, cap) = pt.into_raw_parts();
-            let rebuilt = unsafe {
-                let ptr = ptr as *mut u8;
-                Vec::from_raw_parts(ptr, len, cap)
-            };
-            encrypt(&rebuilt)
-        },
-        false => encrypt(bincode::serialize(&pt).unwrap().as_ref()),
-    } 
-}
-
-#[inline(always)]
-pub fn decrypt(ct: &[u8]) -> Vec<u8> {
-    let key = GenericArray::from_slice(b"abcdefg hijklmn ");
-    let cipher = Aes128Gcm::new(key);
-    let nonce = GenericArray::from_slice(b"unique nonce");
-    cipher.decrypt(nonce, ct).expect("decryption failure")
-}
-
-#[inline(always)]
-pub fn ser_decrypt<T>(ct: Vec<u8>) -> Vec<T> 
-where
-    T: serde::ser::Serialize + serde::de::DeserializeOwned + 'static
-{
-    if ct.len() == 0 {
-        return Vec::new();
-    }
-    match TypeId::of::<u8>() == TypeId::of::<T>() {
-        true => {
-            let pt = decrypt(&ct);
-            let (ptr, len, cap) = pt.into_raw_parts();
-            let rebuilt = unsafe {
-                let ptr = ptr as *mut T;
-                Vec::from_raw_parts(ptr, len, cap)
-            };
-            rebuilt
-        },
-        false => bincode::deserialize(decrypt(&ct).as_ref()).unwrap(),
-    }
-
-}
-
-pub fn res_enc_to_ptr<T: Clone>(result_enc: T) -> *mut u8 {
-    let result_ptr;
-    if crate::immediate_cout {
-        crate::ALLOCATOR.lock().set_switch(true);
-        result_ptr = Box::into_raw(Box::new(result_enc.clone())) as *mut u8;
-        crate::ALLOCATOR.lock().set_switch(false);
-    } else {
-        result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
-    }
-    result_ptr
-}
-
 #[derive(Default)]
 pub struct Context {
-    next_op_id: Arc<AtomicUsize>,
+    last_loc_file: RwLock<&'static str>,
+    last_loc_line: AtomicU32,
+    num: AtomicUsize,
 }
 
 impl Context {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Context {
-            next_op_id: Arc::new(AtomicUsize::new(0)),
-        })
+    pub fn new() -> Result<Arc<Self>> {
+        Ok(Arc::new(Context {
+            last_loc_file: RwLock::new("null"),
+            last_loc_line: AtomicU32::new(0), 
+            num: AtomicUsize::new(0),
+        }))
     }
 
-    pub fn new_op_id(self: &Arc<Self>) -> usize {
-        self.next_op_id.fetch_add(1, atomic::Ordering::SeqCst)
+    pub fn add_num(self: &Arc<Self>, addend: usize) -> usize {
+        self.num.fetch_add(addend, atomic::Ordering::SeqCst)
     }
 
+    pub fn set_num(self: &Arc<Self>, num: usize) {
+        self.num.store(num, atomic::Ordering::SeqCst)
+    }
+
+    pub fn new_op_id(self: &Arc<Self>, loc: &'static Location<'static>) -> OpId {
+        use atomic::Ordering::SeqCst;
+        let file = loc.file();
+        let line = loc.line();
+        
+        let num = if *self.last_loc_file.read().unwrap() != file || self.last_loc_line.load(SeqCst) != line {
+            *self.last_loc_file.write().unwrap() = file;
+            self.last_loc_line.store(line, SeqCst);
+            self.num.store(0, SeqCst);
+            0
+        } else {
+            self.num.load(SeqCst)
+        };
+        
+        let op_id = 
+        OpId::new(
+            file,
+            line,
+            num,
+        );
+        //println!("file = {:?}, line = {:?}, num = {:?}, op_id = {:?}", file, line, num, op_id);
+        op_id
+    }
+
+    #[track_caller]
     pub fn make_op<T, TE, FE, FD>(self: &Arc<Self>, fe: FE, fd: FD, num_splits: usize) -> SerArc<dyn OpE<Item = T, ItemE = TE>> 
     where
         T: Data,
@@ -518,11 +579,12 @@ impl Context {
         FD: SerFunc(TE) -> Vec<T>,
     {
         let new_op = SerArc::new(ParallelCollection::new(self.clone(), fe, fd, num_splits));
-        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         new_op
     }
 
     /// Load from a distributed source and turns it into a parallel collection.
+    #[track_caller]
     pub fn read_source<F, C, FE, FD, I: Data, O: Data, OE: Data>(
         self: &Arc<Self>,
         config: C,
@@ -540,6 +602,7 @@ impl Context {
         config.make_reader(self.clone(), func, fe, fd)
     }
 
+    #[track_caller]
     pub fn union<T: Data, TE: Data>(rdds: &[Arc<dyn OpE<Item = T, ItemE = TE>>]) -> impl OpE<Item = T, ItemE = TE> {
         Union::new(rdds)
     }
@@ -547,15 +610,17 @@ impl Context {
 }
 
 pub(crate) struct OpVals {
-    pub id: usize,
+    pub id: OpId,
     pub deps: Vec<Dependency>,
     pub context: Weak<Context>,
 }
 
 impl OpVals {
+    #[track_caller]
     pub fn new(sc: Arc<Context>) -> Self {
+        let loc = Location::caller(); 
         OpVals {
-            id: sc.new_op_id(),
+            id: sc.new_op_id(loc),
             deps: Vec::new(),
             context: Arc::downgrade(&sc),
         }
@@ -566,12 +631,12 @@ pub trait OpBase: Send + Sync {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo);
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo);
     fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo);
-    fn get_id(&self) -> usize;
+    fn get_op_id(&self) -> OpId;
     fn get_context(&self) -> Arc<Context>;
     fn get_deps(&self) -> Vec<Dependency>;
-    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(usize, usize), Dependency>>>;
+    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>;
     fn get_next_shuf_dep(&self, dep_info: &DepInfo) -> Option<Arc<dyn ShuffleDependencyTrait>> {
-        let cur_key = dep_info.get_key();
+        let cur_key = dep_info.get_op_key();
         let next_deps = self.get_next_deps().read().unwrap().clone();
         let mut res = None; 
         match next_deps.get(&cur_key) {
@@ -585,9 +650,10 @@ pub trait OpBase: Send + Sync {
     }
     //supplement
     fn sup_next_shuf_dep(&self, dep_info: &DepInfo) {
-        let cur_key = dep_info.get_key();
+        let cur_key = dep_info.get_op_key();
+        BRANCH_OP_HIS.write().unwrap().insert(cur_key.0, cur_key.1);
         let next_deps = self.get_next_deps().read().unwrap().clone();
-        if next_deps.get(&cur_key).is_none() && cur_key.0 > cur_key.1 {
+        if next_deps.get(&cur_key).is_none() {
             let child = load_opmap().get(&cur_key.1).unwrap();
             for value in child.get_deps() {
                 match value {
@@ -607,8 +673,27 @@ pub trait OpBase: Send + Sync {
             }  
         };
     }
+    fn or_insert_nar_child(&self, child: OpId) {
+        let next_deps = self.get_next_deps().read().unwrap().clone();
+        let parent = self.get_op_id();
+        let next_dep = next_deps.get(&(parent, child));
+        match next_dep {
+            None => {
+                self.get_next_deps().write().unwrap().insert(
+                    (parent, child),
+                    Dependency::NarrowDependency(
+                        Arc::new(OneToOneDependency::new(parent, child))
+                    )
+                );
+            },
+            Some(dep) => match dep {
+                Dependency::NarrowDependency(_) => (),
+                Dependency::ShuffleDependency(_) => panic!("dependency conflict!"),
+            },
+        }
+    }
     //has speculative opportunity
-    fn has_spec_oppty(&self, matching_id: usize) -> bool;
+    fn has_spec_oppty(&self) -> bool;
     fn number_of_splits(&self) -> usize;
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
         None
@@ -631,13 +716,13 @@ impl dyn OpBase {
 
 impl PartialOrd for dyn OpBase {
     fn partial_cmp(&self, other: &dyn OpBase) -> Option<Ordering> {
-        Some(self.get_id().cmp(&other.get_id()))
+        Some(self.get_op_id().cmp(&other.get_op_id()))
     }
 }
 
 impl PartialEq for dyn OpBase {
     fn eq(&self, other: &dyn OpBase) -> bool {
-        self.get_id() == other.get_id()
+        self.get_op_id() == other.get_op_id()
     }
 }
 
@@ -645,7 +730,7 @@ impl Eq for dyn OpBase {}
 
 impl Ord for dyn OpBase {
     fn cmp(&self, other: &dyn OpBase) -> Ordering {
-        self.get_id().cmp(&other.get_id())
+        self.get_op_id().cmp(&other.get_op_id())
     }
 }
 
@@ -661,8 +746,8 @@ impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo) {
         (**self).call_free_res_enc(res_ptr, dep_info);
     }
-    fn get_id(&self) -> usize {
-        (**self).get_op_base().get_id()
+    fn get_op_id(&self) -> OpId {
+        (**self).get_op_base().get_op_id()
     }
     fn get_context(&self) -> Arc<Context> {
         (**self).get_op_base().get_context()
@@ -670,11 +755,11 @@ impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     fn get_deps(&self) -> Vec<Dependency> {
         (**self).get_op_base().get_deps()
     }
-    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(usize, usize), Dependency>>> {
+    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(OpId, OpId), Dependency>>> {
         (**self).get_op_base().get_next_deps()
     }
-    fn has_spec_oppty(&self, matching_id: usize) -> bool {
-        (**self).get_op_base().has_spec_oppty(matching_id)
+    fn has_spec_oppty(&self) -> bool {
+        (**self).get_op_base().has_spec_oppty()
     }
     fn number_of_splits(&self) -> usize {
         (**self).get_op_base().number_of_splits()
@@ -990,6 +1075,7 @@ pub trait OpE: Op {
     }
     */
 
+    #[track_caller]
     fn map<U, UE, F, FE, FD>(&self, f: F, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = U, ItemE = UE>>
     where
         Self: Sized,
@@ -1000,10 +1086,11 @@ pub trait OpE: Op {
         FD: SerFunc(UE) -> Vec<U>,
     {
         let new_op = SerArc::new(Mapper::new(self.get_op(), f, fe, fd));
-        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         new_op
     }
 
+    #[track_caller]
     fn flat_map<U, UE, F, FE, FD>(&self, f: F, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = U, ItemE = UE>>
     where
         Self: Sized,
@@ -1014,11 +1101,12 @@ pub trait OpE: Op {
         FD: SerFunc(UE) -> Vec<U>,
     {
         let new_op = SerArc::new(FlatMapper::new(self.get_op(), f, fe, fd));
-        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         new_op
     }
 
-    fn reduce<F, UE, FE, FD>(&self, f: F, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = Self::Item, ItemE = UE>>
+    
+    fn reduce<F, UE, FE, FD>(&self, f: F, fe: FE, fd: FD) -> Result<Option<Self::Item>>
     where
         Self: Sized,
         UE: Data,
@@ -1036,11 +1124,12 @@ pub trait OpE: Op {
             }
         });         
         let new_op = SerArc::new(Reduced::new(self.get_ope(), reduce_partition, fe, fd));
-        insert_opmap(new_op.get_id(), new_op.get_op_base());
-        new_op
+        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        Ok(Some(Default::default()))
     }
 
-    fn fold<F, UE, FE, FD>(&self, init: Self::Item, f: F, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = Self::Item, ItemE = UE>>
+    
+    fn fold<F, UE, FE, FD>(&self, init: Self::Item, f: F, fe: FE, fd: FD) -> Result<Self::Item>
     where
         Self: Sized,
         UE: Data,
@@ -1055,11 +1144,12 @@ pub trait OpE: Op {
                 vec![iter.fold(zero.clone(), &cf)]
         });
         let new_op = SerArc::new(Fold::new(self.get_ope(), reduce_partition, fe, fd));
-        insert_opmap(new_op.get_id(), new_op.get_op_base());
-        new_op
+        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        Ok(Default::default())
     }
 
-    fn aggregate<U, UE, SF, CF, FE, FD>(&self, init: U, seq_fn: SF, comb_fn: CF, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = U, ItemE = UE>>
+    
+    fn aggregate<U, UE, SF, CF, FE, FD>(&self, init: U, seq_fn: SF, comb_fn: CF, fe: FE, fd: FD) -> Result<U>
     where
         Self: Sized,
         U: Data,
@@ -1078,20 +1168,28 @@ pub trait OpE: Op {
             move |iter: Box<dyn Iterator<Item = U>>| vec![iter.fold(zero.clone(), &comb_fn)]
         );
         let new_op = SerArc::new(Aggregated::new(self.get_ope(), reduce_partition, combine, fe, fd));
-        insert_opmap(new_op.get_id(), new_op.get_op_base());
-        new_op
+        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        Ok(Default::default())
     }
 
-    fn count(&self) -> SerArc<dyn OpE<Item = u64, ItemE = Vec<u64>>>
+    fn collect(&self) -> Result<Vec<Self::Item>> 
+    where
+        Self: Sized,
+    {
+        Ok(vec![])
+    }
+
+    fn count(&self) -> Result<u64>
     where
         Self: Sized,
     {
         let new_op = SerArc::new(Count::new(self.get_ope()));
-        insert_opmap(new_op.get_id(), new_op.get_op_base());
-        new_op
+        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        Ok(0)
     } 
 
     /// Return a new RDD containing the distinct elements in this RDD.
+    #[track_caller]
     fn distinct_with_num_partitions(
         &self,
         num_partitions: usize,
@@ -1126,15 +1224,17 @@ pub trait OpE: Op {
             pt
         });
         
-        self.map(Box::new(Fn!(|x| (Some(x), None)))
+        let mapped = self.map(Box::new(Fn!(|x| (Some(x), None)))
             as Box<
                 dyn Func(Self::Item) -> (Option<Self::Item>, Option<Self::Item>),
-            >, fe_wrapper_mp0, fd_wrapper_mp0)
-        .reduce_by_key(Box::new(Fn!(|(_x, y)| y)),
+            >, fe_wrapper_mp0, fd_wrapper_mp0);
+        self.get_context().add_num(1);
+        let reduced_by_key = mapped.reduce_by_key(Box::new(Fn!(|(_x, y)| y)),
             num_partitions,
             fe_wrapper_rd,
-            fd_wrapper_rd)
-        .map(Box::new(Fn!(|x: (
+            fd_wrapper_rd);
+        self.get_context().add_num(1);
+        reduced_by_key.map(Box::new(Fn!(|x: (
             Option<Self::Item>,
             Option<Self::Item>
         )| {
@@ -1144,6 +1244,7 @@ pub trait OpE: Op {
     }
 
     /// Return a new RDD containing the distinct elements in this RDD.
+    #[track_caller]
     fn distinct(&self) -> SerArc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>
     where
         Self: Sized,
@@ -1153,6 +1254,7 @@ pub trait OpE: Op {
         self.distinct_with_num_partitions(self.number_of_splits())
     }
 
+    #[track_caller]
     fn union(
         &self,
         other: Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>,
@@ -1164,7 +1266,7 @@ pub trait OpE: Op {
             Arc::new(self.clone()) as Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>,
             other,
         ]));
-        insert_opmap(new_op.get_id(), new_op.get_op_base());
+        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         new_op
     }
 

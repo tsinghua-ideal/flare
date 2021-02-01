@@ -1,11 +1,9 @@
-use std::boxed::Box;
-use std::string::String;
-use std::vec::Vec;
-use crate::op::*;
-use crate::Fn;
 
-pub fn group_by_sec_0() -> usize {
-    let sc = Context::new();
+use crate::*;
+
+
+pub fn group_by_sec_0() -> Result<()> {
+    let sc = Context::new()?;
     let fe = Fn!(|vp: Vec<(String, i32)>| {
         let len = vp.len();
         let mut buf0 = Vec::with_capacity(len);
@@ -53,13 +51,34 @@ pub fn group_by_sec_0() -> usize {
     });
 
 
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     let rdd0 = sc.make_op(fe, fd, 1);
     let rdd1 = rdd0.group_by_key(fe_gb, fd_gb, 4);
-    rdd1.get_id()
+    let _res = rdd1.collect().unwrap();
+    
+    Ok(())
 }
 
-pub fn group_by_sec_1() -> usize {
-    let sc = Context::new();
+pub fn group_by_sec_1() -> Result<()> {
+    let sc = Context::new()?;
 
     let fe = Fn!(|vp: Vec<(i32, i32)>| {
         let len = vp.len();
@@ -107,9 +126,30 @@ pub fn group_by_sec_1() -> usize {
         pt0.into_iter().zip(pt1.into_iter()).collect::<Vec<_>>() 
     });
 
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     let r = sc.make_op(fe, fd, 1);
     let g = r.group_by_key(fe_gb, fd_gb, 4);
-
-    g.get_id()
-
+    let _res = g.collect().unwrap();
+    
+    
+    
+    Ok(())
 }
