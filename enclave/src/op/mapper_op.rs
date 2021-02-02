@@ -40,7 +40,6 @@ where
 {
     #[track_caller]
     pub(crate) fn new(prev: Arc<dyn Op<Item = T>>, f: F, fe: FE, fd: FD) -> Self {
-        println!("new MapperOp: {:?}", Location::caller());
         let mut vals = OpVals::new(prev.get_context());
         let cur_id = vals.id;
         let prev_id = prev.get_op_id();
@@ -175,11 +174,9 @@ where
     fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
-        println!("cur_rdd_id: {:?}",  call_seq.get_cur_rdd_id());
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
             let key = call_seq.get_cached_triplet();
-            println!("cached triplet = {:?}", key);
             let val = self.get_and_remove_cached_data(key);
             return (Box::new(val.into_iter()), None); 
         }

@@ -28,9 +28,9 @@ enclave {
 
     struct cache_meta_t {
         size_t caching_rdd_id;
-        op_id_t caching_op_id;
+        struct op_id_t caching_op_id;
         size_t cached_rdd_id;
-        op_id_t cached_op_id;
+        struct op_id_t cached_op_id;
         size_t part_id;
         size_t sub_part_id;
         uint8_t is_survivor;
@@ -41,8 +41,8 @@ enclave {
         size_t identifier;
         size_t parent_rdd_id;
         size_t child_rdd_id;
-        op_id_t parent_op_id;
-        op_id_t child_op_id;
+        struct op_id_t parent_op_id;
+        struct op_id_t child_op_id;
     };
     
     trusted {
@@ -50,33 +50,33 @@ enclave {
         public size_t secure_execute(uint64_t tid,
             [user_check] uint8_t* rdd_ids,
             [user_check] uint8_t* op_ids,
-            cache_meta_t cache_meta,
-            dep_info_t dep_info, 
+            struct cache_meta_t cache_meta,
+            struct dep_info_t dep_info, 
 		    [user_check] uint8_t* input, 
 		    [user_check] uint8_t* captured_vars);
         public size_t exploit_spec_oppty(uint64_t tid,
             [user_check] uint8_t* op_ids,
-            cache_meta_t cache_meta,
-            dep_info_t dep_info);
+            struct cache_meta_t cache_meta,
+            struct dep_info_t dep_info);
         public size_t spec_execute(uint64_t tid,
             size_t spec_call_seq,
-            cache_meta_t cache_meta, 
+            struct cache_meta_t cache_meta, 
 		    [user_check] uint8_t* input,
             [user_check] uint64_t* hash_ops);
-        public void free_res_enc(op_id_t op_id,
-            dep_info_t dep_info,
+        public void free_res_enc(struct op_id_t op_id,
+            struct dep_info_t dep_info,
 		    [user_check] uint8_t* input,
             uint8_t is_spec);
-        void priv_free_res_enc(op_id_t op_id,
-            dep_info_t dep_info,
+        void priv_free_res_enc(struct op_id_t op_id,
+            struct dep_info_t dep_info,
 		    [user_check] uint8_t* input);
-        public void get_sketch(op_id_t op_id,
-            dep_info_t dep_info,
+        public void get_sketch(struct op_id_t op_id,
+            struct dep_info_t dep_info,
             [user_check] uint8_t* p_buf,
             [user_check] uint8_t* p_data_enc,
             uint8_t is_spec);
-        public void clone_out(op_id_t op_id,
-            dep_info_t dep_info,
+        public void clone_out(struct op_id_t op_id,
+            struct dep_info_t dep_info,
             size_t p_out,
             [user_check] uint8_t* p_data_enc,
             uint8_t is_spec);
