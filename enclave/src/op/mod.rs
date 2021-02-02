@@ -501,8 +501,11 @@ impl SpecOpId {
     }
 
     pub fn get_spec_call_seq(&mut self, dep_info: &DepInfo) -> (Vec<usize>, Vec<OpId>) {
-        let mut flag = !(
-            self.spec_op_ids == vec![dep_info.parent_op_id, dep_info.child_op_id]
+        let len = self.spec_op_ids.len();
+        let pair = self.spec_op_ids.get((len-2)..len);
+        let flag = !(
+            pair.is_some()
+            && pair.unwrap() == &[dep_info.parent_op_id, dep_info.child_op_id]
             && dep_info.dep_type() == 1
         ) && self.end;
         
@@ -1028,9 +1031,9 @@ pub trait OpE: Op {
                 let result_enc = self.batch_encrypt(result); 
                 //println!("In narrow(after encryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
                 let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-                println!("cur mem before copy out: {:?}, encrypt {:?} s", crate::ALLOCATOR.lock().get_memory_usage(), dur); 
+                //println!("cur mem before copy out: {:?}, encrypt {:?} s", crate::ALLOCATOR.lock().get_memory_usage(), dur); 
                 let res_ptr = res_enc_to_ptr(result_enc);
-                println!("cur mem after copy out: {:?}", crate::ALLOCATOR.lock().get_memory_usage()); 
+                //println!("cur mem after copy out: {:?}", crate::ALLOCATOR.lock().get_memory_usage()); 
                 res_ptr
             },
             false => {

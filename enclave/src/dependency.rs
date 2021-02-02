@@ -235,7 +235,7 @@ where
             .map(|_| BTreeMap::new())
             .collect::<Vec<_>>();
 
-        println!("cur mem before shuffle write: {:?}", crate::ALLOCATOR.lock().get_memory_usage()); 
+        //println!("cur mem before shuffle write: {:?}", crate::ALLOCATOR.lock().get_memory_usage()); 
         /* 
         for (count, i) in iter.enumerate() {
             let b = i.into_any().downcast::<(K, V)>().unwrap();
@@ -265,23 +265,23 @@ where
             }
         }
 
-        println!("cur mem after shuffle write: {:?}", crate::ALLOCATOR.lock().get_memory_usage());
+        //println!("cur mem after shuffle write: {:?}", crate::ALLOCATOR.lock().get_memory_usage());
 
         if is_spec {
             let now = Instant::now();
             let result = self.encrypt_buckets_spec(buckets);
             let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-            println!("cur mem before copy out: {:?}, encrypt {:?} s", crate::ALLOCATOR.lock().get_memory_usage(), dur); 
+            //println!("cur mem before copy out: {:?}, encrypt {:?} s", crate::ALLOCATOR.lock().get_memory_usage(), dur); 
             let res_ptr = res_enc_to_ptr(result);
-            println!("cur mem after copy out: {:?}", crate::ALLOCATOR.lock().get_memory_usage()); 
+            //println!("cur mem after copy out: {:?}", crate::ALLOCATOR.lock().get_memory_usage()); 
             res_ptr
         } else {
             let now = Instant::now();
             let result = self.encrypt_buckets(buckets);
             let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-            println!("cur mem before copy out: {:?}, encrypt {:?} s", crate::ALLOCATOR.lock().get_memory_usage(), dur); 
+            //println!("cur mem before copy out: {:?}, encrypt {:?} s", crate::ALLOCATOR.lock().get_memory_usage(), dur); 
             let res_ptr = res_enc_to_ptr(result);
-            println!("cur mem after copy out: {:?}", crate::ALLOCATOR.lock().get_memory_usage()); 
+            //println!("cur mem after copy out: {:?}", crate::ALLOCATOR.lock().get_memory_usage()); 
             res_ptr
         }
     }

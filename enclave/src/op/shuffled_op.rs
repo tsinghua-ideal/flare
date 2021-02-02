@@ -214,7 +214,7 @@ where
             2 => {      //Shuffle read
                 let aggregator = self.aggregator.clone(); 
                 let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<Vec<(KE, CE)>>) };
-                println!("cur mem before decryption: {:?}", crate::ALLOCATOR.lock().get_memory_usage());
+                //println!("cur mem before decryption: {:?}", crate::ALLOCATOR.lock().get_memory_usage());
                 let now = Instant::now(); 
                 let data = data_enc.clone()
                     .into_iter()
@@ -228,14 +228,14 @@ where
                         data
                     }).collect::<Vec<_>>();
                 let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-                println!("cur mem after decryption: {:?}, in enclave decrypt: {:?} s", crate::ALLOCATOR.lock().get_memory_usage(), dur);
+                //println!("cur mem after decryption: {:?}, in enclave decrypt: {:?} s", crate::ALLOCATOR.lock().get_memory_usage(), dur);
                 forget(data_enc);
                 let remained_ptr = CAVE.lock().unwrap().remove(&tid);
                 let mut combiners: BTreeMap<K, Option<C>> = match remained_ptr {
                     Some(ptr) => *unsafe { Box::from_raw(ptr as *mut u8 as *mut BTreeMap<K, Option<C>>) },
                     None => BTreeMap::new(),
                 };
-                println!("cur mem before shuffle read: {:?}", crate::ALLOCATOR.lock().get_memory_usage()); 
+                //println!("cur mem before shuffle read: {:?}", crate::ALLOCATOR.lock().get_memory_usage()); 
                 if data.len() > 0 {    
                     let mut min_max_kv = data[0].last().unwrap(); 
                     for idx in 1..data.len() {
@@ -260,7 +260,7 @@ where
                     //Temporary stored for next computation
                     CAVE.lock().unwrap().insert(tid, Box::into_raw(Box::new(remained)) as *mut u8 as usize);
                 }
-                println!("cur mem after shuffle read: {:?}", crate::ALLOCATOR.lock().get_memory_usage());
+                //println!("cur mem after shuffle read: {:?}", crate::ALLOCATOR.lock().get_memory_usage());
                 let result = combiners.into_iter().map(|(k, v)| (k, v.unwrap())).collect::<Vec<Self::Item>>();
                 let result_ptr = Box::into_raw(Box::new(result)) as *mut u8; 
                 result_ptr
@@ -270,8 +270,31 @@ where
     }
 
     fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+        let have_cache = call_seq.have_cache();
+        let need_cache = call_seq.need_cache();
+        if have_cache {
+            assert_eq!(data_ptr as usize, 0 as usize);
+            let key = call_seq.get_cached_triplet();
+            let val = self.get_and_remove_cached_data(key);
+            return (Box::new(val.into_iter()), None); 
+        }
+        
         let data = unsafe{ Box::from_raw(data_ptr as *mut Vec<(K, C)>) };
-        (Box::new(data.into_iter()), None)
+        let res_iter = Box::new(data.into_iter());
+
+        if need_cache {
+            let key = call_seq.get_caching_triplet();
+            if CACHE.get(key).is_none() { 
+                return self.set_cached_data(
+                    call_seq.is_survivor(),
+                    call_seq.is_caching_final_rdd(),
+                    key,
+                    res_iter
+                );
+            }
+        }
+
+        (res_iter, None)
     }
 }
 

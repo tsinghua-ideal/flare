@@ -108,8 +108,11 @@ lazy_static! {
         /* linear regression */
         //lr_sec()
 
+        /* transitive_closure */
+        transitive_closure_sec()
+
         // test the speculative execution in loop
-        test0_sec_0()
+        //test0_sec_0()
     };
 }
 

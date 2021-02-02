@@ -52,8 +52,12 @@ fn main() -> Result<()> {
     //lr_sec()?;
     //lr_unsec()?;
 
+    /* transitive_closure */
+    transitive_closure_sec()?;
+    //transitive_closure_unsec()?;
+
     // test the speculative execution in loop
-    test0_sec_0()?;
+    //test0_sec_0()?;
 
     Ok(())
 }

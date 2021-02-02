@@ -1,4 +1,4 @@
-use crate::dependency::OneToOneDependency;
+use crate::dependency::RangeDependency;
 use crate::op::*;
 
 pub struct Union<T: Data, TE: Data>
@@ -25,27 +25,44 @@ impl<T: Data, TE: Data> Union<T, TE>
 {
     #[track_caller]
     pub(crate) fn new(ops: &[Arc<dyn OpE<Item = T, ItemE = TE>>]) -> Self {
-        let mut vals = OpVals::new(ops[0].get_context());
-        let cur_id = vals.id;
-
-        for prev in ops {
-            let prev_id = prev.get_op_id();
-            vals.deps
-                .push(Dependency::NarrowDependency(Arc::new(
-                    OneToOneDependency::new(prev_id, cur_id)
-                )));
-            prev.get_next_deps().write().unwrap().insert(
-                (prev_id, cur_id),
-                Dependency::NarrowDependency(
-                    Arc::new(OneToOneDependency::new(prev_id, cur_id))
-                )
-            );
-        } 
-
-        let vals = Arc::new(vals);
+        let mut vals_ = OpVals::new(ops[0].get_context());
+        let cur_id = vals_.id;
+        
+        let vals; 
         let part = match Union::has_unique_partitioner(ops) {
-            true => ops[0].partitioner(),
-            false => None,
+            true => {
+                for prev in ops {
+                    let prev_id = prev.get_op_id();
+                    let new_dep = Dependency::NarrowDependency(Arc::new(
+                        OneToOneDependency::new(prev_id, cur_id)
+                    ));
+                    vals_.deps.push(new_dep.clone());
+                    prev.get_next_deps().write().unwrap().insert(
+                        (prev_id, cur_id),
+                        new_dep
+                    );
+                } 
+                vals = Arc::new(vals_);
+                Some(ops[0].partitioner().unwrap())
+            },
+            false => {
+                let mut pos = 0;
+                for prev in ops {
+                    let prev_id = prev.get_op_id();
+                    let num_parts = prev.number_of_splits();
+                    let new_dep = Dependency::NarrowDependency(Arc::new(
+                        RangeDependency::new(0, pos, num_parts, prev_id, cur_id)
+                    ));
+                    vals_.deps.push(new_dep.clone());
+                    prev.get_next_deps().write().unwrap().insert(
+                        (prev_id, cur_id),
+                        new_dep,
+                    );
+                    pos += num_parts;
+                } 
+                vals = Arc::new(vals_);
+                None
+            },
         };
         let ops: Vec<_> = ops.iter().map(|op| op.clone().into()).collect();
 
@@ -126,11 +143,20 @@ impl<T: Data, TE: Data> OpBase for Union<T, TE>
     }
     
     fn has_spec_oppty(&self) -> bool {
-        todo!()
+        //There is no item in branch_op_history for union op and its prev op
+        //Thus block the speculative execution across union op
+        true
     }
 
     fn number_of_splits(&self) -> usize {
-        todo!()
+        match &self.part {
+            None => {
+                self.ops.iter().fold(0, |acc, op| acc + op.number_of_splits())
+            },
+            Some(part) => {
+                part.get_num_of_partitions()
+            }
+        }
     }
 
     fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
@@ -181,8 +207,31 @@ impl<T: Data, TE: Data> Op for Union<T, TE>
     }
 
     fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+        let have_cache = call_seq.have_cache();
+        let need_cache = call_seq.need_cache();
+        if have_cache {
+            assert_eq!(data_ptr as usize, 0 as usize);
+            let key = call_seq.get_cached_triplet();
+            let val = self.get_and_remove_cached_data(key);
+            return (Box::new(val.into_iter()), None); 
+        }
+        
         let data = unsafe{ Box::from_raw(data_ptr as *mut Vec<Self::Item>) };
-        (Box::new(data.into_iter()), None)
+        let res_iter = Box::new(data.into_iter());
+
+        if need_cache {
+            let key = call_seq.get_caching_triplet();
+            if CACHE.get(key).is_none() { 
+                return self.set_cached_data(
+                    call_seq.is_survivor(),
+                    call_seq.is_caching_final_rdd(),
+                    key,
+                    res_iter
+                );
+            }
+        }
+
+        (res_iter, None)
     }
 
 }

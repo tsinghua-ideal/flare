@@ -77,7 +77,20 @@ pub fn transitive_closure_sec() -> Result<()> {
             .collect::<Vec<_>>() 
     });
     
-    let mut tc = sc.make_op(fe.clone(), fd.clone(), 2);
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    let mut tc = sc.make_op(fe.clone(), fd.clone(), 1);
     
     
     
@@ -96,8 +109,10 @@ pub fn transitive_closure_sec() -> Result<()> {
             .map(Fn!(|x: (u32, (u32, u32))| (x.1.1, x.1.0)), fe.clone(), fd.clone())
             .distinct().into()
     );
+
     next_count = tc.count().unwrap();
 
+    
     
     Ok(())
 }

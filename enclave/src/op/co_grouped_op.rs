@@ -434,41 +434,31 @@ where
     }
 
     fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
-        //encryption block size: 1
-        /*
-        let now = Instant::now();
-        let agg = unsafe{ Box::from_raw(data_ptr as *mut Vec<(KE, (Vec<Vec<VE>>, Vec<Vec<WE>>))>) };
-        let data = agg.iter()
-            .map(|(ke, (vve, vwe))| {
-                let (k, _v) = self.op0.get_fd()(vec![(ke.clone(), vve[0][0].clone())]).pop().unwrap();
-                let v = vve.iter().map( |ve| {
-                    let (pt_k, pt_v): (Vec<K>, Vec<V>) = self.op0.get_fd()(ve
-                            .iter()
-                            .map(|i| (ke.clone(), i.clone()))
-                            .collect::<Vec<_>>()
-                        ).into_iter()
-                        .unzip();
-                    pt_v
-                }).flatten()
-                .collect::<Vec<_>>();
-                let w = vwe.iter().map( |we| {
-                    let (pt_k, pt_w): (Vec<K>, Vec<W>) = self.op1.get_fd()(we
-                            .iter()
-                            .map(|i| (ke.clone(), i.clone()))
-                            .collect::<Vec<_>>()
-                        ).into_iter()
-                        .unzip();
-                    pt_w
-                }).flatten()
-                .collect::<Vec<_>>();
-                (k, (v, w))
-            }).collect::<Vec<_>>();
-        forget(agg);
-        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("in enclave decrypt {:?} s", dur);
-        */
+        let have_cache = call_seq.have_cache();
+        let need_cache = call_seq.need_cache();
+        if have_cache {
+            assert_eq!(data_ptr as usize, 0 as usize);
+            let key = call_seq.get_cached_triplet();
+            let val = self.get_and_remove_cached_data(key);
+            return (Box::new(val.into_iter()), None); 
+        }
+        
         let data = unsafe{ Box::from_raw(data_ptr as *mut Vec<(K, (Vec<V>, Vec<W>))>) };
-        (Box::new(data.into_iter()), None)
+        let res_iter = Box::new(data.into_iter());
+        
+        if need_cache {
+            let key = call_seq.get_caching_triplet();
+            if CACHE.get(key).is_none() { 
+                return self.set_cached_data(
+                    call_seq.is_survivor(),
+                    call_seq.is_caching_final_rdd(),
+                    key,
+                    res_iter
+                );
+            }
+        }
+
+        (res_iter, None)
     }
 }
 
