@@ -99,6 +99,10 @@ lazy_static! {
         //join_sec_1()
         //join_sec_2()
         
+        /* distinct */
+        //distinct_sec_0()
+        //distinct_unsec_0()
+
         /* reduce */
         //reduce_sec_0()
 

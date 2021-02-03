@@ -21,6 +21,7 @@ pub fn transitive_closure_sec() -> Result<()> {
     
     
     
+    
     let fe = Fn!(|vp: Vec<(u32, u32)> | -> (Vec<u8>, Vec<u8>) {
         let len = vp.len();
         let mut buf0 = Vec::with_capacity(len);
@@ -107,8 +108,8 @@ pub fn transitive_closure_sec() -> Result<()> {
     tc = tc.union(
         tc.join(edges.clone(), fe_jn.clone(), fd_jn.clone(), 1)
             .map(Fn!(|x: (u32, (u32, u32))| (x.1.1, x.1.0)), fe.clone(), fd.clone())
-            .distinct().into()
-    );
+            .into()
+    ).distinct();
 
     next_count = tc.count().unwrap();
 

@@ -5,8 +5,8 @@ use rand::Rng;
 
 pub fn transitive_closure_sec() -> Result<()> {
     let sc = Context::new()?;
-    let num_edges = 3;
-    let num_vertices = 3;
+    let num_edges = 200;
+    let num_vertices = 100;
     let mut rng = rand::thread_rng();
 
     let mut hset = HashSet::new();
@@ -20,6 +20,7 @@ pub fn transitive_closure_sec() -> Result<()> {
         }
     }
     let mut data = hset.into_iter().collect::<Vec<_>>();
+
 
     let fe = Fn!(|vp: Vec<(u32, u32)> | -> (Vec<u8>, Vec<u8>) {
         let len = vp.len();
@@ -107,8 +108,8 @@ pub fn transitive_closure_sec() -> Result<()> {
         tc = tc.union(
             tc.join(edges.clone(), fe_jn.clone(), fd_jn.clone(), 1)
                 .map(Fn!(|x: (u32, (u32, u32))| (x.1.1, x.1.0)), fe.clone(), fd.clone())
-                .distinct().into()
-        ).unwrap();
+                .into()
+        ).distinct();
         tc.cache();
         next_count = tc.secure_count().unwrap();
         println!("next_count = {:?}", next_count);
@@ -134,6 +135,7 @@ pub fn transitive_closure_unsec() -> Result<()> {
         }
     }
     let data = hset.into_iter().collect::<Vec<_>>();
+    println!("data = {:?}", data);
 
     let fe = Fn!(|vp: Vec<(u32, u32)> | -> (Vec<u8>, Vec<u8>) {
         let len = vp.len();
@@ -208,11 +210,11 @@ pub fn transitive_closure_unsec() -> Result<()> {
         tc = tc.union(
             tc.join(edges.clone(), fe_jn.clone(), fd_jn.clone(), 1)
                 .map(Fn!(|x: (u32, (u32, u32))| (x.1.1, x.1.0)), fe.clone(), fd.clone())
-                .distinct().into()
-        ).unwrap();
+                .into()
+        ).distinct();
         tc.cache();
         next_count = tc.count().unwrap();
-        println!("next_count = {:?}", next_count);
+        println!("next_count = {:?}, tc = {:?}", next_count, tc.collect().unwrap());
     }
 
     Ok(())

@@ -41,6 +41,10 @@ fn main() -> Result<()> {
     //join_sec_2()?;
     //join_unsec_2()?;
 
+    /* distinct */
+    //distinct_sec_0()?;
+    //distinct_unsec_0()?;
+
     /* reduce */
     //reduce_sec_0()?;
 

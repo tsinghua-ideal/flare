@@ -6,6 +6,8 @@ mod lr;
 pub use lr::*;
 mod micro_count;
 pub use micro_count::*;
+mod micro_distinct;
+pub use micro_distinct::*;
 mod micro_map;
 pub use micro_map::*;
 mod micro_group_by;

@@ -145,7 +145,7 @@ pub fn group_by_sec_1() -> Result<()> {
     
     
     
-    let r = sc.make_op(fe, fd, 1);
+    let r = sc.make_op(fe, fd, 4);
     let g = r.group_by_key(fe_gb, fd_gb, 4);
     let _res = g.collect().unwrap();
     

@@ -145,7 +145,7 @@ pub fn group_by_sec_1() -> Result<()> {
     }
 
     let now = Instant::now();
-    let r = sc.make_rdd(vec![], data_enc, fe, fd,1);
+    let r = sc.make_rdd(vec![], data_enc, fe, fd,4);
     let g = r.group_by_key(fe_gb, fd_gb, 4);
     let res = g.secure_collect().unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
