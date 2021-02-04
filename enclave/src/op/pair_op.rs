@@ -394,6 +394,10 @@ where
 		self.compute_start(tid, call_seq, data_ptr, dep_info)
     }
 
+    fn randomize_in_place(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
+        self.randomize_in_place_(input, seed, num)
+    }
+
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
         if id == TypeId::of::<dyn Op<Item = (K, U)>>() {
             let x = std::ptr::null::<Self>() as *const dyn Op<Item = (K, U)>;
@@ -657,6 +661,10 @@ where
     fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
         
 		self.compute_start(tid, call_seq, data_ptr, dep_info)
+    }
+
+    fn randomize_in_place(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
+        self.randomize_in_place_(input, seed, num)
     }
 
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {

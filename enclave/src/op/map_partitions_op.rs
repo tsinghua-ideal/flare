@@ -132,6 +132,10 @@ where
         self.prev.number_of_splits()
     }
 
+    fn randomize_in_place(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
+        self.randomize_in_place_(input, seed, num)
+    }
+
     fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
         
 		self.compute_start(tid, call_seq, data_ptr, dep_info)

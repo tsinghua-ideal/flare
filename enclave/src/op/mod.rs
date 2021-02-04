@@ -18,13 +18,17 @@ use std::vec::Vec;
 use aes_gcm::Aes128Gcm;
 use aes_gcm::aead::{Aead, NewAead, generic_array::GenericArray};
 use sgx_types::*;
+use rand::{Rng, SeedableRng};
 
 use crate::{BRANCH_OP_HIS, CACHE, Fn, OP_MAP};
 use crate::basic::{AnyData, Arc as SerArc, Data, Func, SerFunc};
+use crate::custom_thread::PThread;
 use crate::dependency::{Dependency, OneToOneDependency, ShuffleDependencyTrait};
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
-use crate::custom_thread::PThread;
+use crate::utils;
+use crate::utils::bounded_priority_queue::BoundedPriorityQueue;
+use crate::utils::random::{BernoulliCellSampler, BernoulliSampler, PoissonSampler, RandomSampler};
 
 mod aggregated_op;
 pub use aggregated_op::*;
@@ -46,6 +50,8 @@ mod pair_op;
 pub use pair_op::*;
 mod parallel_collection_op;
 pub use parallel_collection_op::*;
+mod partitionwise_sampled_op;
+pub use partitionwise_sampled_op::*;
 mod reduced_op;
 pub use reduced_op::*;
 mod shuffled_op;
@@ -703,6 +709,10 @@ pub trait OpBase: Send + Sync {
         None
     }
     fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8;
+    fn randomize_in_place(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8;
+    fn set_sampler(&self, with_replacement: bool, fraction: f64) {
+        unreachable!()
+    }
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject>;
 }
 
@@ -770,6 +780,12 @@ impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     }
     fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
         (**self).get_op_base().iterator_start(tid, call_seq, data_ptr, dep_info)
+    }
+    fn randomize_in_place(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
+        (**self).randomize_in_place(input, seed, num)
+    }
+    fn set_sampler(&self, with_replacement: bool, fraction: f64) {
+        (**self).set_sampler(with_replacement, fraction)
     }
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
         (**self).clone().__to_arc_op(id)
@@ -1063,6 +1079,22 @@ pub trait OpE: Op {
         result_ptr
     }
 
+    fn randomize_in_place_(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
+        let sample_enc = unsafe{ Box::from_raw(input as *mut Vec<Self::ItemE>) }; 
+        let mut sample = self.batch_decrypt(*sample_enc.clone());
+        forget(sample_enc);
+        let mut rng = if let Some(seed) = seed {
+            rand_pcg::Pcg64::seed_from_u64(seed)
+        } else {
+            // PCG with default specification state and stream params
+            utils::random::get_default_rng()
+        };
+        utils::randomize_in_place(&mut sample, &mut rng);
+        sample = sample.into_iter().take(num as usize).collect();
+        let sample_enc = self.batch_encrypt(sample);
+        res_enc_to_ptr(sample_enc)
+    }
+
     /// Return a new RDD containing only the elements that satisfy a predicate.
     /*
     fn filter<F>(&self, predicate: F) -> SerArc<dyn Op<Item = Self::Item>>
@@ -1256,6 +1288,39 @@ pub trait OpE: Op {
         Self::ItemE: Data + Eq + Hash + Ord,
     {
         self.distinct_with_num_partitions(self.number_of_splits())
+    }
+
+    #[track_caller]
+    fn sample(&self, with_replacement: bool, fraction: f64) -> SerArc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>
+    where
+        Self: Sized,
+    {
+        assert!(fraction >= 0.0);
+
+        let sampler = if with_replacement {
+            Arc::new(PoissonSampler::new(fraction, true)) as Arc<dyn RandomSampler<Self::Item>>
+        } else {
+            Arc::new(BernoulliSampler::new(fraction)) as Arc<dyn RandomSampler<Self::Item>>
+        };
+        let new_op = SerArc::new(PartitionwiseSampled::new(self.get_op(), sampler, true, self.get_fe(), self.get_fd()));
+        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        new_op
+    }
+
+    #[track_caller]
+    fn take_sample(
+        &self,
+        with_replacement: bool,
+        _num: u64,
+        _seed: Option<u64>,
+    ) -> Result<Vec<Self::Item>>
+    where
+        Self: Sized,
+    {
+        let _initial_count = self.count()?;
+        let op = self.sample(with_replacement, 0 as f64); //padding
+        let _count = op.count()?;
+        op.collect()
     }
 
     #[track_caller]

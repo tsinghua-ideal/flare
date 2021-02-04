@@ -44,8 +44,14 @@ fn main() -> Result<()> {
     //distinct_unsec_0()?;
 
     /* local file reader */
-    file_read_sec_0()?;
+    //file_read_sec_0()?;
     //file_read_unsec_0()?;
+
+    /* partition_wise_sample */
+    part_wise_sample_sec_0()?;
+    //part_wise_sample_unsec_0()?;
+    //part_wise_sample_unsec_1()?;
+    //part_wise_sample_unsec_2()?;
 
     /* reduce */
     //reduce_sec_0()?;

@@ -69,13 +69,14 @@ use atomicptr_wrapper::AtomicPtrWrapper;
 mod basic;
 mod benchmarks;
 use benchmarks::*;
+mod custom_thread;
 mod dependency;
 mod partitioner;
 mod op;
 use op::*;
 mod serialization_free;
 use serialization_free::{Construct, Idx, SizeBuf};
-mod custom_thread;
+mod utils;
 
 #[global_allocator]
 static ALLOCATOR: Locked<Allocator> = Locked::new(Allocator::new());
@@ -104,7 +105,10 @@ lazy_static! {
         //distinct_unsec_0()
 
         /* local file reader */
-        file_read_sec_0()
+        //file_read_sec_0()
+
+        /* partition_wise_sample */
+        part_wise_sample_sec_0()
 
         /* reduce */
         //reduce_sec_0()
@@ -296,6 +300,39 @@ pub extern "C" fn clone_out(op_id: OpId,
         },
         _ => panic!("invalid is_spec"),
     }
+}
+
+#[no_mangle]
+pub extern "C" fn randomize_in_place(
+    op_id: OpId,
+    input: *mut u8,
+    seed: u64,
+    is_some: u8,
+    num: u64,
+) -> usize {
+    let sample_op = load_opmap().get(&op_id).unwrap();
+    let seed = match is_some {
+        0 => None,
+        1 => Some(seed),
+        _ => panic!("Invalid is_some"),
+    };
+    let ptr = sample_op.randomize_in_place(input, seed, num);
+    ptr as usize
+}
+
+#[no_mangle]
+pub extern "C" fn set_sampler(
+    op_id: OpId,
+    with_replacement: u8,
+    fraction: f64,
+) {
+    let sample_op = load_opmap().get(&op_id).unwrap();
+    let with_replacement = match with_replacement {
+        0 => false,
+        1 => true,
+        _ => panic!("Invalid with_replacement"),
+    };
+    sample_op.set_sampler(with_replacement, fraction);
 }
 
 #[no_mangle]

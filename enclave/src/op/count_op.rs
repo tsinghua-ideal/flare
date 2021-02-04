@@ -94,6 +94,14 @@ where
 		self.compute_start(tid, call_seq, data_ptr, dep_info)
     }
 
+    fn randomize_in_place(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
+        self.prev.randomize_in_place(input, seed, num)
+    }
+
+    fn set_sampler(&self, with_replacement: bool, fraction: f64) {
+        self.prev.set_sampler(with_replacement, fraction)
+    }
+
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
         self.prev.clone().__to_arc_op(id)
     }

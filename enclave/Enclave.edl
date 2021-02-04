@@ -80,6 +80,14 @@ enclave {
             size_t p_out,
             [user_check] uint8_t* p_data_enc,
             uint8_t is_spec);
+        public size_t randomize_in_place(struct op_id_t op_id,
+            [user_check] uint8_t* input,
+            uint64_t seed,
+            uint8_t is_some,
+            uint64_t num);
+        public void set_sampler(struct op_id_t op_id,
+            uint8_t with_replacement,
+            double fraction);
         public size_t probe_caching(size_t rdd_id,
             size_t part,
             [user_check] uint8_t* cached_sub_parts,

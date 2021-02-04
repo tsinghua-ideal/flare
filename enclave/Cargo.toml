@@ -16,7 +16,6 @@ sgx_types = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
 sgx_tstd = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
 sgx_tcrypto = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
 sgx_trts = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
-sgx_rand = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
 sgx_tseal = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
 sgx_serialize = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
 sgx_alloc = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
@@ -38,6 +37,9 @@ serde_derive = { git = "https://github.com/mesalock-linux/serde-sgx" }
 serde_closure = { git = "https://github.com/AmbitionXiang/serde_closure", branch = "sgx" }
 #serde_closure = { path = "../../../sgx/ported/serde_closure" }
 spin = "0.7.0"
+rand = { git = "https://github.com/mesalock-linux/rand-sgx/" }
+rand_distr = { git = "https://github.com/mesalock-linux/rand-sgx/" }
+rand_pcg = { git = "https://github.com/mesalock-linux/rand-sgx/" }
 
 [patch.'https://github.com/apache/teaclave-sgx-sdk.git']
 sgx_alloc = { path = "../incubator-teaclave-sgx-sdk/sgx_alloc" }
