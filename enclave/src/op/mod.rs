@@ -8,7 +8,7 @@ use std::mem::forget;
 use std::raw::TraitObject;
 use std::string::ToString;
 use std::sync::{
-    atomic::{self, AtomicUsize},
+    atomic::{self, AtomicU32, AtomicUsize},
     Arc, SgxMutex as Mutex, SgxRwLock as RwLock, Weak,
 };
 use std::time::Instant;
@@ -17,10 +17,9 @@ use std::vec::Vec;
 
 use aes_gcm::Aes128Gcm;
 use aes_gcm::aead::{Aead, NewAead, generic_array::GenericArray};
-use atomic::AtomicU32;
 use sgx_types::*;
 
-use crate::{BRANCH_OP_HIS, CACHE, Fn, opmap};
+use crate::{BRANCH_OP_HIS, CACHE, Fn, OP_MAP};
 use crate::basic::{AnyData, Arc as SerArc, Data, Func, SerFunc};
 use crate::dependency::{Dependency, OneToOneDependency, ShuffleDependencyTrait};
 use crate::partitioner::Partitioner;
@@ -70,6 +69,8 @@ extern "C" {
         part_id: usize,
         sub_part_id: usize,
     ) -> sgx_status_t;
+    pub fn ocall_get_addr_map_len(ret_val: *mut usize,
+    ) -> sgx_status_t;
 }
 
 pub fn default_hash<T: Hash>(t: &T) -> u64 {
@@ -80,7 +81,7 @@ pub fn default_hash<T: Hash>(t: &T) -> u64 {
 
 pub fn load_opmap() -> &'static mut BTreeMap<OpId, Arc<dyn OpBase>> {
     unsafe { 
-        opmap.load(atomic::Ordering::Relaxed)
+        OP_MAP.load(atomic::Ordering::Relaxed)
             .as_mut()
     }.unwrap()
 }

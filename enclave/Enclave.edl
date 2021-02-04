@@ -96,7 +96,8 @@ enclave {
             allow(priv_free_res_enc); 
         size_t ocall_cache_from_outside(size_t rdd_id,
             size_t part_id,
-            size_t sub_part_id); 
+            size_t sub_part_id);
+        size_t ocall_get_addr_map_len();
         void* sbrk_o(size_t size);  
     };
 

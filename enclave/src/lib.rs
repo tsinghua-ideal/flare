@@ -54,7 +54,7 @@ use serde_closure::Fn;
 use std::boxed::Box;
 use std::collections::{btree_map::BTreeMap, HashMap};
 use std::mem::forget;
-use std::string::String;
+use std::string::{String, ToString};
 use std::sync::{atomic::Ordering, Arc, SgxRwLock as RwLock, SgxMutex as Mutex};
 use std::thread;
 use std::time::Instant;
@@ -85,7 +85,7 @@ lazy_static! {
     static ref BRANCH_OP_HIS: Arc<RwLock<HashMap<OpId, OpId>>> = Arc::new(RwLock::new(HashMap::new())); //(prev_op_id, cur_op_id)
     static ref CACHE: OpCache = OpCache::new();
     static ref CAVE: Arc<Mutex<HashMap<u64, usize>>> = Arc::new(Mutex::new(HashMap::new()));
-    static ref opmap: AtomicPtrWrapper<BTreeMap<OpId, Arc<dyn OpBase>>> = AtomicPtrWrapper::new(Box::into_raw(Box::new(BTreeMap::new()))); 
+    static ref OP_MAP: AtomicPtrWrapper<BTreeMap<OpId, Arc<dyn OpBase>>> = AtomicPtrWrapper::new(Box::into_raw(Box::new(BTreeMap::new()))); 
     static ref init: Result<()> = {
         /* map */
         //map_sec_0()
@@ -103,6 +103,9 @@ lazy_static! {
         //distinct_sec_0()
         //distinct_unsec_0()
 
+        /* local file reader */
+        file_read_sec_0()
+
         /* reduce */
         //reduce_sec_0()
 
@@ -113,7 +116,7 @@ lazy_static! {
         //lr_sec()
 
         /* transitive_closure */
-        transitive_closure_sec()
+        //transitive_closure_sec()
 
         // test the speculative execution in loop
         //test0_sec_0()
@@ -129,6 +132,7 @@ pub extern "C" fn secure_execute(tid: u64,
     input: *mut u8, 
     captured_vars: *const u8
 ) -> usize {
+    let _init = *init; //this is necessary to let it accually execute
     println!("Cur mem: {:?}, at the begining of secure execution", ALLOCATOR.lock().get_memory_usage());
     let rdd_ids = unsafe { (rdd_ids as *const Vec<usize>).as_ref() }.unwrap();
     let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();

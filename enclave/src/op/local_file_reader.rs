@@ -19,7 +19,7 @@ pub struct LocalFsReaderConfig {
 }
 
 impl LocalFsReaderConfig {
-    pub fn new<T: Into<PathBuf>>(path: T) -> LocalFsReaderConfig {
+    pub fn new<T: Into<PathBuf>>(path: T, _secure: bool) -> LocalFsReaderConfig {
         LocalFsReaderConfig {
             dir_path: path.into(),
         }
@@ -36,6 +36,7 @@ impl ReaderConfiguration<Vec<u8>> for LocalFsReaderConfig {
         FD: SerFunc(OE) -> Vec<O>,
     {
         let reader = LocalFsReader::<Vec<u8>>::new(self, context);
+        insert_opmap(reader.get_op_id(), reader.get_op_base());
         let read_files = 
             |_part: usize, readers: Box<dyn Iterator<Item = Vec<u8>>>| {
                 readers
@@ -54,11 +55,16 @@ impl ReaderConfiguration<Vec<u8>> for LocalFsReaderConfig {
             }
             pt
         };
+        reader.get_context().add_num(1);
         let files_per_executor = Arc::new(
             MapPartitions::new(Arc::new(reader) as Arc<dyn Op<Item = _>>, read_files, fe_mpp, fd_mpp),
         );
+        insert_opmap(files_per_executor.get_op_id(), files_per_executor.get_op_base());
+        files_per_executor.get_context().add_num(1);
         let decoder = Mapper::new(files_per_executor, decoder, fe, fd);
-        SerArc::new(decoder)
+        let decoder = SerArc::new(decoder);
+        insert_opmap(decoder.get_op_id(), decoder.get_op_base());
+        decoder
     }
 }
 
@@ -67,6 +73,7 @@ pub struct LocalFsReader<T> {
     id: OpId,
     path: PathBuf,
     context: Arc<Context>,
+    num_splits: Arc<AtomicUsize>,
     _marker_reader_data: PhantomData<T>,
 }
 
@@ -81,6 +88,7 @@ impl<T: Data> LocalFsReader<T> {
             id: context.new_op_id(loc),
             path: dir_path,
             context,
+            num_splits: Arc::new(AtomicUsize::new(0)),
             _marker_reader_data: PhantomData,
         }
     }
@@ -134,7 +142,26 @@ macro_rules! impl_common_lfs_opb_funcs {
         }
 
         fn number_of_splits(&self) -> usize {
-            todo!()
+            let num = self.num_splits.load(atomic::Ordering::SeqCst);
+
+            if num != 0 {
+                return num;
+            } else {
+                let mut num: usize = 0;
+                let sgx_status = unsafe { 
+                    ocall_get_addr_map_len(&mut num)
+                };
+                match sgx_status {
+                    sgx_status_t::SGX_SUCCESS => {},
+                    _ => {
+                        panic!("[-] OCALL Enclave Failed {}!", sgx_status.as_str());
+                    }
+                }
+                self.num_splits.store(num, atomic::Ordering::SeqCst);
+                assert!(num != 0);
+                return num;
+            } 
+
         }
 
         fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {

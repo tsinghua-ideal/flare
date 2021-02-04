@@ -22,8 +22,6 @@ use vega::*;
 pub mod benchmarks;
 use benchmarks::*;
 
-
-
 fn main() -> Result<()> {
     //Fn! will make the closures serializable. It is necessary. use serde_closure version 0.1.3.
 
@@ -45,6 +43,10 @@ fn main() -> Result<()> {
     //distinct_sec_0()?;
     //distinct_unsec_0()?;
 
+    /* local file reader */
+    file_read_sec_0()?;
+    //file_read_unsec_0()?;
+
     /* reduce */
     //reduce_sec_0()?;
 
@@ -57,8 +59,12 @@ fn main() -> Result<()> {
     //lr_unsec()?;
 
     /* transitive_closure */
-    transitive_closure_sec()?;
+    //transitive_closure_sec()?;
     //transitive_closure_unsec()?;
+
+    /* kmeans */
+    //kmeans_sec_0()?;
+    //kmeans_unsec_0()?;
 
     // test the speculative execution in loop
     //test0_sec_0()?;
