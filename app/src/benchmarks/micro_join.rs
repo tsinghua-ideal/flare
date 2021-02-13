@@ -126,7 +126,7 @@ pub fn join_sec_0() -> Result<()> {
         1);
     let rdd2 = rdd1.join(rdd0.clone(), fe_jn, fd_jn,1);
     let res = rdd2.secure_collect().unwrap();
-    println!("result: {:?}", rdd2.batch_decrypt(res));
+    println!("result: {:?}", res.to_plain());
     Ok(())
 }
    
@@ -237,7 +237,7 @@ pub fn join_sec_1() -> Result<()> {
         1);
     let rdd2 = rdd1.join(rdd0.clone(), fe_jn, fd_jn,1);
     let res = rdd2.secure_collect().unwrap();
-    println!("result: {:?}", rdd2.batch_decrypt(res));
+    println!("result: {:?}", res.to_plain());
     Ok(())
 }
     
@@ -339,7 +339,7 @@ pub fn join_sec_2() -> Result<()> {
     let _res = rdd2.secure_collect().unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
-    println!("result: {:?}", rdd2.batch_decrypt(_res).len());
+    println!("result: {:?}", _res.to_plain().len());
     Ok(())
 }
 

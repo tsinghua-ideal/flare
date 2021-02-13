@@ -5,10 +5,11 @@ use std::collections::{btree_map::BTreeMap, hash_map::DefaultHasher, HashMap, Ha
 use std::cmp::{min, Ordering, Reverse};
 use std::hash::{Hash, Hasher};
 use std::mem::forget;
+use std::ops::{Deref, DerefMut};
 use std::raw::TraitObject;
 use std::string::ToString;
 use std::sync::{
-    atomic::{self, AtomicU32, AtomicUsize},
+    atomic::{self, AtomicBool, AtomicU32, AtomicUsize},
     Arc, SgxMutex as Mutex, SgxRwLock as RwLock, Weak,
 };
 use std::time::Instant;
@@ -58,6 +59,12 @@ mod shuffled_op;
 pub use shuffled_op::*;
 mod union_op;
 pub use union_op::*;
+
+type PT<T, TE> = Text<T, TE, 
+    Box<dyn Fn(T) -> TE>, 
+    Box<dyn Fn(TE) -> T>
+    >;
+pub type OText<T> = Text<T, T, Box<dyn Fn(T) -> T>, Box<dyn Fn(T) -> T> >; 
 
 pub const MAX_ENC_BL: usize = 1000;
 pub type Result<T> = std::result::Result<T, &'static str>;
@@ -154,6 +161,37 @@ where
 
 }
 
+fn batch_encrypt<T, TE, FE>(mut data: Vec<T>, fe: FE) -> Vec<TE> 
+where
+    FE: Func(Vec<T>)->TE
+{
+    let mut len = data.len();
+    let mut data_enc = Vec::with_capacity(len);
+    while len >= MAX_ENC_BL {
+        len -= MAX_ENC_BL;
+        let remain = data.split_off(MAX_ENC_BL);
+        let input = data;
+        data = remain;
+        data_enc.push(fe(input));
+    }
+    if len != 0 {
+        data_enc.push(fe(data));
+    }
+    data_enc
+}
+
+fn batch_decrypt<T, TE, FD>(data_enc: Vec<TE>, fd: FD) -> Vec<T> 
+where
+    FD: Func(TE)->Vec<T>
+{
+    let mut data = Vec::new();
+    for block in data_enc {
+        let mut pt = fd(block);
+        data.append(&mut pt); //need to check security
+    }
+    data
+}
+
 pub fn res_enc_to_ptr<T: Clone>(result_enc: T) -> *mut u8 {
     let result_ptr;
     if crate::immediate_cout {
@@ -164,6 +202,20 @@ pub fn res_enc_to_ptr<T: Clone>(result_enc: T) -> *mut u8 {
         result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
     }
     result_ptr
+}
+
+#[track_caller]
+fn get_text_loc_id() -> u64 {
+    let loc = Location::caller();
+    let file = loc.file().replace("_", "");
+    let line = loc.line();
+    let num = 0;
+    let id = OpId::new(
+        &file,
+        line,
+        num,
+    ).h;
+    id
 }
 
 #[repr(C)]
@@ -270,6 +322,163 @@ impl DepInfo {
 
 }
 
+#[derive(Debug, Default)]
+pub struct Text<T, TE, FE, FD> 
+where
+    T: Data,
+    TE: Data,
+    FE: Fn(T) -> TE, 
+    FD: Fn(TE) -> T,
+{
+    data: T,
+    id: u64,
+    bfe: Option<FE>,
+    bfd: Option<FD>,
+}
+
+impl<T, TE, FE, FD> Text<T, TE, FE, FD> 
+where
+    T: Data,
+    TE: Data,
+    FE: Fn(T) -> TE, 
+    FD: Fn(TE) -> T,
+{
+    #[track_caller]
+    pub fn new(data: T, bfe: Option<FE>, bfd: Option<FD>) -> Self {
+        let id = get_text_loc_id();
+        Text {
+            data,
+            id,
+            bfe,
+            bfd,
+        }
+    }
+
+    #[track_caller]
+    pub fn rec(tail_info: &TailCompInfo, bfe: Option<FE>, bfd: Option<FD>) -> Self {
+        let id = get_text_loc_id();
+        let data = match tail_info.get(id) {
+            Some(data_enc) => {
+                match &bfd {
+                    Some(bfd) => bfd(data_enc),
+                    None => {
+                        let data_enc = Box::new(data_enc) as Box<dyn Any>;
+                        *data_enc.downcast::<T>().unwrap()
+                    },
+                }
+            },
+            None => {
+                Default::default()
+            },
+        };
+
+        Text {
+            data,
+            id,
+            bfe,
+            bfd,
+        }
+    }
+
+    pub fn get_ct(&self) -> TE {
+        match &self.bfe {
+            Some(bfe) => bfe(self.data.clone()),
+            None => {
+                let data_enc = Box::new(self.data.clone()) as Box<dyn Any>;
+                *data_enc.downcast::<TE>().unwrap()
+            },
+        }
+    }
+
+    pub fn get_pt(&self) -> T {
+        self.data.clone()
+    }
+
+    pub fn get_tail_info(&self) -> (u64, &T) {
+        (self.id, &self.data)
+    }
+
+    pub fn update_from_tail_info(&mut self, tail_info: &TailCompInfo) {
+        let data_enc = tail_info.get(self.id).unwrap();
+        self.data = match &self.bfd {
+            Some(bfd) => bfd(data_enc),
+            None => {
+                let data_enc = Box::new(data_enc) as Box<dyn Any>;
+                *data_enc.downcast::<T>().unwrap()
+            },
+        };
+    }
+
+}
+
+impl<T, TE, FE, FD> Deref for Text<T, TE, FE, FD> 
+where
+    T: Data,
+    TE: Data,
+    FE: Fn(T) -> TE, 
+    FD: Fn(TE) -> T,
+{
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.data
+    }
+}
+
+impl<T, TE, FE, FD> DerefMut for Text<T, TE, FE, FD> 
+where
+    T: Data,
+    TE: Data,
+    FE: Fn(T) -> TE, 
+    FD: Fn(TE) -> T,
+{
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.data
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Debug, Default)]
+pub struct TailCompInfo {
+    m: HashMap<u64, Vec<u8>>,
+}
+
+impl TailCompInfo {
+    pub fn new() -> Self {
+        TailCompInfo {
+            m: HashMap::new(),
+        }
+    }
+
+    pub fn insert<T, TE, FE, FD>(&mut self, text: &Text<T, TE, FE, FD>)
+    where
+        T: Data,
+        TE: Data,
+        FE: Fn(T) -> TE, 
+        FD: Fn(TE) -> T,
+    {
+        let ser = bincode::serialize(&text.get_ct()).unwrap();
+        self.m.insert(text.id, ser);
+    }
+
+    pub fn remove<TE: Data>(&mut self, id: u64) -> TE {
+        let ser = self.m.remove(&id).unwrap();
+        bincode::deserialize(&ser).unwrap()
+    }
+
+    pub fn get<TE: Data>(&self, id: u64) -> Option<TE> {
+        match self.m.get(&id) {
+            Some(ser) => Some(bincode::deserialize(&ser).unwrap()),
+            None => None,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.m.clear();
+    }
+
+}
+
 #[derive(Clone)]
 pub struct OpCache {
     //<(cached_rdd_id, part_id, sub_part_id), data>, data can not be Any object, required by lazy_static
@@ -351,7 +560,7 @@ pub struct OpId {
 }
 
 impl OpId {
-    pub fn new(file: &'static str, line: u32, num: usize) -> Self {
+    pub fn new(file: &str, line: u32, num: usize) -> Self {
         let h = default_hash(&(file.to_string(), line, num));
         OpId {
             h,
@@ -537,6 +746,7 @@ pub struct Context {
     last_loc_file: RwLock<&'static str>,
     last_loc_line: AtomicU32,
     num: AtomicUsize,
+    is_tail_comp: AtomicBool,
 }
 
 impl Context {
@@ -545,6 +755,7 @@ impl Context {
             last_loc_file: RwLock::new("null"),
             last_loc_line: AtomicU32::new(0), 
             num: AtomicUsize::new(0),
+            is_tail_comp: AtomicBool::new(false),
         }))
     }
 
@@ -554,6 +765,14 @@ impl Context {
 
     pub fn set_num(self: &Arc<Self>, num: usize) {
         self.num.store(num, atomic::Ordering::SeqCst)
+    }
+
+    pub fn set_is_tail_comp(self: &Arc<Self>, is_tail_comp: bool) {
+        self.is_tail_comp.store(is_tail_comp, atomic::Ordering::SeqCst)
+    }
+
+    pub fn get_is_tail_comp(self: &Arc<Self>) -> bool {
+        self.is_tail_comp.load(atomic::Ordering::SeqCst)
     }
 
     pub fn new_op_id(self: &Arc<Self>, loc: &'static Location<'static>) -> OpId {
@@ -576,7 +795,6 @@ impl Context {
             line,
             num,
         );
-        //println!("file = {:?}, line = {:?}, num = {:?}, op_id = {:?}", file, line, num, op_id);
         op_id
     }
 
@@ -589,7 +807,9 @@ impl Context {
         FD: SerFunc(TE) -> Vec<T>,
     {
         let new_op = SerArc::new(ParallelCollection::new(self.clone(), fe, fd, num_splits));
-        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        if !self.get_is_tail_comp() {
+            insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        }
         new_op
     }
 
@@ -608,7 +828,6 @@ impl Context {
         FE: SerFunc(Vec<O>) -> OE,
         FD: SerFunc(OE) -> Vec<O>,
     {
-        //need to do insert opmap
         config.make_reader(self.clone(), func, fe, fd)
     }
 
@@ -709,7 +928,7 @@ pub trait OpBase: Send + Sync {
         None
     }
     fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8;
-    fn randomize_in_place(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8;
+    fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8;
     fn set_sampler(&self, with_replacement: bool, fraction: f64) {
         unreachable!()
     }
@@ -781,7 +1000,7 @@ impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
         (**self).get_op_base().iterator_start(tid, call_seq, data_ptr, dep_info)
     }
-    fn randomize_in_place(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
+    fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
         (**self).randomize_in_place(input, seed, num)
     }
     fn set_sampler(&self, with_replacement: bool, fraction: f64) {
@@ -1079,10 +1298,9 @@ pub trait OpE: Op {
         result_ptr
     }
 
-    fn randomize_in_place_(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
-        let sample_enc = unsafe{ Box::from_raw(input as *mut Vec<Self::ItemE>) }; 
-        let mut sample = self.batch_decrypt(*sample_enc.clone());
-        forget(sample_enc);
+    fn randomize_in_place_(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
+        let sample_enc = unsafe{ (input as *const Vec<Self::ItemE>).as_ref() }.unwrap(); 
+        let mut sample = self.batch_decrypt(sample_enc.to_vec());
         let mut rng = if let Some(seed) = seed {
             rand_pcg::Pcg64::seed_from_u64(seed)
         } else {
@@ -1122,7 +1340,9 @@ pub trait OpE: Op {
         FD: SerFunc(UE) -> Vec<U>,
     {
         let new_op = SerArc::new(Mapper::new(self.get_op(), f, fe, fd));
-        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        if !self.get_context().get_is_tail_comp() {
+            insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        }
         new_op
     }
 
@@ -1137,12 +1357,14 @@ pub trait OpE: Op {
         FD: SerFunc(UE) -> Vec<U>,
     {
         let new_op = SerArc::new(FlatMapper::new(self.get_op(), f, fe, fd));
-        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        if !self.get_context().get_is_tail_comp() {
+            insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        }
         new_op
     }
 
-    
-    fn reduce<F, UE, FE, FD>(&self, f: F, fe: FE, fd: FD) -> Result<Option<Self::Item>>
+    #[track_caller]
+    fn reduce<F, UE, FE, FD>(&self, f: F, fe: FE, fd: FD) -> Result<PT<Vec<Self::Item>, Vec<UE>>>
     where
         Self: Sized,
         UE: Data,
@@ -1159,13 +1381,37 @@ pub trait OpE: Op {
                 Some(e) => vec![e],
             }
         });         
-        let new_op = SerArc::new(Reduced::new(self.get_ope(), reduce_partition, fe, fd));
+        let new_op = SerArc::new(Reduced::new(self.get_ope(), reduce_partition, fe.clone(), fd.clone()));
         insert_opmap(new_op.get_op_id(), new_op.get_op_base());
-        Ok(Some(Default::default()))
+        let bfe = Box::new(move |data| {
+            batch_encrypt(data, fe.clone())
+        });
+        let bfd = Box::new(move |data_enc| {
+            batch_decrypt(data_enc, fd.clone())
+        });
+        Ok(Text::new(Default::default(), Some(bfe), Some(bfd)))
     }
 
-    
-    fn fold<F, UE, FE, FD>(&self, init: Self::Item, f: F, fe: FE, fd: FD) -> Result<Self::Item>
+    #[track_caller]
+    fn secure_reduce<F, UE, FE, FD>(&self, f: F, fe: FE, fd: FD, tail_info: &TailCompInfo) -> Result<PT<Vec<Self::Item>, Vec<UE>>>
+    where
+        Self: Sized,
+        UE: Data,
+        F: SerFunc(Self::Item, Self::Item) -> Self::Item,
+        FE: SerFunc(Vec<Self::Item>) -> UE,
+        FD: SerFunc(UE) -> Vec<Self::Item>,
+    {
+        let bfe = Box::new(move |data| {
+            batch_encrypt(data, fe.clone())
+        });
+        let bfd = Box::new(move |data_enc| {
+            batch_decrypt(data_enc, fd.clone())
+        });
+        Ok(Text::rec(tail_info, Some(bfe), Some(bfd)))
+    }
+
+    #[track_caller]
+    fn fold<F, UE, FE, FD>(&self, init: Self::Item, f: F, fe: FE, fd: FD) -> Result<PT<Vec<Self::Item>, Vec<UE>>>
     where
         Self: Sized,
         UE: Data,
@@ -1179,13 +1425,37 @@ pub trait OpE: Op {
             move |iter: Box<dyn Iterator<Item = Self::Item>>| {
                 vec![iter.fold(zero.clone(), &cf)]
         });
-        let new_op = SerArc::new(Fold::new(self.get_ope(), reduce_partition, fe, fd));
+        let new_op = SerArc::new(Fold::new(self.get_ope(), reduce_partition, fe.clone(), fd.clone()));
         insert_opmap(new_op.get_op_id(), new_op.get_op_base());
-        Ok(Default::default())
+        let bfe = Box::new(move |data| {
+            batch_encrypt(data, fe.clone())
+        });
+        let bfd = Box::new(move |data_enc| {
+            batch_decrypt(data_enc, fd.clone())
+        });
+        Ok(Text::new(Default::default(), Some(bfe), Some(bfd)))
     }
 
-    
-    fn aggregate<U, UE, SF, CF, FE, FD>(&self, init: U, seq_fn: SF, comb_fn: CF, fe: FE, fd: FD) -> Result<U>
+    #[track_caller]
+    fn secure_fold<F, UE, FE, FD>(&self, init: Self::Item, f: F, fe: FE, fd: FD, tail_info: &TailCompInfo) -> Result<PT<Vec<Self::Item>, Vec<UE>>>
+    where
+        Self: Sized,
+        UE: Data,
+        F: SerFunc(Self::Item, Self::Item) -> Self::Item,
+        FE: SerFunc(Vec<Self::Item>) -> UE,
+        FD: SerFunc(UE) -> Vec<Self::Item>,
+    {
+        let bfe = Box::new(move |data| {
+            batch_encrypt(data, fe.clone())
+        });
+        let bfd = Box::new(move |data_enc| {
+            batch_decrypt(data_enc, fd.clone())
+        });
+        Ok(Text::rec(tail_info, Some(bfe), Some(bfd)))
+    }
+
+    #[track_caller]
+    fn aggregate<U, UE, SF, CF, FE, FD>(&self, init: U, seq_fn: SF, comb_fn: CF, fe: FE, fd: FD) -> Result<PT<Vec<U>, Vec<UE>>>
     where
         Self: Sized,
         U: Data,
@@ -1203,16 +1473,59 @@ pub trait OpE: Op {
         let combine = Fn!(
             move |iter: Box<dyn Iterator<Item = U>>| vec![iter.fold(zero.clone(), &comb_fn)]
         );
-        let new_op = SerArc::new(Aggregated::new(self.get_ope(), reduce_partition, combine, fe, fd));
+        let new_op = SerArc::new(Aggregated::new(self.get_ope(), reduce_partition, combine, fe.clone(), fd.clone()));
         insert_opmap(new_op.get_op_id(), new_op.get_op_base());
-        Ok(Default::default())
+        let bfe = Box::new(move |data| {
+            batch_encrypt(data, fe.clone())
+        });
+        let bfd = Box::new(move |data_enc| {
+            batch_decrypt(data_enc, fd.clone())
+        });
+        Ok(Text::new(Default::default(), Some(bfe), Some(bfd)))
     }
 
-    fn collect(&self) -> Result<Vec<Self::Item>> 
+    #[track_caller]
+    fn secure_aggregate<U, UE, SF, CF, FE, FD>(&self, init: U, seq_fn: SF, comb_fn: CF, fe: FE, fd: FD, tail_info: &TailCompInfo) -> Result<PT<Vec<U>, Vec<UE>>>
+    where
+        Self: Sized,
+        U: Data,
+        UE: Data,
+        SF: SerFunc(U, Self::Item) -> U,
+        CF: SerFunc(U, U) -> U,
+        FE: SerFunc(Vec<U>) -> UE,
+        FD: SerFunc(UE) -> Vec<U>,
+    {
+        let bfe = Box::new(move |data| {
+            batch_encrypt(data, fe.clone())
+        });
+        let bfd = Box::new(move |data_enc| {
+            batch_decrypt(data_enc, fd.clone())
+        });
+        Ok(Text::rec(tail_info, Some(bfe), Some(bfd)))
+    }
+
+    #[track_caller]
+    fn collect(&self) -> Result<PT<Vec<Self::Item>, Vec<Self::ItemE>>> 
     where
         Self: Sized,
     {
-        Ok(vec![])
+        let fe = self.get_fe();
+        let fd = self.get_fd();
+        let bfe = Box::new(move |data| batch_encrypt(data, fe.clone()));
+        let bfd = Box::new(move |data_enc| batch_decrypt(data_enc, fd.clone()));
+        Ok(Text::new(vec![], Some(bfe), Some(bfd)))
+    }
+
+    #[track_caller]
+    fn secure_collect(&self, tail_info: &TailCompInfo) -> Result<PT<Vec<Self::Item>, Vec<Self::ItemE>>> 
+    where
+        Self: Sized,
+    {
+        let fe = self.get_fe();
+        let fd = self.get_fd();
+        let bfe = Box::new(move |data| batch_encrypt(data, fe.clone()));
+        let bfd = Box::new(move |data_enc| batch_decrypt(data_enc, fd.clone()));
+        Ok(Text::rec(tail_info, Some(bfe), Some(bfd)))
     }
 
     fn count(&self) -> Result<u64>
@@ -1220,7 +1533,9 @@ pub trait OpE: Op {
         Self: Sized,
     {
         let new_op = SerArc::new(Count::new(self.get_ope()));
-        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        if !self.get_context().get_is_tail_comp() {
+            insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        }
         Ok(0)
     } 
 
@@ -1303,7 +1618,9 @@ pub trait OpE: Op {
             Arc::new(BernoulliSampler::new(fraction)) as Arc<dyn RandomSampler<Self::Item>>
         };
         let new_op = SerArc::new(PartitionwiseSampled::new(self.get_op(), sampler, true, self.get_fe(), self.get_fd()));
-        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        if !self.get_context().get_is_tail_comp() {
+            insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        }
         new_op
     }
 
@@ -1313,7 +1630,7 @@ pub trait OpE: Op {
         with_replacement: bool,
         _num: u64,
         _seed: Option<u64>,
-    ) -> Result<Vec<Self::Item>>
+    ) -> Result<PT<Vec<Self::Item>, Vec<Self::ItemE>>>
     where
         Self: Sized,
     {
@@ -1321,6 +1638,22 @@ pub trait OpE: Op {
         let op = self.sample(with_replacement, 0 as f64); //padding
         let _count = op.count()?;
         op.collect()
+    }
+
+    #[track_caller]
+    fn secure_take_sample(
+        &self,
+        with_replacement: bool,
+        _num: u64,
+        _seed: Option<u64>,
+        tail_info: &TailCompInfo,
+    ) -> Result<PT<Vec<Self::Item>, Vec<Self::ItemE>>>
+    where
+        Self: Sized,
+    {
+        let op = self.sample(with_replacement, 0 as f64); //padding
+        let r = op.secure_collect(tail_info);
+        r
     }
 
     #[track_caller]
@@ -1335,7 +1668,9 @@ pub trait OpE: Op {
             Arc::new(self.clone()) as Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>,
             other,
         ]));
-        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        if !self.get_context().get_is_tail_comp() {
+            insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        }
         new_op
     }
 

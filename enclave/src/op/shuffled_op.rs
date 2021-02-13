@@ -166,7 +166,7 @@ where
 		self.compute_start(tid, call_seq, data_ptr, dep_info)
     }
 
-    fn randomize_in_place(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
+    fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
         self.randomize_in_place_(input, seed, num)
     }
 

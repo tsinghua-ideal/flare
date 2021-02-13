@@ -36,7 +36,9 @@ impl ReaderConfiguration<Vec<u8>> for LocalFsReaderConfig {
         FD: SerFunc(OE) -> Vec<O>,
     {
         let reader = LocalFsReader::<Vec<u8>>::new(self, context);
-        insert_opmap(reader.get_op_id(), reader.get_op_base());
+        if !reader.get_context().get_is_tail_comp() {
+            insert_opmap(reader.get_op_id(), reader.get_op_base());
+        }
         let read_files = 
             |_part: usize, readers: Box<dyn Iterator<Item = Vec<u8>>>| {
                 readers
@@ -164,7 +166,7 @@ macro_rules! impl_common_lfs_opb_funcs {
 
         }
 
-        fn randomize_in_place(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
+        fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
             self.randomize_in_place_(input, seed, num)
         }
 

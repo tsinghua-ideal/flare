@@ -73,7 +73,7 @@ pub fn group_by_sec_0() -> Result<()> {
     let rdd0 = sc.make_rdd(vec![], data, fe, fd, 1);
     let rdd1 = rdd0.group_by_key(fe_gb, fd_gb, 4);
     let res = rdd1.secure_collect().unwrap();
-    println!("result: {:?}", rdd1.batch_decrypt(res));
+    println!("result: {:?}", res.to_plain());
     Ok(())
 }
 
@@ -150,6 +150,6 @@ pub fn group_by_sec_1() -> Result<()> {
     let res = g.secure_collect().unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
-    println!("result.len(): {:?}", g.batch_decrypt(res).len());
+    println!("result.len(): {:?}", res.to_plain().len());
     Ok(())
 }

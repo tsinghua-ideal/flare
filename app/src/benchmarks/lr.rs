@@ -62,7 +62,7 @@ pub fn lr_sec() -> Result<()> {
     }
 
     let points_rdd = sc.make_rdd(vec![], data_enc, fe, fd, 1);
-    let mut w = rng.gen::<f32>();
+    let mut w = rng.gen::<f32>();  //TODO: wrapper with Ciphertext? 
     let now = Instant::now();
     for i in 0..3 {
         let g = points_rdd.map(Fn!(move |p: Point| 
@@ -71,7 +71,7 @@ pub fn lr_sec() -> Result<()> {
             fe_mp, 
             fd_mp
         ).secure_reduce(Fn!(|x, y| x+y), fe_rd, fd_rd).unwrap();
-        w -= g.unwrap()[0];
+        w -= g.to_plain()[0];
         println!("{:?}: w = {:?}", i, w);
     } 
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
@@ -109,7 +109,7 @@ pub fn lr_unsec() -> Result<()> {
     } 
 
     let points_rdd = sc.make_rdd(data, vec![], fe, fd, 1);
-    let mut w = rng.gen::<f32>();
+    let mut w = rng.gen::<f32>(); 
     let iter_num = 3;
     let now = Instant::now();
     for i in 0..iter_num {

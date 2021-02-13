@@ -36,7 +36,7 @@ pub fn map_sec_0() -> Result<()> {
     let res = rdd1.secure_collect().unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
-    println!("result: {:?}", rdd1.batch_decrypt(res).len());
+    println!("result: {:?}", res.to_plain().len());
     Ok(())
 }
     

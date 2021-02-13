@@ -1,27 +1,6 @@
-
 use std::path::PathBuf;
 
-
 use crate::*;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 pub fn file_read_sec_0() -> Result<()> {
@@ -49,14 +28,7 @@ pub fn file_read_sec_0() -> Result<()> {
         pt0
     });
 
-    // Multiple files test
-    let dir = PathBuf::from("/tmp").join("ct_dir");
-    
-    
-    
-    
-    
-    
+    let dir = PathBuf::from("/tmp/ct_lf");
     let deserializer = Fn!(|file: Vec<u8>| {
         String::from_utf8(file)
             .unwrap()

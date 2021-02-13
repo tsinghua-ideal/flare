@@ -1,28 +1,7 @@
-use std::fs::{create_dir_all, File};
 use std::path::PathBuf;
-use std::io::prelude::*;
 use vega::io::*;
 use vega::*;
 
-#[allow(unused_must_use)]
-fn set_up(file_name: &str, secure: bool) {
-    let mut dir = PathBuf::from("/tmp");
-    let mut fixture =
-        b"This is some textual test data.\nCan be converted to strings and there are two lines.".to_vec();
-    if secure {
-        dir = dir.join("ct_dir");
-        fixture = ser_encrypt(fixture);
-    } else {
-        dir = dir.join("pt_dir");
-    }
-    println!("Creating tests in dir: {}", (&dir).to_str().unwrap());
-    create_dir_all(&dir);
-
-    if !std::path::Path::new(file_name).exists() {
-        let mut f = File::create(dir.join(file_name)).unwrap();
-        f.write_all(&fixture).unwrap();
-    }
-}
 
 pub fn file_read_sec_0() -> Result<()> {
     let context = Context::new()?;
@@ -49,14 +28,7 @@ pub fn file_read_sec_0() -> Result<()> {
         pt0
     });
 
-    // Multiple files test
-    let dir = PathBuf::from("/tmp").join("ct_dir");
-    (0..10).for_each(|idx| {
-        let f_name = format!("test_file_{}", idx);
-        let path = dir.join(f_name.as_str());
-        set_up(path.as_path().to_str().unwrap(), true);
-    });
-
+    let dir = PathBuf::from("/tmp/ct_lf");
     let deserializer = Fn!(|file: Vec<u8>| {
         String::from_utf8(file)
             .unwrap()
@@ -76,21 +48,14 @@ pub fn file_read_sec_0() -> Result<()> {
     }), fe_fmp, fd_fmp);
     let uniline = line.distinct();
     let res = uniline.secure_collect().unwrap();
-    println!("result: {:?}", uniline.batch_decrypt(res));
+    println!("result: {:?}", res.to_plain());
     Ok(())
 }
 
 pub fn file_read_unsec_0() -> Result<()> {
     let context = Context::new()?;
 
-    // Multiple files test
-    let dir = PathBuf::from("/tmp").join("pt_dir");
-    (0..10).for_each(|idx| {
-        let f_name = format!("test_file_{}", idx);
-        let path = dir.join(f_name.as_str());
-        set_up(path.as_path().to_str().unwrap(), false);
-    });
-
+    let dir = PathBuf::from("/tmp/pt_lf");
     let deserializer = Fn!(|file: Vec<u8>| {
         String::from_utf8(file)
             .unwrap()

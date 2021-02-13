@@ -71,7 +71,7 @@ pub fn lr_sec() -> Result<()> {
                 fe_mp,
                 fd_mp,
             ).reduce(Fn!(|x, y| x+y), fe_rd, fd_rd).unwrap();
-    w -= g.unwrap();
+    w -= g[0];
     
     
     

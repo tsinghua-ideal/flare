@@ -108,13 +108,16 @@ lazy_static! {
         //file_read_sec_0()
 
         /* partition_wise_sample */
-        part_wise_sample_sec_0()
+        //part_wise_sample_sec_0()
 
         /* reduce */
         //reduce_sec_0()
 
         /* count */
         //count_sec_0()
+
+        /* kmeans */
+        kmeans_sec_0()
 
         /* linear regression */
         //lr_sec()
@@ -141,7 +144,7 @@ pub extern "C" fn secure_execute(tid: u64,
     let rdd_ids = unsafe { (rdd_ids as *const Vec<usize>).as_ref() }.unwrap();
     let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();
     let captured_vars = unsafe { (captured_vars as *const HashMap<usize, Vec<Vec<u8>>>).as_ref() }.unwrap();
-    println!("rdd id = {:?}, dep_info = {:?}, cache_meta = {:?}", rdd_ids[0], dep_info, cache_meta);
+    println!("rdd ids = {:?}, dep_info = {:?}, cache_meta = {:?}", rdd_ids, dep_info, cache_meta);
     
     let now = Instant::now();
     let mut call_seq = NextOpId::new(rdd_ids, op_ids, cache_meta.clone(), captured_vars.clone(), false);
@@ -305,7 +308,7 @@ pub extern "C" fn clone_out(op_id: OpId,
 #[no_mangle]
 pub extern "C" fn randomize_in_place(
     op_id: OpId,
-    input: *mut u8,
+    input: *const u8,
     seed: u64,
     is_some: u8,
     num: u64,
@@ -333,6 +336,27 @@ pub extern "C" fn set_sampler(
         _ => panic!("Invalid with_replacement"),
     };
     sample_op.set_sampler(with_replacement, fraction);
+}
+
+#[no_mangle]
+pub extern "C" fn tail_compute(input: *mut u8) -> usize {
+    let tail_info = unsafe{ (input as *const TailCompInfo).as_ref() }.unwrap();
+    let mut tail_info = tail_info.clone();
+    kmeans_sec_0_(&mut tail_info).unwrap();
+    ALLOCATOR.lock().set_switch(true);
+    let ptr = Box::into_raw(Box::new(tail_info.clone()));
+    ALLOCATOR.lock().set_switch(false);
+    ptr as *mut u8 as usize
+}
+
+#[no_mangle]
+pub extern "C" fn free_tail_info(input: *mut u8) {
+    let tail_info = unsafe {
+        Box::from_raw(input as *mut TailCompInfo)
+    };
+    ALLOCATOR.lock().set_switch(true);
+    drop(tail_info);
+    ALLOCATOR.lock().set_switch(false);
 }
 
 #[no_mangle]

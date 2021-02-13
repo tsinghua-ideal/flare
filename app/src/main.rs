@@ -48,7 +48,7 @@ fn main() -> Result<()> {
     //file_read_unsec_0()?;
 
     /* partition_wise_sample */
-    part_wise_sample_sec_0()?;
+    //part_wise_sample_sec_0()?;
     //part_wise_sample_unsec_0()?;
     //part_wise_sample_unsec_1()?;
     //part_wise_sample_unsec_2()?;
@@ -60,6 +60,10 @@ fn main() -> Result<()> {
     //count_sec_0()?;
     //count_unsec_0()?;
 
+    /* kmeans */
+    kmeans_sec_0()?;
+    //kmeans_unsec_0()?;
+
     /* linear regression */
     //lr_sec()?;
     //lr_unsec()?;
@@ -67,10 +71,6 @@ fn main() -> Result<()> {
     /* transitive_closure */
     //transitive_closure_sec()?;
     //transitive_closure_unsec()?;
-
-    /* kmeans */
-    //kmeans_sec_0()?;
-    //kmeans_unsec_0()?;
 
     // test the speculative execution in loop
     //test0_sec_0()?;

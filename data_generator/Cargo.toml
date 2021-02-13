@@ -1,0 +1,13 @@
+[package]
+name = "data_generator"
+version = "0.1.0"
+authors = ["AmbitionXiang <Xiang.Leee@outlook.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+vega = { path = "../Submodule-of-SecureSpark" }
+rand = "0.7"
+rand_distr = "0.2"
+rand_pcg = "0.2"

@@ -33,7 +33,7 @@ pub fn part_wise_sample_sec_0() -> Result<()> {
     let now = Instant::now();
     let rdd0 = sc.make_rdd(vec![], data_enc , fe.clone(), fd.clone(), 1);
     let res = rdd0.secure_take_sample(false, 200, Some(123))?;
-    let res = rdd0.batch_decrypt(res);
+    let res = res.to_plain();
     assert!(res.len() == 200); 
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);

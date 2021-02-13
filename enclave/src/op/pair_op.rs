@@ -30,7 +30,9 @@ where
             fe,
             fd,
         ));
-        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        if !self.get_context().get_is_tail_comp() {
+            insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        }
         new_op
     }
 
@@ -123,7 +125,9 @@ where
         FD: SerFunc((KE, UE)) -> Vec<(K, U)>,
     {
         let new_op = SerArc::new(MappedValues::new(self.get_op(), f, fe, fd));
-        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        if !self.get_context().get_is_tail_comp() {
+            insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        }
         new_op
     }
 
@@ -143,7 +147,9 @@ where
         FD: SerFunc((KE, UE)) -> Vec<(K, U)>,
     {
         let new_op = SerArc::new(FlatMappedValues::new(self.get_op(), f, fe, fd));
-        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        if !self.get_context().get_is_tail_comp() {
+            insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        }
         new_op
     }
 
@@ -224,7 +230,9 @@ where
         FD: SerFunc((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))>, 
     {
         let new_op = SerArc::new(CoGrouped::new(self.get_ope(), other.get_ope(), fe, fd, partitioner));
-        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        if !self.get_context().get_is_tail_comp() {
+            insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        }
         new_op
     }
 
@@ -394,7 +402,7 @@ where
 		self.compute_start(tid, call_seq, data_ptr, dep_info)
     }
 
-    fn randomize_in_place(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
+    fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
         self.randomize_in_place_(input, seed, num)
     }
 
@@ -461,6 +469,11 @@ where
             return (Box::new(val.into_iter()), None); 
         }
         
+        let mut f = self.f.clone();
+        match call_seq.get_ser_captured_var() {
+            Some(ser) => f.deser_captured_var(ser),
+            None  => (),
+        }
         let opb = call_seq.get_next_op().clone();
         let (res_iter, handle) = if opb.get_op_id() == self.prev.get_op_id() {
             self.prev.compute(call_seq, data_ptr)
@@ -468,12 +481,6 @@ where
             let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
             op.compute(call_seq, data_ptr)
         };
-
-        let mut f = self.f.clone();
-        match call_seq.get_ser_captured_var() {
-            Some(ser) => f.deser_captured_var(ser),
-            None  => (),
-        }
         let res_iter = Box::new(res_iter.map(move |(k, v)| (k, f(v))));
 
         if need_cache {
@@ -663,7 +670,7 @@ where
 		self.compute_start(tid, call_seq, data_ptr, dep_info)
     }
 
-    fn randomize_in_place(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
+    fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
         self.randomize_in_place_(input, seed, num)
     }
 
@@ -728,6 +735,11 @@ where
             return (Box::new(val.into_iter()), None); 
         }
 
+        let mut f = self.f.clone();
+        match call_seq.get_ser_captured_var() {
+            Some(ser) => f.deser_captured_var(ser),
+            None  => (),
+        }
         let opb = call_seq.get_next_op().clone();
         let (res_iter, handle) = if opb.get_op_id() == self.prev.get_op_id() {
             self.prev.compute(call_seq, data_ptr)
@@ -735,12 +747,6 @@ where
             let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
             op.compute(call_seq, data_ptr)
         };
-
-        let mut f = self.f.clone();
-        match call_seq.get_ser_captured_var() {
-            Some(ser) => f.deser_captured_var(ser),
-            None  => (),
-        }
         let res_iter = Box::new(res_iter.flat_map(move |(k, v)| f(v).map(move |x| (k.clone(), x))));
 
         if need_cache {

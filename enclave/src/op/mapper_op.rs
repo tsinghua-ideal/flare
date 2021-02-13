@@ -125,7 +125,7 @@ where
 		self.compute_start(tid, call_seq, data_ptr, dep_info)
     }
 
-    fn randomize_in_place(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
+    fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
         self.randomize_in_place_(input, seed, num)
     }
     
@@ -185,6 +185,15 @@ where
             return (Box::new(val.into_iter()), None); 
         }
         
+        let mut f = self.f.clone();
+        match call_seq.get_ser_captured_var() {
+            Some(ser) => {
+                f.deser_captured_var(ser)
+            },
+            None  => {
+                ()
+            },
+        }
         let opb = call_seq.get_next_op().clone();
         let (res_iter, handle) = if opb.get_op_id() == self.prev.get_op_id() {
             self.prev.compute(call_seq, data_ptr)
@@ -192,11 +201,6 @@ where
             let op = opb.to_arc_op::<dyn Op<Item = T>>().unwrap();
             op.compute(call_seq, data_ptr)
         };
-        let mut f = self.f.clone();
-        match call_seq.get_ser_captured_var() {
-            Some(ser) => f.deser_captured_var(ser),
-            None  => (),
-        }
         let res_iter = Box::new(res_iter.map(f));
         
         //println!("In mapper_op, memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());

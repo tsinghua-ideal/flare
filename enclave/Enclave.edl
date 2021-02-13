@@ -88,6 +88,8 @@ enclave {
         public void set_sampler(struct op_id_t op_id,
             uint8_t with_replacement,
             double fraction);
+        public size_t tail_compute([user_check] uint8_t* input);
+        public void free_tail_info([user_check] uint8_t* input);
         public size_t probe_caching(size_t rdd_id,
             size_t part,
             [user_check] uint8_t* cached_sub_parts,

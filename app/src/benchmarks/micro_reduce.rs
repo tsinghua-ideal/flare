@@ -38,6 +38,6 @@ pub fn reduce_sec_0() -> Result<()> {
 
     let rdd0 = sc.make_rdd(vec![], data_enc, fe, fd, 1);
     let res = rdd0.secure_reduce(Fn!(|x: i32, y: i32| x + y), fe_rd, fd_rd)?;
-    println!("result: {:?}", res.unwrap());
+    println!("result: {:?}", res.to_plain());
     Ok(())
 }
