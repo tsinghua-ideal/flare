@@ -20,6 +20,8 @@ mod kmeans_;
 pub use kmeans_::*;
 mod lr;
 pub use lr::*;
+mod pagerank;
+pub use pagerank::*;
 mod tc;
 pub use tc::*;
 mod test0;

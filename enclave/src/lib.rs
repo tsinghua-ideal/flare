@@ -117,10 +117,13 @@ lazy_static! {
         //count_sec_0()
 
         /* kmeans */
-        kmeans_sec_0()
+        //kmeans_sec_0()
 
         /* linear regression */
         //lr_sec()
+
+        /* page rank */
+        pagerank_sec_0()
 
         /* transitive_closure */
         //transitive_closure_sec()

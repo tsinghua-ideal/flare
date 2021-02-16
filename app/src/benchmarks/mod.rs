@@ -1,5 +1,3 @@
-mod als;
-pub use als::*;
 mod kmeans;
 pub use kmeans::*;
 mod lr;

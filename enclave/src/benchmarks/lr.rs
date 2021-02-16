@@ -65,13 +65,13 @@ pub fn lr_sec() -> Result<()> {
     let mut w = 0 as f32;
 
     
-    let g = nums.map(Fn!(move |p: Point|
+    let _g = nums.map(Fn!(move |p: Point|
                     p.x*(1f32/(1f32+(-p.y*(w * p.x)).exp())-1f32)*p.y
                 ),
                 fe_mp,
                 fd_mp,
             ).reduce(Fn!(|x, y| x+y), fe_rd, fd_rd).unwrap();
-    w -= g[0];
+   
     
     
     

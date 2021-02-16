@@ -61,12 +61,16 @@ fn main() -> Result<()> {
     //count_unsec_0()?;
 
     /* kmeans */
-    kmeans_sec_0()?;
+    //kmeans_sec_0()?;
     //kmeans_unsec_0()?;
 
     /* linear regression */
     //lr_sec()?;
     //lr_unsec()?;
+
+    /* page rank */
+    pagerank_sec_0()?;
+    //pagerank_unsec_0()?;
 
     /* transitive_closure */
     //transitive_closure_sec()?;
