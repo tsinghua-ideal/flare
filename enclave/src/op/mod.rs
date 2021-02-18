@@ -815,20 +815,20 @@ impl Context {
 
     /// Load from a distributed source and turns it into a parallel collection.
     #[track_caller]
-    pub fn read_source<F, C, FE, FD, I: Data, O: Data, OE: Data>(
+    pub fn read_source<C, FE, FD, I: Data, O: Data, OE: Data>(
         self: &Arc<Self>,
         config: C,
-        func: F,
+        func: Option< Box<dyn Func(I) -> O >>,
+        sec_func: Option< Box<dyn Func(I) -> Vec<OE> >>,
         fe: FE,
         fd: FD,
     ) -> impl OpE<Item = O, ItemE = OE>
     where
-        F: SerFunc(I) -> O,
         C: ReaderConfiguration<I>,
         FE: SerFunc(Vec<O>) -> OE,
         FD: SerFunc(OE) -> Vec<O>,
     {
-        config.make_reader(self.clone(), func, fe, fd)
+        config.make_reader(self.clone(), func, sec_func, fe, fd)
     }
 
     #[track_caller]

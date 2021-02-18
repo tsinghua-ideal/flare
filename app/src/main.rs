@@ -14,6 +14,7 @@
 // KIND, either express or implied.  See the License for the
 // specific language governing permissions and limitations
 // under the License..
+#![feature(map_first_last)]
 #![feature(proc_macro_hygiene)]
 #![feature(specialization)]
 
