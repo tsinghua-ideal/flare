@@ -98,7 +98,7 @@ lazy_static! {
         /* join */
         //join_sec_0()
         //join_sec_1()
-        //join_sec_2()
+        join_sec_2()
         
         /* distinct */
         //distinct_sec_0()
@@ -123,7 +123,7 @@ lazy_static! {
         //lr_sec()
 
         /* page rank */
-        pagerank_sec_0()
+        //pagerank_sec_0()
 
         /* transitive_closure */
         //transitive_closure_sec()
