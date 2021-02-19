@@ -37,7 +37,7 @@ fn main() -> Result<()> {
     /* join */
     //join_sec_0()?;
     //join_sec_1()?;
-    join_sec_2()?;
+    //join_sec_2()?;
     //join_unsec_2()?;
 
     /* distinct */
@@ -70,7 +70,7 @@ fn main() -> Result<()> {
     //lr_unsec()?;
 
     /* page rank */
-    //pagerank_sec_0()?;
+    pagerank_sec_0()?;
     //pagerank_unsec_0()?;
 
     /* transitive_closure */
