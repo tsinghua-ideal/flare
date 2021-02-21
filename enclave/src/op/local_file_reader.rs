@@ -191,9 +191,9 @@ where
         self.randomize_in_place_(input, seed, num)
     }
 
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
             
-        self.compute_start(tid, call_seq, data_ptr, dep_info)
+        self.compute_start(tid, call_seq, input, dep_info)
     }
 
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
@@ -235,16 +235,18 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
-        let data_enc  = unsafe{ Box::from_raw(data_ptr as *mut Vec<UE>) };
-        let data = self.batch_decrypt(*data_enc.clone());
-        forget(data_enc);
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+        let data_enc  = input.get_enc_data::<Vec<UE>>();
+        let lower = input.get_lower();
+        let upper = input.get_upper();
+        assert!(lower.len() == 1 && upper.len() == 1);
+        let data = self.batch_decrypt(data_enc[lower[0]..upper[0]].to_vec());
         (Box::new(data.into_iter()), None)
     }
 
-    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         //suppose no shuffle will happen after this rdd
-        self.narrow(call_seq, data_ptr, dep_info)
+        self.narrow(call_seq, input, dep_info)
     }
 
 }

@@ -322,6 +322,55 @@ impl DepInfo {
 
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Input {
+    data: usize,
+    lower: usize,
+    upper: usize,
+    block_size: usize,
+}
+
+impl Input {
+    pub fn new<T: Data>(data: &T, lower: &mut Vec<usize>, upper: &mut Vec<usize>, block_size: usize) -> Self {
+        let data = data as *const T as usize;
+        let lower = lower as *mut Vec<usize> as usize;
+        let upper = upper as *mut Vec<usize> as usize;
+        Input {
+            data,
+            lower,
+            upper,
+            block_size,
+        }
+    }
+
+    pub fn padding() -> Self {
+        Input {
+            data: 0,
+            lower: 0,
+            upper: 0,
+            block_size: 0,
+        }
+    }
+
+    pub fn get_enc_data<T>(&self) -> &T {
+        unsafe { (self.data as *const T).as_ref() }.unwrap()
+    }
+
+    pub fn get_lower(&self) -> &mut Vec<usize> {
+        unsafe { (self.lower as *mut Vec<usize>).as_mut() }.unwrap()
+    }
+
+    pub fn get_upper(&self) -> &mut Vec<usize> {
+        unsafe { (self.upper as *mut Vec<usize>).as_mut() }.unwrap()
+    }
+
+    pub fn get_block_size(&self) -> usize {
+        self.block_size
+    }
+
+}
+
 #[derive(Debug, Default)]
 pub struct Text<T, TE, FE, FD> 
 where
@@ -927,7 +976,7 @@ pub trait OpBase: Send + Sync {
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
         None
     }
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8;
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8;
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8;
     fn set_sampler(&self, with_replacement: bool, fraction: f64) {
         unreachable!()
@@ -997,8 +1046,8 @@ impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     fn number_of_splits(&self) -> usize {
         (**self).get_op_base().number_of_splits()
     }
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
-        (**self).get_op_base().iterator_start(tid, call_seq, data_ptr, dep_info)
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+        (**self).get_op_base().iterator_start(tid, call_seq, input, dep_info)
     }
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
         (**self).randomize_in_place(input, seed, num)
@@ -1019,11 +1068,11 @@ impl<I: OpE + ?Sized> Op for SerArc<I> {
     fn get_op_base(&self) -> Arc<dyn OpBase> {
         (**self).get_op_base()
     }
-    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
-        (**self).compute_start(tid, call_seq, data_ptr, dep_info)
+    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+        (**self).compute_start(tid, call_seq, input, dep_info)
     }
-    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
-        (**self).compute(call_seq, data_ptr)
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+        (**self).compute(call_seq, input)
     }
     fn cache(&self, data: Vec<Self::Item>) {
         (**self).cache(data);
@@ -1050,8 +1099,8 @@ pub trait Op: OpBase + 'static {
     type Item: Data;
     fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>>;
     fn get_op_base(&self) -> Arc<dyn OpBase>;
-    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8;
-    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>);
+    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8;
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>);
     fn cache(&self, data: Vec<Self::Item>) {
         ()
     }
@@ -1079,12 +1128,18 @@ pub trait OpE: Op {
         if ptr == 0 {
             return Vec::new();
         }
+        /*
         let ct_ = unsafe {
             Box::from_raw(ptr as *mut u8 as *mut Vec<Self::ItemE>)
         };
         let ct = ct_.clone();
         forget(ct_);
         self.batch_decrypt(*ct)
+        */
+        let ct = unsafe {
+            (ptr as *const u8 as *const Vec<Self::ItemE>).as_ref()
+        }.unwrap();
+        self.batch_decrypt(ct.clone())
     }
 
     fn cache_to_outside(&self, key: (usize, usize, usize), value: Vec<Self::Item>) -> PThread {
@@ -1250,8 +1305,8 @@ pub trait OpE: Op {
         data
     }
 
-    fn narrow(&self, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
-        let (result_iter, handle) = self.compute(call_seq, data_ptr);
+    fn narrow(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+        let (result_iter, handle) = self.compute(call_seq, input);
         /*
         println!("In narrow(before join), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
         if let Some(handle) = handle {
@@ -1285,8 +1340,8 @@ pub trait OpE: Op {
         result_ptr
     } 
 
-    fn shuffle(&self, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
-        let (data_iter, handle) = self.compute(call_seq, data_ptr);
+    fn shuffle(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+        let (data_iter, handle) = self.compute(call_seq, input);
         let data = data_iter.collect::<Vec<Self::Item>>();
         //let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
         let iter = Box::new(data) as Box<dyn Any>;

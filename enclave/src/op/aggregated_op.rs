@@ -124,9 +124,9 @@ where
         self.prev.number_of_splits()
     }
 
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         
-		self.compute_start(tid, call_seq, data_ptr, dep_info)
+		self.compute_start(tid, call_seq, input, dep_info)
     }
 
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
@@ -163,25 +163,24 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
   
-    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8{
+    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8{
         //3 is only for reduce & fold
         if dep_info.dep_type() == 3 {
-            self.narrow(call_seq, data_ptr, dep_info)
+            self.narrow(call_seq, input, dep_info)
         }
         else {
-            self.prev.compute_start(tid, call_seq, data_ptr, dep_info)
+            self.prev.compute_start(tid, call_seq, input, dep_info)
         }
     }
 
-    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
-        let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<TE>) };
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+        let data_enc = input.get_enc_data::<Vec<TE>>();
         let len = data_enc.len();
         let mut reduced = Vec::new();
         for i in 0..len {
             let block = self.prev.get_fd()(data_enc[i].clone());
             reduced.push((self.sf)(Box::new(block.into_iter())));  
         }
-        forget(data_enc);
         (Box::new((self.cf)(Box::new(reduced.into_iter())).into_iter()), None)
     }
 

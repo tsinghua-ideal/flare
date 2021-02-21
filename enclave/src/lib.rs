@@ -85,7 +85,7 @@ static immediate_cout: bool = true;
 lazy_static! {
     static ref BRANCH_OP_HIS: Arc<RwLock<HashMap<OpId, OpId>>> = Arc::new(RwLock::new(HashMap::new())); //(prev_op_id, cur_op_id)
     static ref CACHE: OpCache = OpCache::new();
-    static ref CAVE: Arc<Mutex<HashMap<u64, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+    static ref CAVE: Arc<Mutex<HashMap<u64, (usize, usize)>>> = Arc::new(Mutex::new(HashMap::new()));  //tid, (remaining_combiner, sorted_max_key)
     static ref OP_MAP: AtomicPtrWrapper<BTreeMap<OpId, Arc<dyn OpBase>>> = AtomicPtrWrapper::new(Box::into_raw(Box::new(BTreeMap::new()))); 
     static ref init: Result<()> = {
         /* map */
@@ -97,7 +97,7 @@ lazy_static! {
 
         /* join */
         //join_sec_0()
-        //join_sec_1()
+        join_sec_1()
         //join_sec_2()
         
         /* distinct */
@@ -123,7 +123,7 @@ lazy_static! {
         //lr_sec()
 
         /* page rank */
-        pagerank_sec_0()
+        //pagerank_sec_0()
 
         /* transitive_closure */
         //transitive_closure_sec()
@@ -139,7 +139,7 @@ pub extern "C" fn secure_execute(tid: u64,
     op_ids: *const u8,
     cache_meta: CacheMeta,
     dep_info: DepInfo, 
-    input: *mut u8, 
+    input: Input, 
     captured_vars: *const u8
 ) -> usize {
     let _init = *init; //this is necessary to let it accually execute
@@ -208,8 +208,7 @@ pub extern "C" fn exploit_spec_oppty(tid: u64,
 #[no_mangle]
 pub extern "C" fn spec_execute(tid: u64, 
     spec_call_seq: usize,
-    cache_meta: CacheMeta,
-    input: *mut u8, 
+    cache_meta: CacheMeta, 
     hash_ops: *mut u64,
 ) -> usize {
     println!("Cur mem: {:?}, at the begining of speculative execution", ALLOCATOR.lock().get_memory_usage());
@@ -230,6 +229,7 @@ pub extern "C" fn spec_execute(tid: u64,
     let cache_meta = cache_meta.transform();
     let mut call_seq = NextOpId::new(&spec_call_seq.0, &spec_call_seq.1, cache_meta, HashMap::new(), true);
     let final_op = call_seq.get_cur_op();
+    let input = Input::padding();
     let result_ptr = final_op.iterator_start(tid, &mut call_seq, input, &dep_info);
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Cur mem: {:?}, spec_execute {:?} s", ALLOCATOR.lock().get_memory_usage(), dur);

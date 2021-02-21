@@ -256,9 +256,9 @@ where
         true
     }
     
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8{
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8{
         
-		self.compute_start(tid, call_seq, data_ptr, dep_info)
+		self.compute_start(tid, call_seq, input, dep_info)
     }
     
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
@@ -306,128 +306,127 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {       //No shuffle
-                self.narrow(call_seq, data_ptr, dep_info)
+                self.narrow(call_seq, input, dep_info)
             },
             1 => {      //Shuffle write
-                self.shuffle(call_seq, data_ptr, dep_info)
+                self.shuffle(call_seq, input, dep_info)
             },
             2 => {      //shuffle read
-                let mut dur_sum = 0.0;
-                //TODO need revision if fe & fd of group_by is passed 
-                let data_enc = unsafe { 
-                    Box::from_raw(data_ptr as *mut (
-                        Vec<(KE, VE)>, 
-                        Vec<Vec<(KE, Vec<u8>)>>, 
-                        Vec<(KE, WE)>, 
-                        Vec<Vec<(KE, Vec<u8>)>>
-                    ))
-                };
                 let remained_ptr = CAVE.lock().unwrap().remove(&tid);
-                let mut agg: BTreeMap<K, (Vec<V>, Vec<W>)> = match remained_ptr {
-                    Some(ptr) => *unsafe { Box::from_raw(ptr as *mut u8 as *mut BTreeMap<K, (Vec<V>, Vec<W>)>) },
-                    None => BTreeMap::new(),
+                let (mut agg, mut sorted_max_key): (BTreeMap<K, (Vec<V>, Vec<W>)>, BTreeMap<K, usize>) = match remained_ptr {
+                    Some((a_ptr, s_ptr)) => (
+                        *unsafe { Box::from_raw(a_ptr as *mut u8 as *mut BTreeMap<K, (Vec<V>, Vec<W>)>) },
+                        *unsafe { Box::from_raw(s_ptr as *mut u8 as *mut BTreeMap<K, usize>) }
+                    ),
+                    None => (BTreeMap::new(), BTreeMap::new()),
                 };
-                let deps = self.get_deps();
-                let mut min_max_k_tree: BTreeSet<K> = BTreeSet::new();
-                match &deps[0] {
-                    Dependency::NarrowDependency(_nar) => {
-                        for sub_data_enc in data_enc.0.clone() {
-                            let data0 = self.op0.get_fd()(sub_data_enc);
-                            match data0.last() {
-                                Some(v) => min_max_k_tree.insert(v.0.clone()),
-                                None => false,
-                            };
-                            for i in data0.into_iter() { 
-                                let (k, v) = i;
-                                agg.entry(k)
-                                    .or_insert_with(|| (Vec::new(), Vec::new())).0
-                                    .push(v);
-                            }
-                        }
-                    },
-                    Dependency::ShuffleDependency(shuf) => {
-                        //TODO need revision if fe & fd of group_by is passed 
-                        let s = shuf.downcast_ref::<ShuffleDependency<K, V, Vec<V>, KE, Vec<u8>>>().unwrap();
-                        for sub_data_enc in data_enc.1.clone() {  
-                            let now = Instant::now();
-                            let mut pt = Vec::with_capacity(sub_data_enc.len());
-                            for block in sub_data_enc {
-                                let mut pt_b = (s.fd)(block);
-                                pt.append(&mut pt_b); //need to check security
-                            }
 
-                            let data0 = pt;
-                            let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-                            dur_sum += dur;  
-                            match data0.last() {
-                                Some(v) => min_max_k_tree.insert(v.0.clone()),
-                                None => false,
-                            };
-                            for (k, c) in data0.into_iter() { 
-                                let temp = agg.entry(k)
-                                    .or_insert_with(|| (Vec::new(), Vec::new()));
-                                for v in c {
-                                    temp.0.push(v);
-                                }
-                            }
-                        }
-                    },
-                };
-        
-                match &deps[1] {
-                    Dependency::NarrowDependency(_nar) => {
-                        for sub_data_enc in data_enc.2.clone() {
-                            let data1 = self.op1.get_fd()(sub_data_enc); //need to check security
-                            match data1.last() {
-                                Some(v) => min_max_k_tree.insert(v.0.clone()),
-                                None => false,
-                            };
-                            for i in data1.into_iter() {
-                                let (k, w) = i;
-                                agg.entry(k)
-                                    .or_insert_with(|| (Vec::new(), Vec::new())).1
-                                    .push(w);
-                            }
-                        }
-                    },
-                    Dependency::ShuffleDependency(shuf) => {
-                        //TODO need revision if fe & fd of group_by is passed 
-                        let s = shuf.downcast_ref::<ShuffleDependency<K, W, Vec<W>, KE, Vec<u8>>>().unwrap();
-                        for sub_data_enc in data_enc.3.clone() { 
-                            let now = Instant::now();
-                            let mut pt = Vec::with_capacity(sub_data_enc.len());
-                            for block in sub_data_enc {
-                                let mut pt_b = (s.fd)(block);
-                                pt.append(&mut pt_b); //need to check security
-                            }
+                //TODO need revision if fe & fd of group_by is passed 
+                let data_enc = input.get_enc_data::<(
+                        Vec<Vec<(KE, VE)>>, 
+                        Vec<Vec<(KE, Vec<u8>)>>, 
+                        Vec<Vec<(KE, WE)>>, 
+                        Vec<Vec<(KE, Vec<u8>)>>
+                    )>();
+                let lower = input.get_lower();
+                let upper = input.get_upper();
+                let block_size = input.get_block_size();
 
-                            let data1 = pt;
-                            let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-                            dur_sum += dur;
-                            match data1.last() {
-                                Some(v) => min_max_k_tree.insert(v.0.clone()),
-                                None => false,
-                            };
-                            for (k, c) in data1.into_iter() { 
-                                let temp = agg.entry(k)
-                                    .or_insert_with(|| (Vec::new(), Vec::new()));
-                                for w in c {
-                                    temp.1.push(w);
-                                }
-                            }
-                        }
-                    },
-                };
-                forget(data_enc);
-                println!("in enclave decrypt {:?}", dur_sum);  
-                let min_max_k = min_max_k_tree.first();
-                if min_max_k.is_some() {
-                    let remained = agg.split_off(min_max_k.unwrap());
-                    CAVE.lock().unwrap().insert(tid, Box::into_raw(Box::new(remained)) as *mut u8 as usize);
+                let mut num_sub_part = vec![0, 0];
+                let mut upper_bound = Vec::new();
+                let mut block = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+                for sub_part in &data_enc.0 {
+                    upper_bound.push(sub_part.len());
                 }
+                num_sub_part[0] += data_enc.0.len();
+                block.0.resize(num_sub_part[0], Vec::new());
+                for sub_part in &data_enc.1 {
+                    upper_bound.push(sub_part.len());
+                }
+                num_sub_part[0] += data_enc.1.len();
+                block.1.resize(num_sub_part[0], Vec::new());
+                for sub_part in &data_enc.2 {
+                    upper_bound.push(sub_part.len());
+                }
+                num_sub_part[1] += data_enc.2.len();
+                block.2.resize(num_sub_part[1], Vec::new());
+                for sub_part in &data_enc.3 {
+                    upper_bound.push(sub_part.len());
+                }
+                num_sub_part[1] += data_enc.3.len();
+                block.3.resize(num_sub_part[1], Vec::new());
+                let mut cur_size = block.get_aprox_size();
+                let deps = self.get_deps();
+                let op0 = self.op0.clone();
+                let op1 = self.op1.clone();
+                let now = Instant::now();
+                if sorted_max_key.is_empty() {
+                    for idx in 0..(num_sub_part[0] + num_sub_part[1]) {  //init
+                        cur_size += get_block(&deps, &op0, &op1, idx, &num_sub_part,
+                            lower, upper, data_enc, &mut block, &mut sorted_max_key
+                        );
+                    }
+                }
+                while cur_size < block_size {
+                    let entry = match sorted_max_key.first_entry() {
+                        Some(entry) => entry,
+                        None => break,
+                    };
+                    let idx = *entry.get();
+                    entry.remove_entry();
+                    lower[idx] += 1;
+                    upper[idx] += 1;
+                    if lower[idx] >= upper_bound[idx] {
+                        continue;
+                    }
+                    cur_size += get_block(&deps, &op0, &op1, idx, &num_sub_part,
+                        lower, upper, data_enc, &mut block, &mut sorted_max_key
+                    );
+                }
+                let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+                println!("cur mem after decryption: {:?}, in enclave decrypt: {:?} s", crate::ALLOCATOR.lock().get_memory_usage(), dur);
+                let (b0, b1, b2, b3) = block;
+                for i in b0.into_iter().flatten() { 
+                    let (k, v) = i;
+                    agg.entry(k)
+                        .or_insert_with(|| (Vec::new(), Vec::new())).0
+                        .push(v);
+                }
+                for (k, c) in b1.into_iter().flatten() { 
+                    let temp = agg.entry(k)
+                        .or_insert_with(|| (Vec::new(), Vec::new()));
+                    for v in c {
+                        temp.0.push(v);
+                    }
+                }
+                for i in b2.into_iter().flatten() {
+                    let (k, w) = i;
+                    agg.entry(k)
+                        .or_insert_with(|| (Vec::new(), Vec::new())).1
+                        .push(w);
+                }
+                for (k, c) in b3.into_iter().flatten() { 
+                    let temp = agg.entry(k)
+                        .or_insert_with(|| (Vec::new(), Vec::new()));
+                    for w in c {
+                        temp.1.push(w);
+                    }
+                }
+ 
+                if let Some(min_max_k) = sorted_max_key.first_entry() {
+                    let remained_a = agg.split_off(min_max_k.key());
+                    let remained_s = sorted_max_key;
+                    //Temporary stored for next computation
+                    CAVE.lock().unwrap().insert(tid, 
+                        (Box::into_raw(Box::new(remained_a)) as *mut u8 as usize,
+                        Box::into_raw(Box::new(remained_s)) as *mut u8 as usize)
+                    );
+                }
+
+                println!("cur mem after shuffle read: {:?}", crate::ALLOCATOR.lock().get_memory_usage());
                 let result = agg.into_iter()
                     .filter(|(k, (v, w))| v.len() != 0 && w.len() != 0)
                     .collect::<Vec<_>>();
@@ -437,7 +436,8 @@ where
         }
     }
 
-    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+        let data_ptr = input.data;
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
         if have_cache {
@@ -492,6 +492,87 @@ where
         Box::new(self.fd.clone()) as Box<dyn Func(Self::ItemE)->Vec<Self::Item>>
     }
 
+}
 
-    
+fn get_block<K, V, W, KE, VE, WE>(
+    deps: &Vec<Dependency>, 
+    op0: &Arc<dyn OpE<Item = (K, V), ItemE = (KE, VE)>>,
+    op1: &Arc<dyn OpE<Item = (K, W), ItemE = (KE, WE)>>,
+    idx: usize,
+    num_sub_part: &Vec<usize>,
+    lower: &Vec<usize>,
+    upper: &Vec<usize>,
+    data_enc: &(
+        Vec<Vec<(KE, VE)>>, 
+        Vec<Vec<(KE, Vec<u8>)>>, 
+        Vec<Vec<(KE, WE)>>, 
+        Vec<Vec<(KE, Vec<u8>)>>
+    ),
+    block: &mut (
+        Vec<Vec<(K, V)>>,
+        Vec<Vec<(K, Vec<V>)>>,
+        Vec<Vec<(K, W)>>,
+        Vec<Vec<(K, Vec<W>)>>
+    ),
+    sorted_max_key: &mut BTreeMap<K, usize>,
+) -> usize   //incremental size
+where
+    K: Data + Eq + Hash + Ord,
+    V: Data,
+    W: Data,
+    KE: Data + Eq + Hash + Ord,
+    VE: Data,
+    WE: Data,
+{
+    let mut inc_size = 0;
+    if lower[idx] == upper[idx] {
+        return inc_size;
+    }
+    if idx < num_sub_part[0] {
+        match &deps[0] {
+            Dependency::NarrowDependency(_nar) => {
+                let sub_data_enc = &data_enc.0[idx];
+                let mut block0 = op0.batch_decrypt(sub_data_enc[lower[idx]..upper[idx]].to_vec());
+                inc_size += block0.get_aprox_size();
+                block.0[idx].append(&mut block0);
+                sorted_max_key.insert(block.0[idx].last().unwrap().0.clone(), idx);
+            },
+            Dependency::ShuffleDependency(shuf) => {
+                //TODO need revision if fe & fd of group_by is passed 
+                let s = shuf.downcast_ref::<ShuffleDependency<K, V, Vec<V>, KE, Vec<u8>>>().unwrap();
+                let sub_data_enc = &data_enc.1[idx]; 
+                let mut block1 = Vec::new();
+                for block in sub_data_enc[lower[idx]..upper[idx]].to_vec() {
+                    block1.append(&mut (s.fd)(block)); //need to check security
+                }
+                inc_size += block1.get_aprox_size();
+                block.1[idx].append(&mut block1);
+                sorted_max_key.insert(block.1[idx].last().unwrap().0.clone(), idx);
+            },
+        };
+    } else {
+        let idx1 = idx - num_sub_part[0];
+        match &deps[1] {
+            Dependency::NarrowDependency(_nar) => {
+                let sub_data_enc = &data_enc.2[idx1];
+                let mut block2 = op1.batch_decrypt(sub_data_enc[lower[idx]..upper[idx]].to_vec());
+                inc_size += block2.get_aprox_size();
+                block.2[idx1].append(&mut block2);
+                sorted_max_key.insert(block.2[idx1].last().unwrap().0.clone(), idx);
+            },
+            Dependency::ShuffleDependency(shuf) => {
+                //TODO need revision if fe & fd of group_by is passed 
+                let s = shuf.downcast_ref::<ShuffleDependency<K, W, Vec<W>, KE, Vec<u8>>>().unwrap();
+                let sub_data_enc = &data_enc.3[idx1]; 
+                let mut block3 = Vec::new();
+                for block in sub_data_enc[lower[idx]..upper[idx]].to_vec() {
+                    block3.append(&mut (s.fd)(block)); //need to check security
+                }
+                inc_size += block3.get_aprox_size();
+                block.3[idx1].append(&mut block3);
+                sorted_max_key.insert(block.3[idx1].last().unwrap().0.clone(), idx);
+            },
+        };
+    }
+    inc_size
 }

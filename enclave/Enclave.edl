@@ -44,6 +44,13 @@ enclave {
         struct op_id_t parent_op_id;
         struct op_id_t child_op_id;
     };
+
+    struct input_t {
+        size_t data;
+        size_t lower;
+        size_t upper;
+        size_t block_size;
+    };
     
     trusted {
         /* define ECALLs here. */
@@ -52,7 +59,7 @@ enclave {
             [user_check] uint8_t* op_ids,
             struct cache_meta_t cache_meta,
             struct dep_info_t dep_info, 
-		    [user_check] uint8_t* input, 
+		    struct input_t input, 
 		    [user_check] uint8_t* captured_vars);
         public size_t exploit_spec_oppty(uint64_t tid,
             [user_check] uint8_t* op_ids,
@@ -61,7 +68,6 @@ enclave {
         public size_t spec_execute(uint64_t tid,
             size_t spec_call_seq,
             struct cache_meta_t cache_meta, 
-		    [user_check] uint8_t* input,
             [user_check] uint64_t* hash_ops);
         public void free_res_enc(struct op_id_t op_id,
             struct dep_info_t dep_info,

@@ -400,9 +400,9 @@ where
         self.prev.number_of_splits()
     }
     
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         
-		self.compute_start(tid, call_seq, data_ptr, dep_info)
+		self.compute_start(tid, call_seq, input, dep_info)
     }
 
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
@@ -446,19 +446,20 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {       //No shuffle later
-                self.narrow(call_seq, data_ptr, dep_info)
+                self.narrow(call_seq, input, dep_info)
             },
             1 => {      //Shuffle write
-                self.shuffle(call_seq, data_ptr, dep_info)
+                self.shuffle(call_seq, input, dep_info)
             },
             _ => panic!("Invalid is_shuffle")
         }
     }
     
-    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+        let data_ptr = input.data;
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
         
@@ -471,10 +472,10 @@ where
         
         let opb = call_seq.get_next_op().clone();
         let (res_iter, handle) = if opb.get_op_id() == self.prev.get_op_id() {
-            self.prev.compute(call_seq, data_ptr)
+            self.prev.compute(call_seq, input)
         } else {
             let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
-            op.compute(call_seq, data_ptr)
+            op.compute(call_seq, input)
         };
         let res_iter = Box::new(res_iter.map(move |(k, v)| v));
 
@@ -658,9 +659,9 @@ where
         self.prev.number_of_splits()
     }
     
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         
-		self.compute_start(tid, call_seq, data_ptr, dep_info)
+		self.compute_start(tid, call_seq, input, dep_info)
     }
 
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
@@ -707,19 +708,20 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {       //No shuffle later
-                self.narrow(call_seq, data_ptr, dep_info)
+                self.narrow(call_seq, input, dep_info)
             },
             1 => {      //Shuffle write
-                self.shuffle(call_seq, data_ptr, dep_info)
+                self.shuffle(call_seq, input, dep_info)
             },
             _ => panic!("Invalid is_shuffle")
         }
     }
     
-    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+        let data_ptr = input.data;
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
         
@@ -737,10 +739,10 @@ where
         }
         let opb = call_seq.get_next_op().clone();
         let (res_iter, handle) = if opb.get_op_id() == self.prev.get_op_id() {
-            self.prev.compute(call_seq, data_ptr)
+            self.prev.compute(call_seq, input)
         } else {
             let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
-            op.compute(call_seq, data_ptr)
+            op.compute(call_seq, input)
         };
         let res_iter = Box::new(res_iter.map(move |(k, v)| (k, f(v))));
 
@@ -926,9 +928,9 @@ where
         self.prev.number_of_splits()
     }
 
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         
-		self.compute_start(tid, call_seq, data_ptr, dep_info)
+		self.compute_start(tid, call_seq, input, dep_info)
     }
 
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
@@ -973,19 +975,20 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {       //No shuffle later
-                self.narrow(call_seq, data_ptr, dep_info)
+                self.narrow(call_seq, input, dep_info)
             },
             1 => {      //Shuffle write
-                self.shuffle(call_seq, data_ptr, dep_info)
+                self.shuffle(call_seq, input, dep_info)
             },
             _ => panic!("Invalid is_shuffle")
         }
     }
 
-    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+        let data_ptr = input.data;
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
 
@@ -1003,10 +1006,10 @@ where
         }
         let opb = call_seq.get_next_op().clone();
         let (res_iter, handle) = if opb.get_op_id() == self.prev.get_op_id() {
-            self.prev.compute(call_seq, data_ptr)
+            self.prev.compute(call_seq, input)
         } else {
             let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
-            op.compute(call_seq, data_ptr)
+            op.compute(call_seq, input)
         };
         let res_iter = Box::new(res_iter.flat_map(move |(k, v)| f(v).map(move |x| (k.clone(), x))));
 

@@ -114,8 +114,8 @@ where
         self.prev.number_of_splits()
     }
 
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
-		self.compute_start(tid, call_seq, data_ptr, dep_info)
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+		self.compute_start(tid, call_seq, input, dep_info)
     }
 
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
@@ -150,12 +150,11 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
   
-    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         //3 is only for reduce & fold
         if dep_info.dep_type() == 3 {
-            let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<TE>) };
-            let data = self.prev.batch_decrypt(*data_enc.clone()); //need to check security
-            forget(data_enc);
+            let data_enc = input.get_enc_data::<Vec<TE>>();
+            let data = self.prev.batch_decrypt(data_enc.clone()); //need to check security
             let result = (self.f)(Box::new(data.into_iter()));
             let now = Instant::now();
             let result_enc = self.batch_encrypt(result); 
@@ -165,9 +164,9 @@ where
         }
         else {
             if call_seq.need_cache() {
-                self.prev.compute_start(tid, call_seq, data_ptr, dep_info)
+                self.prev.compute_start(tid, call_seq, input, dep_info)
             } else {
-                let (result_iter, handle) = self.compute(call_seq, data_ptr);
+                let (result_iter, handle) = self.compute(call_seq, input);
                 let result = result_iter.collect::<Vec<Self::Item>>();
                 //println!("In narrow(before encryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
                 let result_ptr = match dep_info.need_encryption() {
@@ -192,9 +191,9 @@ where
         }
     }
 
-    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
         //move some parts in compute start to this part, this part is originally used to reduce ahead to shrink size
-        let (res_iter, handle) = self.prev.compute(call_seq, data_ptr);
+        let (res_iter, handle) = self.prev.compute(call_seq, input);
         (Box::new((self.f)(res_iter).into_iter()), handle)        
     }
 

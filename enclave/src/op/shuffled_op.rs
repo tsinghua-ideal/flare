@@ -161,9 +161,9 @@ where
         Some(self.part.clone())
     }
     
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         
-		self.compute_start(tid, call_seq, data_ptr, dep_info)
+		self.compute_start(tid, call_seq, input, dep_info)
     }
 
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
@@ -207,64 +207,98 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {      //No shuffle
-                self.narrow(call_seq, data_ptr, dep_info)
+                self.narrow(call_seq, input, dep_info)
             },
             1 => {      //Shuffle write
-                self.shuffle(call_seq, data_ptr, dep_info)
+                self.shuffle(call_seq, input, dep_info)
             }
             2 => {      //Shuffle read
                 let aggregator = self.aggregator.clone(); 
-                let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<Vec<(KE, CE)>>) };
+                let remained_ptr = CAVE.lock().unwrap().remove(&tid);
+                let (mut combiners, mut sorted_max_key): (BTreeMap<K, Option<C>>, BTreeMap<K, usize>) = match remained_ptr {
+                    Some((c_ptr, s_ptr)) => (
+                        *unsafe { Box::from_raw(c_ptr as *mut u8 as *mut BTreeMap<K, Option<C>>) },
+                        *unsafe { Box::from_raw(s_ptr as *mut u8 as *mut BTreeMap<K, usize>) }
+                    ),
+                    None => (BTreeMap::new(), BTreeMap::new()),
+                };
+                let buckets_enc = input.get_enc_data::<Vec<Vec<(KE, CE)>>>();
+                let lower = input.get_lower();
+                let upper = input.get_upper();
+                let block_size = input.get_block_size();
                 //println!("cur mem before decryption: {:?}", crate::ALLOCATOR.lock().get_memory_usage());
                 let now = Instant::now(); 
-                let data = data_enc.clone()
-                    .into_iter()
-                    .map(|v | {
-                        //batch_decrypt
-                        let mut data = Vec::new();
-                        for block in v {
-                            let mut pt = self.get_fd()(block);
-                            data.append(&mut pt); //need to check security
-                        }
-                        data
-                    }).collect::<Vec<_>>();
-                let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-                //println!("cur mem after decryption: {:?}, in enclave decrypt: {:?} s", crate::ALLOCATOR.lock().get_memory_usage(), dur);
-                forget(data_enc);
-                let remained_ptr = CAVE.lock().unwrap().remove(&tid);
-                let mut combiners: BTreeMap<K, Option<C>> = match remained_ptr {
-                    Some(ptr) => *unsafe { Box::from_raw(ptr as *mut u8 as *mut BTreeMap<K, Option<C>>) },
-                    None => BTreeMap::new(),
-                };
-                //println!("cur mem before shuffle read: {:?}", crate::ALLOCATOR.lock().get_memory_usage()); 
-                if data.len() > 0 {    
-                    let mut min_max_kv = data[0].last().unwrap(); 
-                    for idx in 1..data.len() {
-                        let cand = data[idx].last().unwrap();
-                        if min_max_kv.0 > cand.0 {
-                            min_max_kv = cand;
-                        }
-                    }
-                    let min_max_k = min_max_kv.0.clone();
-
-                    for (k, c) in data.into_iter().flatten() {
-                        if let Some(old_c) = combiners.get_mut(&k) {
-                            let old = old_c.take().unwrap();
-                            let input = ((old, c),);
-                            let output = aggregator.merge_combiners.call(input);
-                            *old_c = Some(output);
-                        } else {
-                            combiners.insert(k, Some(c));
-                        }
-                    }
-                    let remained = combiners.split_off(&min_max_k);
-                    //Temporary stored for next computation
-                    CAVE.lock().unwrap().insert(tid, Box::into_raw(Box::new(remained)) as *mut u8 as usize);
+                let upper_bound = buckets_enc.iter().map(|sub_part| sub_part.len()).collect::<Vec<_>>();
+                let mut block = Vec::new();
+                if sorted_max_key.is_empty() {
+                    block = buckets_enc.iter()
+                        .enumerate()
+                        .map(|(idx, sub_part)| {
+                            let l = lower[idx];
+                            let u = upper[idx];
+                            let ub = upper_bound[idx];
+                            match l < ub {
+                                true => {
+                                    let data_enc = sub_part[l..u].to_vec();
+                                    self.batch_decrypt(data_enc)
+                                },
+                                false => Vec::new(),
+                            }
+                        }).collect::<Vec<_>>();
+                    sorted_max_key = block.iter()
+                        .enumerate()
+                        .filter(|(idx, sub_part)| sub_part.last().is_some())
+                        .map(|(idx, sub_part)| (sub_part.last().unwrap().0.clone(), idx))
+                        .collect::<BTreeMap<_, _>>();
+                } else {
+                    block.resize(lower.len(), Vec::new());
                 }
-                //println!("cur mem after shuffle read: {:?}", crate::ALLOCATOR.lock().get_memory_usage());
+
+                let mut cur_size = block.get_aprox_size();
+                while cur_size < block_size {
+                    let entry = match sorted_max_key.first_entry() {
+                        Some(entry) => entry,
+                        None => break,
+                    };
+                    let idx = *entry.get();
+                    entry.remove_entry();
+                    lower[idx] += 1;
+                    upper[idx] += 1;
+                    if lower[idx] >= upper_bound[idx] {
+                        continue;
+                    }
+                    let mut inc_block = self.batch_decrypt(buckets_enc[idx][lower[idx]..upper[idx]].to_vec());
+                    cur_size += inc_block.get_aprox_size();
+                    block[idx].append(&mut inc_block); 
+                    sorted_max_key.insert(block[idx].last().unwrap().0.clone(), idx);
+                }
+                let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+                println!("cur mem after decryption: {:?}, in enclave decrypt: {:?} s", crate::ALLOCATOR.lock().get_memory_usage(), dur);
+                for (k, c) in block.into_iter().flatten() {
+                    if let Some(old_c) = combiners.get_mut(&k) {
+                        let old = old_c.take().unwrap();
+                        let input = ((old, c),);
+                        let output = aggregator.merge_combiners.call(input);
+                        *old_c = Some(output);
+                    } else {
+                        combiners.insert(k, Some(c));
+                    }
+                }
+
+                if let Some(min_max_k) = sorted_max_key.first_entry() {
+                    let remained_c = combiners.split_off(min_max_k.key());
+                    let remained_s = sorted_max_key;
+                    //Temporary stored for next computation
+                    CAVE.lock().unwrap().insert(tid, 
+                        (Box::into_raw(Box::new(remained_c)) as *mut u8 as usize, 
+                        Box::into_raw(Box::new(remained_s)) as *mut u8 as usize)
+                    );
+                }
+
+                println!("cur mem after shuffle read: {:?}", crate::ALLOCATOR.lock().get_memory_usage());
                 let result = combiners.into_iter().map(|(k, v)| (k, v.unwrap())).collect::<Vec<Self::Item>>();
                 let result_ptr = Box::into_raw(Box::new(result)) as *mut u8; 
                 result_ptr
@@ -273,7 +307,8 @@ where
         }
     }
 
-    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+        let data_ptr = input.data;
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
         if have_cache {

@@ -115,9 +115,9 @@ where
         self.num_splits
     }
 
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         
-		self.compute_start(tid, call_seq, data_ptr, dep_info)
+		self.compute_start(tid, call_seq, input, dep_info)
     }
 
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
@@ -158,25 +158,27 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, data_ptr: *mut u8, dep_info: &DepInfo) -> *mut u8 {
+    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {       //No shuffle later
-                self.narrow(call_seq, data_ptr, dep_info)
+                self.narrow(call_seq, input, dep_info)
             },
             1 => {      //Shuffle write
-                self.shuffle(call_seq, data_ptr, dep_info)
+                self.shuffle(call_seq, input, dep_info)
             },
             _ => panic!("Invalid is_shuffle")
         }
     }
 
-    fn compute(&self, call_seq: &mut NextOpId, data_ptr: *mut u8) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
         let now = Instant::now();
-        let data_enc = unsafe{ Box::from_raw(data_ptr as *mut Vec<TE>) }; 
+        let data_enc = input.get_enc_data::<Vec<TE>>(); 
+        let lower = input.get_lower();
+        let upper = input.get_upper();
+        assert!(lower.len() == 1 && upper.len() == 1);
         //println!("In parallel_collection_op(before decryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
-        let data = self.batch_decrypt(*data_enc.clone());
+        let data = self.batch_decrypt(data_enc[lower[0]..upper[0]].to_vec());
         //println!("In parallel_collection_op(after decryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
-        forget(data_enc);
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("in enclave decrypt {:?} s", dur);   
         (Box::new(data.into_iter()), None)
