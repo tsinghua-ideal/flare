@@ -17,13 +17,28 @@
 #![feature(map_first_last)]
 #![feature(proc_macro_hygiene)]
 #![feature(specialization)]
+use std::sync::atomic;
 
 use vega::*;
 
 pub mod benchmarks;
 use benchmarks::*;
 
+macro_rules! numin {
+    () =>{
+        {
+          let mut input = String::new();
+            std::io::stdin()
+                .read_line(&mut input)
+              .expect("Failed to read line");
+            input.trim().parse().unwrap()
+      }
+  };
+}
+
 fn main() -> Result<()> {
+    let num: usize = numin!();
+    INPUT_.store(num, atomic::Ordering::SeqCst);
     //Fn! will make the closures serializable. It is necessary. use serde_closure version 0.1.3.
 
     /* map */

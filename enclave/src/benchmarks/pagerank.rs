@@ -167,13 +167,13 @@ pub fn pagerank_sec_0() -> Result<()> {
             .collect::<Vec<_>>()
         }), fe_mp, fd_mp);
     let links = lines.flat_map(Fn!(|lines: Vec<String>| {
-        Box::new(lines.into_iter().map(|line| {
-            let parts = line.split(" ")
-                .collect::<Vec<_>>();
-            (parts[0].to_string(), parts[1].to_string())
-        })) as Box<dyn Iterator<Item = _>>
-    }), fe_fmp, fd_fmp).distinct()
-    .group_by_key(fe_gbk, fd_gbk, 1);
+            Box::new(lines.into_iter().map(|line| {
+                let parts = line.split(" ")
+                    .collect::<Vec<_>>();
+                (parts[0].to_string(), parts[1].to_string())
+            })) as Box<dyn Iterator<Item = _>>
+        }), fe_fmp, fd_fmp).distinct()
+        .group_by_key(fe_gbk, fd_gbk, 1);
     
     let mut ranks = links.map_values(Fn!(|_| 1.0), fe_mv.clone(), fd_mv.clone());
 
