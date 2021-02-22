@@ -237,12 +237,14 @@ where
                     block = buckets_enc.iter()
                         .enumerate()
                         .map(|(idx, sub_part)| {
-                            let l = lower[idx];
-                            let u = upper[idx];
+                            let l = &mut lower[idx];
+                            let u = &mut upper[idx];
                             let ub = upper_bound[idx];
-                            match l < ub {
+                            match *l < ub {
                                 true => {
-                                    let data_enc = sub_part[l..u].to_vec();
+                                    let data_enc = sub_part[*l..*u].to_vec();
+                                    *l += 1;
+                                    *u += 1;
                                     self.batch_decrypt(data_enc)
                                 },
                                 false => Vec::new(),
@@ -265,8 +267,6 @@ where
                     };
                     let idx = *entry.get();
                     entry.remove_entry();
-                    lower[idx] += 1;
-                    upper[idx] += 1;
                     if lower[idx] >= upper_bound[idx] {
                         continue;
                     }
@@ -274,6 +274,8 @@ where
                     cur_size += inc_block.get_aprox_size();
                     block[idx].append(&mut inc_block); 
                     sorted_max_key.insert(block[idx].last().unwrap().0.clone(), idx);
+                    lower[idx] += 1;
+                    upper[idx] += 1;
                 }
                 let dur = now.elapsed().as_nanos() as f64 * 1e-9;
                 println!("cur mem after decryption: {:?}, in enclave decrypt: {:?} s", crate::ALLOCATOR.lock().get_memory_usage(), dur);

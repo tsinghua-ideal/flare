@@ -5,15 +5,15 @@ use rand::Rng;
 
 pub fn transitive_closure_sec() -> Result<()> {
     let sc = Context::new()?;
-    let num_edges = 6;
-    let num_vertices = 3;
+    let num_edges = 200;
+    let num_vertices = 100;
     let mut rng = rand::thread_rng();
 
     let mut hset = HashSet::new();
     let mut count_edges = 0;
     while count_edges < num_edges {
-        let from = rng.gen::<u32>() & num_vertices;
-        let to = rng.gen::<u32>() & num_vertices;
+        let from = rng.gen::<u32>() & (num_vertices - 1);
+        let to = rng.gen::<u32>() & (num_vertices - 1);
         if from != to {
             count_edges += 1;
             hset.insert((from, to));
@@ -127,8 +127,8 @@ pub fn transitive_closure_unsec() -> Result<()> {
     let mut hset = HashSet::new();
     let mut count_edges = 0;
     while count_edges < num_edges {
-        let from = rng.gen::<u32>() & num_vertices;
-        let to = rng.gen::<u32>() & num_vertices;
+        let from = rng.gen::<u32>() & (num_vertices - 1);
+        let to = rng.gen::<u32>() & (num_vertices - 1);
         if from != to {
             count_edges += 1;
             hset.insert((from, to));

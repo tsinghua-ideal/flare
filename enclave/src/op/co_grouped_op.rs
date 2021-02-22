@@ -365,9 +365,14 @@ where
                 let now = Instant::now();
                 if sorted_max_key.is_empty() {
                     for idx in 0..(num_sub_part[0] + num_sub_part[1]) {  //init
+                        if lower[idx] >= upper_bound[idx] {
+                            continue;
+                        }
                         cur_size += get_block(&deps, &op0, &op1, idx, &num_sub_part,
                             lower, upper, data_enc, &mut block, &mut sorted_max_key
                         );
+                        lower[idx] += 1;
+                        upper[idx] += 1;
                     }
                 }
                 while cur_size < block_size {
@@ -377,14 +382,14 @@ where
                     };
                     let idx = *entry.get();
                     entry.remove_entry();
-                    lower[idx] += 1;
-                    upper[idx] += 1;
                     if lower[idx] >= upper_bound[idx] {
                         continue;
                     }
                     cur_size += get_block(&deps, &op0, &op1, idx, &num_sub_part,
                         lower, upper, data_enc, &mut block, &mut sorted_max_key
                     );
+                    lower[idx] += 1;
+                    upper[idx] += 1;
                 }
                 let dur = now.elapsed().as_nanos() as f64 * 1e-9;
                 println!("cur mem after decryption: {:?}, in enclave decrypt: {:?} s", crate::ALLOCATOR.lock().get_memory_usage(), dur);
@@ -525,9 +530,6 @@ where
     WE: Data,
 {
     let mut inc_size = 0;
-    if lower[idx] == upper[idx] {
-        return inc_size;
-    }
     if idx < num_sub_part[0] {
         match &deps[0] {
             Dependency::NarrowDependency(_nar) => {
