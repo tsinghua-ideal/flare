@@ -316,10 +316,10 @@ where
             },
             2 => {      //shuffle read
                 let remained_ptr = CAVE.lock().unwrap().remove(&tid);
-                let (mut agg, mut sorted_max_key): (BTreeMap<K, (Vec<V>, Vec<W>)>, BTreeMap<K, usize>) = match remained_ptr {
+                let (mut agg, mut sorted_max_key): (BTreeMap<K, (Vec<V>, Vec<W>)>, BTreeMap<(K, usize), usize>) = match remained_ptr {
                     Some((a_ptr, s_ptr)) => (
                         *unsafe { Box::from_raw(a_ptr as *mut u8 as *mut BTreeMap<K, (Vec<V>, Vec<W>)>) },
-                        *unsafe { Box::from_raw(s_ptr as *mut u8 as *mut BTreeMap<K, usize>) }
+                        *unsafe { Box::from_raw(s_ptr as *mut u8 as *mut BTreeMap<(K, usize), usize>) }
                     ),
                     None => (BTreeMap::new(), BTreeMap::new()),
                 };
@@ -421,8 +421,9 @@ where
                     }
                 }
  
-                if let Some(min_max_k) = sorted_max_key.first_entry() {
-                    let remained_a = agg.split_off(min_max_k.key());
+                if lower.iter().zip(upper_bound.iter()).filter(|(l, ub)| l < ub).count() > 0 {
+                    let min_max_k = sorted_max_key.first_entry().unwrap();
+                    let remained_a = agg.split_off(&min_max_k.key().0);
                     let remained_s = sorted_max_key;
                     //Temporary stored for next computation
                     CAVE.lock().unwrap().insert(tid, 
@@ -519,7 +520,7 @@ fn get_block<K, V, W, KE, VE, WE>(
         Vec<Vec<(K, W)>>,
         Vec<Vec<(K, Vec<W>)>>
     ),
-    sorted_max_key: &mut BTreeMap<K, usize>,
+    sorted_max_key: &mut BTreeMap<(K, usize), usize>,
 ) -> usize   //incremental size
 where
     K: Data + Eq + Hash + Ord,
@@ -537,7 +538,7 @@ where
                 let mut block0 = op0.batch_decrypt(sub_data_enc[lower[idx]..upper[idx]].to_vec());
                 inc_size += block0.get_aprox_size();
                 block.0[idx].append(&mut block0);
-                sorted_max_key.insert(block.0[idx].last().unwrap().0.clone(), idx);
+                sorted_max_key.insert((block.0[idx].last().unwrap().0.clone(), idx), idx);
             },
             Dependency::ShuffleDependency(shuf) => {
                 //TODO need revision if fe & fd of group_by is passed 
@@ -549,7 +550,7 @@ where
                 }
                 inc_size += block1.get_aprox_size();
                 block.1[idx].append(&mut block1);
-                sorted_max_key.insert(block.1[idx].last().unwrap().0.clone(), idx);
+                sorted_max_key.insert((block.1[idx].last().unwrap().0.clone(), idx), idx);
             },
         };
     } else {
@@ -560,7 +561,7 @@ where
                 let mut block2 = op1.batch_decrypt(sub_data_enc[lower[idx]..upper[idx]].to_vec());
                 inc_size += block2.get_aprox_size();
                 block.2[idx1].append(&mut block2);
-                sorted_max_key.insert(block.2[idx1].last().unwrap().0.clone(), idx);
+                sorted_max_key.insert((block.2[idx1].last().unwrap().0.clone(), idx), idx);
             },
             Dependency::ShuffleDependency(shuf) => {
                 //TODO need revision if fe & fd of group_by is passed 
@@ -572,7 +573,7 @@ where
                 }
                 inc_size += block3.get_aprox_size();
                 block.3[idx1].append(&mut block3);
-                sorted_max_key.insert(block.3[idx1].last().unwrap().0.clone(), idx);
+                sorted_max_key.insert((block.3[idx1].last().unwrap().0.clone(), idx), idx);
             },
         };
     }

@@ -377,10 +377,9 @@ pub fn pagerank_unsec_0() -> Result<()> {
             .map_values(Fn!(|v| 0.15 + 0.85 * v), fe_mv.clone(), fd_mv.clone());
     }
 
-    let output = ranks.collect().unwrap();
-    for (url, rank) in output {
-        println!("url {:?} has rank {:?}", url, rank);
-    }
+    let output = ranks.collect().unwrap().into_iter().map(|(k, v)| (ordered_float::OrderedFloat(v), k)).collect::<BTreeMap<_, _>>();
+    let (v, k) = output.last_key_value().unwrap();
+    println!("{:?} rank first with {:?}", k, v);
 
     Ok(())
 }

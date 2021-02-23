@@ -218,10 +218,10 @@ where
             2 => {      //Shuffle read
                 let aggregator = self.aggregator.clone(); 
                 let remained_ptr = CAVE.lock().unwrap().remove(&tid);
-                let (mut combiners, mut sorted_max_key): (BTreeMap<K, Option<C>>, BTreeMap<K, usize>) = match remained_ptr {
+                let (mut combiners, mut sorted_max_key): (BTreeMap<K, Option<C>>, BTreeMap<(K, usize), usize>) = match remained_ptr {
                     Some((c_ptr, s_ptr)) => (
                         *unsafe { Box::from_raw(c_ptr as *mut u8 as *mut BTreeMap<K, Option<C>>) },
-                        *unsafe { Box::from_raw(s_ptr as *mut u8 as *mut BTreeMap<K, usize>) }
+                        *unsafe { Box::from_raw(s_ptr as *mut u8 as *mut BTreeMap<(K, usize), usize>) }
                     ),
                     None => (BTreeMap::new(), BTreeMap::new()),
                 };
@@ -253,7 +253,7 @@ where
                     sorted_max_key = block.iter()
                         .enumerate()
                         .filter(|(idx, sub_part)| sub_part.last().is_some())
-                        .map(|(idx, sub_part)| (sub_part.last().unwrap().0.clone(), idx))
+                        .map(|(idx, sub_part)| ((sub_part.last().unwrap().0.clone(), idx), idx))
                         .collect::<BTreeMap<_, _>>();
                 } else {
                     block.resize(lower.len(), Vec::new());
@@ -273,7 +273,7 @@ where
                     let mut inc_block = self.batch_decrypt(buckets_enc[idx][lower[idx]..upper[idx]].to_vec());
                     cur_size += inc_block.get_aprox_size();
                     block[idx].append(&mut inc_block); 
-                    sorted_max_key.insert(block[idx].last().unwrap().0.clone(), idx);
+                    sorted_max_key.insert((block[idx].last().unwrap().0.clone(), idx), idx);
                     lower[idx] += 1;
                     upper[idx] += 1;
                 }
@@ -290,8 +290,9 @@ where
                     }
                 }
 
-                if let Some(min_max_k) = sorted_max_key.first_entry() {
-                    let remained_c = combiners.split_off(min_max_k.key());
+                if lower.iter().zip(upper_bound.iter()).filter(|(l, ub)| l < ub).count() > 0 {
+                    let min_max_k = sorted_max_key.first_entry().unwrap();
+                    let remained_c = combiners.split_off(&min_max_k.key().0);
                     let remained_s = sorted_max_key;
                     //Temporary stored for next computation
                     CAVE.lock().unwrap().insert(tid, 

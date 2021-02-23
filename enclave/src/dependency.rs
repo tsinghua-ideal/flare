@@ -174,6 +174,11 @@ where
                 let mut bucket = bucket.into_iter().collect::<Vec<_>>();
                 let mut len = bucket.len();
                 let mut data_enc = Vec::with_capacity(len/MAX_ENC_BL+1);
+                if len >= 1 {    
+                    len -= 1;
+                    let input = vec![bucket.remove(0)];
+                    data_enc.push((self.fe)(input));
+                }
                 //TODO: need to adjust the block size
                 while len >= MAX_ENC_BL {    
                     len -= MAX_ENC_BL;
@@ -199,6 +204,11 @@ where
                 let mut len = bucket.len();
                 let mut data_enc = Vec::with_capacity(len/MAX_ENC_BL+1);
                 //TODO: need to adjust the block size
+                if len >= 1 {    
+                    len -= 1;
+                    let input = vec![bucket.remove(0)];
+                    data_enc.push((self.fe)(input));
+                }
                 while len >= MAX_ENC_BL {    
                     len -= MAX_ENC_BL;
                     let remain = bucket.split_off(MAX_ENC_BL);
