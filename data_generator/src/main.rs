@@ -34,7 +34,24 @@ fn main() {
 
     //k_means
     let mut rng = rand::thread_rng();
-    let vals: Vec<Vec<f64>> = (0..100).map(|_| (0..5).map(|_| rng.gen_range(0 as f64, 20 as f64)).collect()).collect();
+    let vals: Vec<Vec<f64>> = (0..2_000_000).map(|_| (0..5).map(|_| rng.gen_range(0 as f64, 20 as f64)).collect()).collect();
+    let mut iter = vals.chunks(MAX_ENC_BL);
+    let mut batch = iter.next();
+    let mut data_enc = Vec::new();
+    while batch.is_some() {
+        let part = batch.unwrap()
+            .iter()
+            .map(|n| n.iter()
+                .map(|val| val.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+            ).collect::<Vec<_>>()
+            .join("\n")
+            .as_bytes()
+            .to_vec();
+        data_enc.push(ser_encrypt(vec![part]));
+        batch = iter.next();
+    }
 
     let strings = vals.into_iter()
         .map(|n| n.into_iter()
@@ -45,11 +62,9 @@ fn main() {
         .join("\n")
         .as_bytes()
         .to_vec();
-    let iteme = ser_encrypt(vec![strings.clone()]);
-    let bytes = bincode::serialize(&vec![iteme]).unwrap();
-
-    set_up(bytes, PathBuf::from("/tmp/ct_km"), 10);
-    set_up(strings, PathBuf::from("/tmp/pt_km"), 10);
+    let bytes = bincode::serialize(&data_enc).unwrap();
+    set_up(bytes, PathBuf::from("/tmp/ct_km"), 1);
+    set_up(strings, PathBuf::from("/tmp/pt_km"), 1);
 
     //pagerank
     let vals: Vec<Vec<u32>> = (0..1_000_000).map(|_| (0..2).map(|_| rng.gen_range(0 as u32, 2_000_000 as u32)).collect()).collect();

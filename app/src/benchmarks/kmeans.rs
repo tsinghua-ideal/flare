@@ -45,7 +45,7 @@ fn merge_results(a: (Vec<f64>, i32), b: (Vec<f64>, i32)) -> (Vec<f64>, i32) {
 // secure mode
 pub fn kmeans_sec_0() -> Result<()> {
     let sc = Context::new()?;
-
+    let now = Instant::now();
     let fe = Fn!(|vp: Vec<Vec<u8>>|{
         ser_encrypt::<>(vp)    
     });
@@ -183,13 +183,15 @@ pub fn kmeans_sec_0() -> Result<()> {
 
         
     }
-    println!("k_points = {:?}", k_points.to_plain());
+    let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+    println!("Total time {:?} s, k_points = {:?}", dur, k_points.to_plain());
     Ok(())
 }
     
 // unsecure mode
 pub fn kmeans_unsec_0() -> Result<()> {
     let sc = Context::new()?;
+    let now = Instant::now();
     let fe = Fn!(|vp: Vec<Vec<String>>| {
         let buf0 = ser_encrypt::<>(vp);
         buf0
@@ -310,7 +312,8 @@ pub fn kmeans_unsec_0() -> Result<()> {
 
         
     }
-    println!("k_points = {:?}", k_points);
+    let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+    println!("total time = {:?}s, k_points = {:?}", dur, k_points);
     Ok(())
 }
 

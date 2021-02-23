@@ -8,12 +8,12 @@ pub fn transitive_closure_sec() -> Result<()> {
     let num_edges = 200;
     let num_vertices = 100;
     let mut rng = rand::thread_rng();
-
+    
     let mut hset = HashSet::new();
     let mut count_edges = 0;
     while count_edges < num_edges {
-        let from = rng.gen::<u32>() & (num_vertices - 1);
-        let to = rng.gen::<u32>() & (num_vertices - 1);
+        let from = rng.gen_range::<_, u32, u32>(0, num_vertices);
+        let to = rng.gen_range::<_, u32, u32>(0, num_vertices);
         if from != to {
             count_edges += 1;
             hset.insert((from, to));
@@ -90,7 +90,7 @@ pub fn transitive_closure_sec() -> Result<()> {
     if len != 0 {
         data_enc.push(fe(data));
     }
-
+    let now = Instant::now();
     let mut tc = sc.parallelize(vec![], data_enc, fe.clone(), fd.clone(), 1);
     // Linear transitive closure: each round grows paths by one edge,
     // by joining the graph's edges with the already-discovered paths.
@@ -114,28 +114,29 @@ pub fn transitive_closure_sec() -> Result<()> {
         next_count = tc.secure_count().unwrap();
         println!("next_count = {:?}", next_count);
     }
-
+    let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+    println!("total time {:?}s", dur);
     Ok(())
 }
 
 pub fn transitive_closure_unsec() -> Result<()> {
     let sc = Context::new()?;
-    let num_edges = 3;
-    let num_vertices = 3;
+    let num_edges = 200;
+    let num_vertices = 100;
     let mut rng = rand::thread_rng();
-
+    
     let mut hset = HashSet::new();
     let mut count_edges = 0;
     while count_edges < num_edges {
-        let from = rng.gen::<u32>() & (num_vertices - 1);
-        let to = rng.gen::<u32>() & (num_vertices - 1);
+        let from = rng.gen_range::<_, u32, u32>(0, num_vertices);
+        let to = rng.gen_range::<_, u32, u32>(0, num_vertices);
         if from != to {
             count_edges += 1;
             hset.insert((from, to));
         }
     }
     let data = hset.into_iter().collect::<Vec<_>>();
-    println!("data = {:?}", data);
+    
 
     let fe = Fn!(|vp: Vec<(u32, u32)> | -> (Vec<u8>, Vec<u8>) {
         let len = vp.len();
@@ -192,7 +193,7 @@ pub fn transitive_closure_unsec() -> Result<()> {
             )
             .collect::<Vec<_>>() 
     });
-    
+    let now = Instant::now();
     let mut tc = sc.parallelize(data, vec![], fe.clone(), fd.clone(), 2);
     // Linear transitive closure: each round grows paths by one edge,
     // by joining the graph's edges with the already-discovered paths.
@@ -216,6 +217,7 @@ pub fn transitive_closure_unsec() -> Result<()> {
         next_count = tc.count().unwrap();
         println!("next_count = {:?}, tc = {:?}", next_count, tc.collect().unwrap());
     }
-
+    let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+    println!("total time {:?}s", dur);
     Ok(())
 }

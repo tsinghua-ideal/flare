@@ -37,6 +37,7 @@ macro_rules! numin {
 }
 
 fn main() -> Result<()> {
+    println!("please input size of sub-partition: 2^b, b =");
     let num: usize = numin!();
     INPUT_.store(num, atomic::Ordering::SeqCst);
     //Fn! will make the closures serializable. It is necessary. use serde_closure version 0.1.3.
@@ -85,11 +86,11 @@ fn main() -> Result<()> {
     //lr_unsec()?;
 
     /* page rank */
-    pagerank_sec_0()?;
+    //pagerank_sec_0()?;
     //pagerank_unsec_0()?;
 
     /* transitive_closure */
-    //transitive_closure_sec()?;
+    transitive_closure_sec()?;
     //transitive_closure_unsec()?;
 
     // test the speculative execution in loop

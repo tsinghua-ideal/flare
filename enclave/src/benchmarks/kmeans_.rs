@@ -184,6 +184,7 @@ pub fn kmeans_sec_0_(tail_info: &mut TailCompInfo) -> Result<()> {
     tail_info.insert(&k_points);
     tail_info.insert(&temp_dist);
     
+    
     Ok(())
 }
 
