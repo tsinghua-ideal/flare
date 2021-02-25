@@ -5,8 +5,8 @@ use rand::Rng;
 
 pub fn transitive_closure_sec() -> Result<()> {
     let sc = Context::new()?;
-    let num_edges = 200;
-    let num_vertices = 100;
+    let num_edges = 50;
+    let num_vertices = 20;
     let mut rng = rand::thread_rng();
     
     let mut hset = HashSet::new();
@@ -121,8 +121,8 @@ pub fn transitive_closure_sec() -> Result<()> {
 
 pub fn transitive_closure_unsec() -> Result<()> {
     let sc = Context::new()?;
-    let num_edges = 200;
-    let num_vertices = 100;
+    let num_edges = 100;
+    let num_vertices = 50;
     let mut rng = rand::thread_rng();
     
     let mut hset = HashSet::new();

@@ -106,6 +106,10 @@ impl Allocator {
         self.usage
     }
 
+    pub fn get_max_memory_usage(&self) -> usize {
+        self.max_usage
+    }
+
 }
 
 impl Locked<Allocator> {
@@ -142,6 +146,7 @@ unsafe impl GlobalAlloc for Locked<Allocator> {
             }
         } else {
             bump.usage += layout.size();
+            bump.max_usage = std::cmp::max(bump.max_usage, bump.usage);
             System.alloc(layout)
         }
     }
@@ -162,6 +167,7 @@ unsafe impl GlobalAlloc for Locked<Allocator> {
             }
         } else {
             bump.usage += layout.size();
+            bump.max_usage = std::cmp::max(bump.max_usage, bump.usage);
             System.alloc_zeroed(layout)
         }
     }
@@ -190,6 +196,7 @@ unsafe impl GlobalAlloc for Locked<Allocator> {
             }
         } else {
             bump.usage += new_size - layout.size();
+            bump.max_usage = std::cmp::max(bump.max_usage, bump.usage);
             System.realloc(ptr, layout, new_size)
         }
     }

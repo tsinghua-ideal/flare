@@ -155,6 +155,7 @@ pub extern "C" fn secure_execute(tid: u64,
     let result_ptr = final_op.iterator_start(tid, &mut call_seq, input, &dep_info); //shuffle need dep_info
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Cur mem: {:?}, secure_execute {:?} s", ALLOCATOR.lock().get_memory_usage(), dur);
+    println!("Max mem: {:?}", ALLOCATOR.lock().get_max_memory_usage());
     return result_ptr as usize
 }
 
