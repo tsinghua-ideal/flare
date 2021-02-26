@@ -90,6 +90,10 @@ where
         };
     }
 
+    fn fix_split_num(&self, split_num: usize) {
+        self.prev.fix_split_num(split_num)
+    }
+
     fn get_op_id(&self) -> OpId {
         self.prev.get_op_id()
     }

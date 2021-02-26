@@ -137,6 +137,7 @@ lazy_static! {
 pub extern "C" fn secure_execute(tid: u64, 
     rdd_ids: *const u8,
     op_ids: *const u8,
+    part_nums: *const u8,
     cache_meta: CacheMeta,
     dep_info: DepInfo, 
     input: Input, 
@@ -146,11 +147,12 @@ pub extern "C" fn secure_execute(tid: u64,
     println!("Cur mem: {:?}, at the begining of secure execution", ALLOCATOR.lock().get_memory_usage());
     let rdd_ids = unsafe { (rdd_ids as *const Vec<usize>).as_ref() }.unwrap();
     let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();
+    let part_nums = unsafe { (part_nums as *const Vec<usize>).as_ref() }.unwrap();
     let captured_vars = unsafe { (captured_vars as *const HashMap<usize, Vec<Vec<u8>>>).as_ref() }.unwrap();
-    println!("rdd ids = {:?}, dep_info = {:?}, cache_meta = {:?}", rdd_ids, dep_info, cache_meta);
+    println!("rdd ids = {:?}, part_nums = {:?}, dep_info = {:?}, cache_meta = {:?}", rdd_ids, part_nums, dep_info, cache_meta);
     
     let now = Instant::now();
-    let mut call_seq = NextOpId::new(rdd_ids, op_ids, cache_meta.clone(), captured_vars.clone(), false);
+    let mut call_seq = NextOpId::new(rdd_ids, op_ids, Some(part_nums), cache_meta.clone(), captured_vars.clone(), false);
     let final_op = call_seq.get_cur_op();
     let result_ptr = final_op.iterator_start(tid, &mut call_seq, input, &dep_info); //shuffle need dep_info
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
@@ -228,7 +230,7 @@ pub extern "C" fn spec_execute(tid: u64,
     //identifier is not used, so set it 0 
     let dep_info = DepInfo::new(11, 0, 0, 0, parent_op_id, child_op_id);
     let cache_meta = cache_meta.transform();
-    let mut call_seq = NextOpId::new(&spec_call_seq.0, &spec_call_seq.1, cache_meta, HashMap::new(), true);
+    let mut call_seq = NextOpId::new(&spec_call_seq.0, &spec_call_seq.1, None, cache_meta, HashMap::new(), true);
     let final_op = call_seq.get_cur_op();
     let input = Input::padding();
     let result_ptr = final_op.iterator_start(tid, &mut call_seq, input, &dep_info);

@@ -9,6 +9,7 @@ pub trait Partitioner: Downcast + dyn_clone::DynClone + Send + Sync {
     fn equals(&self, other: &dyn Any) -> bool;
     fn get_num_of_partitions(&self) -> usize; 
     fn get_partition(&self, key: &dyn Any) -> usize;
+    fn set_num_of_partitions(&mut self, partitions: usize);
 }
 
 dyn_clone::clone_trait_object!(Partitioner);
@@ -49,5 +50,8 @@ impl<K: Data + Hash + Eq> Partitioner for HashPartitioner<K> {
     fn get_partition(&self, key: &dyn Any) -> usize {
         let key = key.downcast_ref::<K>().unwrap();
         hash(key) as usize % self.partitions
+    }
+    fn set_num_of_partitions(&mut self, partitions: usize) {
+        self.partitions = partitions;
     }
 }

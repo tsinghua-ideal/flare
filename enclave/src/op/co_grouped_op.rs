@@ -8,6 +8,7 @@ use crate::dependency::{
     ShuffleDependencyTrait,
 };
 use crate::op::*;
+use crate::partitioner::HashPartitioner;
 
 #[derive(Clone)]
 pub struct CoGrouped<K, V, W, KE, VE, WE, CE, DE, FE, FD> 
@@ -53,7 +54,7 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
                part: Box<dyn Partitioner>) -> Self 
     {
         let context = op1.get_context();
-        let mut vals = OpVals::new(context.clone());
+        let mut vals = OpVals::new(context.clone(), part.get_num_of_partitions());
         let mut deps = Vec::new();
         let cur_id = vals.id;
         let op0_id = op0.get_op_id();
@@ -227,6 +228,10 @@ where
         }
     }
 
+    fn fix_split_num(&self, split_num: usize) {
+        self.vals.split_num.store(split_num, atomic::Ordering::SeqCst);
+    }
+
     fn get_op_id(&self) -> OpId {
         self.vals.id
     }
@@ -242,9 +247,9 @@ where
     fn get_next_deps(&self) -> Arc<RwLock<HashMap<(OpId, OpId), Dependency>>> {
         self.next_deps.clone()
     }
-
+    
     fn number_of_splits(&self) -> usize {
-        self.part.get_num_of_partitions()
+        self.vals.split_num.load(atomic::Ordering::SeqCst)
     }
 
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
@@ -444,6 +449,7 @@ where
 
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
         let data_ptr = input.data;
+        call_seq.fix_split_num();
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
         if have_cache {

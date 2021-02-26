@@ -67,7 +67,7 @@ where
         fd: FD,
     ) -> Self {
         let ctx = parent.get_context();
-        let mut vals = OpVals::new(ctx);
+        let mut vals = OpVals::new(ctx, part.get_num_of_partitions());
         let cur_id = vals.id;
         let prev_id = parent.get_op_id();
         let dep = Dependency::ShuffleDependency(Arc::new(
@@ -133,6 +133,10 @@ where
         }
     }
 
+    fn fix_split_num(&self, split_num: usize) {
+        self.vals.split_num.store(split_num, atomic::Ordering::SeqCst);
+    }
+
     fn get_op_id(&self) -> OpId {
         self.vals.id
     }
@@ -154,7 +158,7 @@ where
     }
 
     fn number_of_splits(&self) -> usize {
-        self.part.get_num_of_partitions()
+        self.vals.split_num.load(atomic::Ordering::SeqCst)
     }
 
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
@@ -312,6 +316,7 @@ where
 
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
         let data_ptr = input.data;
+        call_seq.fix_split_num();
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
         if have_cache {

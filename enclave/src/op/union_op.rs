@@ -25,10 +25,9 @@ impl<T: Data, TE: Data> Union<T, TE>
 {
     #[track_caller]
     pub(crate) fn new(ops: &[Arc<dyn OpE<Item = T, ItemE = TE>>]) -> Self {
-        let mut vals_ = OpVals::new(ops[0].get_context());
+        let mut vals_ = OpVals::new(ops[0].get_context(), 0);
         let cur_id = vals_.id;
         
-        let vals; 
         let part = match Union::has_unique_partitioner(ops) {
             true => {
                 for prev in ops {
@@ -41,8 +40,7 @@ impl<T: Data, TE: Data> Union<T, TE>
                         (prev_id, cur_id),
                         new_dep
                     );
-                } 
-                vals = Arc::new(vals_);
+                }
                 Some(ops[0].partitioner().unwrap())
             },
             false => {
@@ -60,10 +58,19 @@ impl<T: Data, TE: Data> Union<T, TE>
                     );
                     pos += num_parts;
                 } 
-                vals = Arc::new(vals_);
                 None
             },
         };
+        let split_num = match &part {
+            None => {
+                ops.iter().fold(0, |acc, op| acc + op.number_of_splits())
+            },
+            Some(part) => {
+                part.get_num_of_partitions()
+            }
+        };
+        vals_.split_num.store(split_num, atomic::Ordering::SeqCst);
+        let vals = Arc::new(vals_);
         let ops: Vec<_> = ops.iter().map(|op| op.clone().into()).collect();
 
         Union {
@@ -126,6 +133,10 @@ impl<T: Data, TE: Data> OpBase for Union<T, TE>
         }
     }
 
+    fn fix_split_num(&self, split_num: usize) {
+        self.vals.split_num.store(split_num, atomic::Ordering::SeqCst);
+    }
+
     fn get_op_id(&self) -> OpId {
         self.vals.id
     }
@@ -149,14 +160,7 @@ impl<T: Data, TE: Data> OpBase for Union<T, TE>
     }
 
     fn number_of_splits(&self) -> usize {
-        match &self.part {
-            None => {
-                self.ops.iter().fold(0, |acc, op| acc + op.number_of_splits())
-            },
-            Some(part) => {
-                part.get_num_of_partitions()
-            }
-        }
+        self.vals.split_num.load(atomic::Ordering::SeqCst)
     }
 
     fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
@@ -212,6 +216,7 @@ impl<T: Data, TE: Data> Op for Union<T, TE>
 
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
         let data_ptr = input.data;
+        call_seq.fix_split_num();
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
         if have_cache {

@@ -57,6 +57,7 @@ enclave {
         public size_t secure_execute(uint64_t tid,
             [user_check] uint8_t* rdd_ids,
             [user_check] uint8_t* op_ids,
+            [user_check] uint8_t* part_nums,
             struct cache_meta_t cache_meta,
             struct dep_info_t dep_info, 
 		    struct input_t input, 

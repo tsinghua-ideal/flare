@@ -620,6 +620,7 @@ impl OpId {
 pub struct NextOpId<'a> {
     rdd_ids: &'a Vec<usize>,
     op_ids: &'a Vec<OpId>,
+    split_nums: Vec<usize>,
     cur_idx: usize,
     cache_meta: CacheMeta,
     captured_vars: HashMap<usize, Vec<Vec<u8>>>,
@@ -627,10 +628,15 @@ pub struct NextOpId<'a> {
 }
 
 impl<'a> NextOpId<'a> {
-    pub fn new(rdd_ids: &'a Vec<usize>, op_ids: &'a Vec<OpId>, cache_meta: CacheMeta, captured_vars: HashMap<usize, Vec<Vec<u8>>>, is_spec: bool) -> Self {
+    pub fn new(rdd_ids: &'a Vec<usize>, op_ids: &'a Vec<OpId>, split_nums: Option<&'a Vec<usize>>, cache_meta: CacheMeta, captured_vars: HashMap<usize, Vec<Vec<u8>>>, is_spec: bool) -> Self {
+        let split_nums = match split_nums {
+            Some(nums) => nums.clone(),
+            None => vec![],
+        };
         NextOpId {
             rdd_ids,
             op_ids,
+            split_nums,
             cur_idx: 0,
             cache_meta,
             captured_vars,
@@ -644,6 +650,17 @@ impl<'a> NextOpId<'a> {
 
     fn get_cur_op_id(&self) -> OpId {
         self.op_ids[self.cur_idx]
+    }
+
+    fn fix_split_num(&self) {
+        if !self.is_spec {
+            let op = self.get_cur_op();
+            op.fix_split_num(self.split_nums[self.cur_idx]);
+        }
+    }
+
+    fn pop_reduce_num(&mut self) -> usize {
+        self.split_nums.remove(0)
     }
 
     fn get_part_id(&self) -> usize {
@@ -889,16 +906,18 @@ impl Context {
 
 pub(crate) struct OpVals {
     pub id: OpId,
+    pub split_num: AtomicUsize,
     pub deps: Vec<Dependency>,
     pub context: Weak<Context>,
 }
 
 impl OpVals {
     #[track_caller]
-    pub fn new(sc: Arc<Context>) -> Self {
+    pub fn new(sc: Arc<Context>, split_num: usize) -> Self {
         let loc = Location::caller(); 
         OpVals {
             id: sc.new_op_id(loc),
+            split_num: AtomicUsize::new(split_num),
             deps: Vec::new(),
             context: Arc::downgrade(&sc),
         }
@@ -909,15 +928,16 @@ pub trait OpBase: Send + Sync {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo);
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo);
     fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo);
+    fn fix_split_num(&self, split_num: usize);
     fn get_op_id(&self) -> OpId;
     fn get_context(&self) -> Arc<Context>;
     fn get_deps(&self) -> Vec<Dependency>;
     fn get_next_deps(&self) -> Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>;
     fn get_next_shuf_dep(&self, dep_info: &DepInfo) -> Option<Arc<dyn ShuffleDependencyTrait>> {
         let cur_key = dep_info.get_op_key();
-        let next_deps = self.get_next_deps().read().unwrap().clone();
+        let next_deps = self.get_next_deps();
         let mut res = None; 
-        match next_deps.get(&cur_key) {
+        match next_deps.read().unwrap().get(&cur_key) {
             Some(dep) => match dep {
                 Dependency::ShuffleDependency(shuf_dep) => res = Some(shuf_dep.clone()),
                 Dependency::NarrowDependency(nar_dep) => res = None,
@@ -1027,6 +1047,9 @@ impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     }
     fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo) {
         (**self).call_free_res_enc(res_ptr, dep_info);
+    }
+    fn fix_split_num(&self, split_num: usize) {
+        (**self).fix_split_num(split_num)
     }
     fn get_op_id(&self) -> OpId {
         (**self).get_op_base().get_op_id()
@@ -1341,11 +1364,15 @@ pub trait OpE: Op {
     } 
 
     fn shuffle(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+        let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
+        if !call_seq.is_spec {
+            let reduce_num = call_seq.pop_reduce_num();
+            shuf_dep.change_partitioner(reduce_num);
+        }
         let (data_iter, handle) = self.compute(call_seq, input);
         let data = data_iter.collect::<Vec<Self::Item>>();
         //let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
         let iter = Box::new(data) as Box<dyn Any>;
-        let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
         let result_ptr = shuf_dep.do_shuffle_task(iter, call_seq.is_spec);
         if let Some(handle) = handle {
             handle.join();

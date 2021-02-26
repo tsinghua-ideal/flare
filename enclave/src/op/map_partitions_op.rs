@@ -49,7 +49,7 @@ where
 {
     #[track_caller]
     pub(crate) fn new(prev: Arc<dyn Op<Item = T>>, f: F, fe: FE, fd: FD) -> Self {
-        let mut vals = OpVals::new(prev.get_context());
+        let mut vals = OpVals::new(prev.get_context(), prev.number_of_splits());
         let cur_id = vals.id;
         let prev_id = prev.get_op_id();
         vals.deps
@@ -108,6 +108,10 @@ where
         }
     }
 
+    fn fix_split_num(&self, split_num: usize) {
+        self.vals.split_num.store(split_num, atomic::Ordering::SeqCst);
+    }
+
     fn get_op_id(&self) -> OpId {
         self.vals.id
     }
@@ -129,7 +133,7 @@ where
     }
 
     fn number_of_splits(&self) -> usize {
-        self.prev.number_of_splits()
+        self.vals.split_num.load(atomic::Ordering::SeqCst)
     }
 
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
@@ -192,6 +196,7 @@ where
 
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
         let data_ptr = input.data;
+        call_seq.fix_split_num();
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
 

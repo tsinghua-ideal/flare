@@ -4,13 +4,13 @@ use std::boxed::Box;
 use std::collections::{BTreeMap, HashSet};
 use std::hash::Hash;
 use std::mem::forget;
-use std::sync::Arc;
+use std::sync::{Arc, SgxRwLock as RwLock, atomic::{self, AtomicBool}};
 use std::time::Instant;
 use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
 use crate::basic::{AnyData, Data, Func};
-use crate::op::{res_enc_to_ptr, MAX_ENC_BL, OpId};
+use crate::op::{load_opmap, res_enc_to_ptr, MAX_ENC_BL, OpId};
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use downcast_rs::DowncastSync;
@@ -106,6 +106,8 @@ impl NarrowDependencyTrait for RangeDependency {
 }
 
 pub trait ShuffleDependencyTrait: DowncastSync + Send + Sync  { 
+    fn change_partitioner(&self, reduce_num: usize);
+    fn has_spec_oppty(&self) -> bool;
     //fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>, is_spec: bool) -> *mut u8;
     fn do_shuffle_task(&self, iter: Box<dyn Any>, is_spec: bool) -> *mut u8;
     fn send_sketch(&self, buf: &mut SizeBuf, p_data_enc: *mut u8);
@@ -129,7 +131,8 @@ where
 {
     pub is_cogroup: bool,
     pub aggregator: Arc<Aggregator<K, V, C>>,
-    pub partitioner: Box<dyn Partitioner>,
+    pub partitioner: RwLock<Box<dyn Partitioner>>,
+    pub split_num_unchanged: Arc<AtomicBool>,
     pub identifier: usize,
     pub parent: OpId,
     pub child: OpId,
@@ -158,7 +161,8 @@ where
         ShuffleDependency {
             is_cogroup,
             aggregator,
-            partitioner,
+            partitioner: RwLock::new(partitioner),
+            split_num_unchanged: Arc::new(AtomicBool::new(true)),
             identifier,
             parent,
             child,
@@ -236,11 +240,23 @@ where
     KE: Data,
     CE: Data,
 {
+    fn change_partitioner(&self, reduce_num: usize) {
+        let mut cur_partitioner = self.partitioner.write().unwrap();
+        if reduce_num != cur_partitioner.get_num_of_partitions() {
+            cur_partitioner.set_num_of_partitions(reduce_num);
+            self.split_num_unchanged.store(false, atomic::Ordering::SeqCst);
+        }
+    }
+
+    fn has_spec_oppty(&self) -> bool {
+        self.split_num_unchanged.load(atomic::Ordering::SeqCst)
+    }
+
     //fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>, is_spec: bool) -> *mut u8 {
     fn do_shuffle_task(&self, iter: Box<dyn Any>, is_spec: bool) -> *mut u8 {
         let aggregator = self.aggregator.clone();
-        let num_output_splits = self.partitioner.get_num_of_partitions();
-        let partitioner = self.partitioner.clone();
+        let partitioner = self.partitioner.read().unwrap().clone();
+        let num_output_splits = partitioner.get_num_of_partitions();
         let mut buckets: Vec<BTreeMap<K, C>> = (0..num_output_splits)
             .map(|_| BTreeMap::new())
             .collect::<Vec<_>>();
@@ -334,7 +350,7 @@ where
         Arc::new(ShuffleDependency::new(
             self.is_cogroup,
             self.aggregator.clone(),
-            self.partitioner.clone(),
+            self.partitioner.read().unwrap().clone(),
             self.identifier,
             parent_op_id,
             child_op_id,

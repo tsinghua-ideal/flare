@@ -12,7 +12,6 @@ where
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     fe: FE,
     fd: FD,
-    num_splits: usize,
     _marker_t: PhantomData<T>,
     _marker_te: PhantomData<TE>,
 }
@@ -30,7 +29,6 @@ where
             next_deps: self.next_deps.clone(),
             fe: self.fe.clone(),
             fd: self.fd.clone(),
-            num_splits: self.num_splits,
             _marker_t: PhantomData,
             _marker_te: PhantomData,
         }
@@ -46,13 +44,12 @@ where
 {
     #[track_caller]
     pub fn new(context: Arc<Context>, fe: FE, fd: FD, num_splits: usize) -> Self {
-        let vals = OpVals::new(context.clone());
+        let vals = OpVals::new(context.clone(), num_splits);
         ParallelCollection {
             vals: Arc::new(vals),
             next_deps: Arc::new(RwLock::new(HashMap::new())),
             fe,
             fd,
-            num_splits,
             _marker_t: PhantomData,
             _marker_te: PhantomData,
         }
@@ -91,6 +88,10 @@ where
         }
     }
 
+    fn fix_split_num(&self, split_num: usize) {
+        self.vals.split_num.store(split_num, atomic::Ordering::SeqCst);
+    }
+
     fn get_op_id(&self) -> OpId {
         self.vals.id
     }
@@ -112,7 +113,7 @@ where
     }
 
     fn number_of_splits(&self) -> usize {
-        self.num_splits
+        self.vals.split_num.load(atomic::Ordering::SeqCst)
     }
 
     fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
@@ -172,6 +173,7 @@ where
 
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
         let now = Instant::now();
+        call_seq.fix_split_num();
         let data_enc = input.get_enc_data::<Vec<TE>>(); 
         let lower = input.get_lower();
         let upper = input.get_upper();

@@ -68,10 +68,8 @@ where
     FE: Func(Vec<U>) -> UE + Clone,
     FD: Func(UE) -> Vec<U> + Clone,
 {
-    id: OpId,
+    vals: Arc<OpVals>,
     path: PathBuf,
-    context: Arc<Context>,
-    num_splits: Arc<AtomicUsize>,
     sec_decoder: Option<F0>,
     fe: FE,
     fd: FD,
@@ -94,12 +92,22 @@ where
         let LocalFsReaderConfig {
             dir_path,
         } = config;
-        let loc = Location::caller(); 
+
+        let mut num: usize = 0;
+        let sgx_status = unsafe { 
+            ocall_get_addr_map_len(&mut num)
+        };
+        match sgx_status {
+            sgx_status_t::SGX_SUCCESS => {},
+            _ => {
+                panic!("[-] OCALL Enclave Failed {}!", sgx_status.as_str());
+            }
+        }
+        let vals = Arc::new(OpVals::new(context, num));
+ 
         LocalFsReader {
-            id: context.new_op_id(loc),
+            vals,
             path: dir_path,
-            context,
-            num_splits: Arc::new(AtomicUsize::new(0)),
             sec_decoder,
             fe,
             fd,
@@ -144,12 +152,16 @@ where
         }
     }
 
+    fn fix_split_num(&self, split_num: usize) {
+        self.vals.split_num.store(split_num, atomic::Ordering::SeqCst);
+    }
+
     fn get_op_id(&self) -> OpId {
-        self.id
+        self.vals.id
     }
 
     fn get_context(&self) -> Arc<Context> {
-        self.context.clone()
+        self.vals.context.upgrade().unwrap()
     }
 
     fn get_deps(&self) -> Vec<Dependency> {
@@ -165,26 +177,7 @@ where
     }
 
     fn number_of_splits(&self) -> usize {
-        let num = self.num_splits.load(atomic::Ordering::SeqCst);
-
-        if num != 0 {
-            return num;
-        } else {
-            let mut num: usize = 0;
-            let sgx_status = unsafe { 
-                ocall_get_addr_map_len(&mut num)
-            };
-            match sgx_status {
-                sgx_status_t::SGX_SUCCESS => {},
-                _ => {
-                    panic!("[-] OCALL Enclave Failed {}!", sgx_status.as_str());
-                }
-            }
-            self.num_splits.store(num, atomic::Ordering::SeqCst);
-            assert!(num != 0);
-            return num;
-        } 
-
+        self.vals.split_num.load(atomic::Ordering::SeqCst)
     }
 
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
@@ -236,6 +229,7 @@ where
     }
 
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+        call_seq.fix_split_num();
         let data_enc  = input.get_enc_data::<Vec<UE>>();
         let lower = input.get_lower();
         let upper = input.get_upper();
