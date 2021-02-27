@@ -126,7 +126,8 @@ lazy_static! {
         //pagerank_sec_0()
 
         /* transitive_closure */
-        transitive_closure_sec()
+        transitive_closure_sec_0()
+        //transitive_closure_sec_1()
 
         // test the speculative execution in loop
         //test0_sec_0()
