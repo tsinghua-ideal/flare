@@ -767,6 +767,9 @@ impl SpecOpId {
 
     pub fn get_spec_call_seq(&mut self, dep_info: &DepInfo) -> (Vec<usize>, Vec<OpId>) {
         let len = self.spec_op_ids.len();
+        if len < 2 {
+            return (Vec::new(), Vec::new());
+        }
         let pair = self.spec_op_ids.get((len-2)..len);
         let flag = !(
             pair.is_some()
