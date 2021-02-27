@@ -891,7 +891,7 @@ impl Context {
         sec_func: Option< Box<dyn Func(I) -> Vec<OE> >>,
         fe: FE,
         fd: FD,
-    ) -> impl OpE<Item = O, ItemE = OE>
+    ) -> SerArc<dyn OpE<Item = O, ItemE = OE>>
     where
         C: ReaderConfiguration<I>,
         FE: SerFunc(Vec<O>) -> OE,

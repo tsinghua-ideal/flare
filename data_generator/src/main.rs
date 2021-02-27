@@ -1,3 +1,6 @@
+#![feature(specialization)]
+
+use std::collections::HashSet;
 use std::fs::{create_dir_all, File};
 use std::path::PathBuf;
 use std::io::prelude::*;
@@ -100,4 +103,61 @@ fn main() {
     set_up(bytes, PathBuf::from("/tmp/ct_pr"), 1);
     set_up(strings, PathBuf::from("/tmp/pt_pr"), 1);
 
+    //tc
+    let num_edges = 200;
+    let num_vertices = 100;
+    let mut rng = rand::thread_rng();
+    
+    let mut hset = HashSet::new();
+    let mut count_edges = 0;
+    while count_edges < num_edges {
+        let from = rng.gen_range::<_, u32, u32>(0, num_vertices);
+        let to = rng.gen_range::<_, u32, u32>(0, num_vertices);
+        if from != to {
+            count_edges += 1;
+            hset.insert((from, to));
+        }
+    }
+    let mut data = hset.into_iter().collect::<Vec<_>>();
+    let bytes = bincode::serialize(&data).unwrap();
+
+    let fe = Fn!(|vp: Vec<(u32, u32)> | -> (Vec<u8>, Vec<u8>) {
+        let len = vp.len();
+        let mut buf0 = Vec::with_capacity(len);
+        let mut buf1 = Vec::with_capacity(len);
+        for i in vp {
+            buf0.push(i.0);
+            buf1.push(i.1);
+        }
+        let buf0 = ser_encrypt::<>(buf0);
+        let buf1 = ser_encrypt::<>(buf1);
+        (buf0, buf1)
+    });
+
+    let fd = Fn!(|ve: (Vec<u8>, Vec<u8>)| -> Vec<(u32, u32)> {
+        let (buf0, buf1) = ve;
+        let mut pt0: Vec<u32> = ser_decrypt::<>(buf0); 
+        let mut pt1: Vec<u32> = ser_decrypt::<>(buf1);
+        let len = pt0.len() | pt1.len();
+        pt0.resize_with(len, Default::default);
+        pt1.resize_with(len, Default::default);
+        pt0.into_iter().zip(pt1.into_iter()).collect::<Vec<_>>() 
+    });
+
+    let mut len = data.len();
+    let mut data_enc = Vec::with_capacity(len);
+    while len >= MAX_ENC_BL {
+        len -= MAX_ENC_BL;
+        let remain = data.split_off(MAX_ENC_BL);
+        let input = data;
+        data = remain;
+        data_enc.push(fe(input));
+    }
+    if len != 0 {
+        data_enc.push(fe(data));
+    }
+
+    let bytes_enc = bincode::serialize(&data_enc).unwrap();
+    set_up(bytes_enc, PathBuf::from("/tmp/ct_tc"), 1);
+    set_up(bytes, PathBuf::from("/tmp/pt_tc"), 1);
 }
