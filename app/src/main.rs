@@ -90,7 +90,8 @@ fn main() -> Result<()> {
     //pagerank_unsec_0()?;
 
     /* transitive_closure */
-    transitive_closure_sec()?;
+    transitive_closure_sec_0()?;
+    //transitive_closure_sec_1()?;
     //transitive_closure_unsec()?;
 
     // test the speculative execution in loop
