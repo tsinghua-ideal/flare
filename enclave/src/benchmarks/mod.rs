@@ -14,6 +14,8 @@ mod micro_map;
 pub use micro_map::*;
 mod micro_reduce;
 pub use micro_reduce::*;
+mod micro_union;
+pub use micro_union::*;
 mod kmeans;
 pub use kmeans::*;
 mod kmeans_;

@@ -116,6 +116,9 @@ lazy_static! {
         /* count */
         //count_sec_0()
 
+        /* union */
+        union_sec_0()
+
         /* kmeans */
         //kmeans_sec_0()
 
@@ -128,7 +131,7 @@ lazy_static! {
         /* transitive_closure */
         //transitive_closure_sec_0()
         //transitive_closure_sec_1()
-        transitive_closure_sec_2()
+        //transitive_closure_sec_2()
 
         // test the speculative execution in loop
         //test0_sec_0()

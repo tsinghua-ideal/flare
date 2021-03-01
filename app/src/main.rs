@@ -77,6 +77,10 @@ fn main() -> Result<()> {
     //count_sec_0()?;
     //count_unsec_0()?;
 
+    /* union */
+    union_sec_0()?;
+    //union_unsec_0()?;
+
     /* kmeans */
     //kmeans_sec_0()?;
     //kmeans_unsec_0()?;
@@ -93,7 +97,7 @@ fn main() -> Result<()> {
     //transitive_closure_sec_0()?;
     //transitive_closure_sec_1()?;
     //transitive_closure_sec_2()?;
-    transitive_closure_unsec_0()?;
+    //transitive_closure_unsec_0()?;
     //transitive_closure_unsec_1()?;
 
     // test the speculative execution in loop
