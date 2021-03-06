@@ -6,7 +6,7 @@ use vega::*;
 // secure mode
 pub fn pagerank_sec_0() -> Result<()> {
     let sc = Context::new()?;
-
+    let now = Instant::now();
     let fe = Fn!(|vp: Vec<Vec<u8>>|{
         ser_encrypt::<>(vp)    
     });
@@ -198,8 +198,8 @@ pub fn pagerank_sec_0() -> Result<()> {
     */
     let output = output.to_plain().into_iter().map(|(k, v)| (ordered_float::OrderedFloat(v), k)).collect::<BTreeMap<_, _>>();
     let (v, k) = output.last_key_value().unwrap();
-    println!("{:?} rank first with {:?}", k, v);
-
+    let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+    println!("{:?} rank first with {:?}, total time = {:?}", k, v, dur);
     Ok(())
 }
     

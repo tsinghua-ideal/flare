@@ -34,10 +34,35 @@ fn main() {
     let bytes = bincode::serialize(&vec![iteme]).unwrap();
     set_up(bytes, PathBuf::from("/tmp/ct_lf"), 10);
     set_up(fixture, PathBuf::from("/tmp/pt_lf"), 10);
-
+    
     //k_means
+    let (bytes, bytes_enc) = generate_kmeans_data(2_000_000, 5);
+    set_up(bytes_enc, PathBuf::from("/tmp/ct_km"), 1);
+    set_up(bytes, PathBuf::from("/tmp/pt_km"), 1);
+
+    //pagerank
+    let (bytes, bytes_enc) = generate_pagerank_data(1_000_000);
+    set_up(bytes_enc, PathBuf::from("/tmp/ct_pr"), 1);
+    set_up(bytes, PathBuf::from("/tmp/pt_pr"), 1);
+
+    //tc
+    let num_edges = 200;
+    let num_vertices = 100;
+    let (bytes, bytes_enc) = generate_tc_data(num_edges, num_vertices);
+    set_up(bytes_enc, PathBuf::from("/tmp/ct_tc"), 1);
+    set_up(bytes, PathBuf::from("/tmp/pt_tc"), 1);
+    
+    let num_edges = 1_000;
+    let num_vertices = 1_000;
+    let (bytes, bytes_enc) = generate_tc_data(num_edges, num_vertices);
+    set_up(bytes_enc, PathBuf::from("/tmp/ct_tc_1"), 1);
+    set_up(bytes, PathBuf::from("/tmp/pt_tc_1"), 1);
+
+}
+
+fn generate_kmeans_data(num_points: usize, dimension: usize) -> (Vec<u8>, Vec<u8>) {
     let mut rng = rand::thread_rng();
-    let vals: Vec<Vec<f64>> = (0..2_000_000).map(|_| (0..5).map(|_| rng.gen_range(0 as f64, 20 as f64)).collect()).collect();
+    let vals: Vec<Vec<f64>> = (0..num_points).map(|_| (0..dimension).map(|_| rng.gen_range(0 as f64, 20 as f64)).collect()).collect();
     let mut iter = vals.chunks(MAX_ENC_BL);
     let mut batch = iter.next();
     let mut data_enc = Vec::new();
@@ -66,11 +91,12 @@ fn main() {
         .as_bytes()
         .to_vec();
     let bytes = bincode::serialize(&data_enc).unwrap();
-    set_up(bytes, PathBuf::from("/tmp/ct_km"), 1);
-    set_up(strings, PathBuf::from("/tmp/pt_km"), 1);
+    (strings, bytes)
+}
 
-    //pagerank
-    let vals: Vec<Vec<u32>> = (0..1_000_000).map(|_| (0..2).map(|_| rng.gen_range(0 as u32, 2_000_000 as u32)).collect()).collect();
+fn generate_pagerank_data(len: usize) -> (Vec<u8>, Vec<u8>) {
+    let mut rng = rand::thread_rng();
+    let vals: Vec<Vec<u32>> = (0..len).map(|_| (0..2).map(|_| rng.gen_range(0 as u32, 2_000_000 as u32)).collect()).collect();
     let mut iter = vals.chunks(MAX_ENC_BL);
     let mut batch = iter.next();
     let mut data_enc = Vec::new();
@@ -100,12 +126,10 @@ fn main() {
         .to_vec();
 
     let bytes = bincode::serialize(&data_enc).unwrap();
-    set_up(bytes, PathBuf::from("/tmp/ct_pr"), 1);
-    set_up(strings, PathBuf::from("/tmp/pt_pr"), 1);
+    (strings, bytes)
+}
 
-    //tc
-    let num_edges = 200;
-    let num_vertices = 100;
+fn generate_tc_data(num_edges: u32, num_vertices: u32) -> (Vec<u8>, Vec<u8>) {
     let mut rng = rand::thread_rng();
     
     let mut hset = HashSet::new();
@@ -158,6 +182,5 @@ fn main() {
     }
 
     let bytes_enc = bincode::serialize(&data_enc).unwrap();
-    set_up(bytes_enc, PathBuf::from("/tmp/ct_tc"), 1);
-    set_up(bytes, PathBuf::from("/tmp/pt_tc"), 1);
+    (bytes, bytes_enc)
 }

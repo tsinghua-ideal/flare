@@ -570,11 +570,15 @@ impl OpCache{
     }
 
     pub fn remove_subpid(&self, rdd_id: usize, part_id: usize, sub_part_id: usize) {
-        self.subpid_map.write()
-            .unwrap()
-            .get_mut(&(rdd_id, part_id))
-            .unwrap()
-            .remove(&sub_part_id);
+        let mut subpid_map = self.subpid_map.write()
+            .unwrap();
+        let subpids = subpid_map.get_mut(&(rdd_id, part_id))
+            .unwrap();
+        subpids.remove(&sub_part_id);
+        let is_empty = subpids.is_empty();
+        if is_empty {
+            subpid_map.remove(&(rdd_id, part_id));
+        } 
     }
 
     pub fn get_subpid(&self, rdd_id: usize, part_id: usize) -> Vec<usize> {
@@ -600,6 +604,11 @@ impl OpCache{
 
     pub fn clear_by_rid_pid_spid(&self, rdd_id: usize, part_id: usize, sub_part_id: usize) {
         self.map.write().unwrap().remove(&(rdd_id, part_id, sub_part_id));
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.read().unwrap().is_empty() && 
+        self.subpid_map.read().unwrap().is_empty()
     }
 }
 #[repr(C)]
@@ -1168,7 +1177,7 @@ pub trait OpE: Op {
         self.batch_decrypt(ct.clone())
     }
 
-    fn cache_to_outside(&self, key: (usize, usize, usize), value: Vec<Self::Item>) -> PThread {
+    fn cache_to_outside(&self, key: (usize, usize, usize), value: Vec<Self::Item>) -> Option<PThread> {
         let op = self.get_ope();
         let handle = unsafe {
             PThread::new(Box::new(move || {
@@ -1183,7 +1192,7 @@ pub trait OpE: Op {
                 //TODO: Handle the case res != 0
             }))
         }.unwrap();
-        handle
+        Some(handle)
     }
 
     fn get_and_remove_cached_data(&self, key: (usize, usize, usize)) -> Vec<Self::Item> {
@@ -1207,7 +1216,6 @@ pub trait OpE: Op {
 
     fn set_cached_data(&self, is_survivor: bool, is_final: bool, key: (usize, usize, usize), iter: Box<dyn Iterator<Item = Self::Item>>) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {              
         let res = iter.collect::<Vec<_>>();
-        //println!("After collect, memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
         if is_survivor {
             //cache inside enclave
             CACHE.insert(key, Box::into_raw(Box::new(res.clone())) as *mut u8 as usize);
@@ -1220,7 +1228,7 @@ pub trait OpE: Op {
         } else {
             let handle = self.cache_to_outside(key, res.clone());
             //println!("After launch encryption thread, memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
-            (Box::new(res.into_iter()), Some(handle))
+            (Box::new(res.into_iter()), handle)
         }
     }
 
