@@ -124,6 +124,10 @@ where
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
         self.randomize_in_place_(input, seed, num)
     }
+
+    fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
+        self.take_(input ,should_take, have_take)
+    }
     
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
         if id == TypeId::of::<dyn Op<Item = T>>() {

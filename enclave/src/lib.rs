@@ -110,6 +110,9 @@ lazy_static! {
         /* partition_wise_sample */
         //part_wise_sample_sec_0()
 
+        /* take */
+        take_sec_0()
+
         /* reduce */
         //reduce_sec_0()
 
@@ -129,7 +132,7 @@ lazy_static! {
         //pagerank_sec_0()
 
         /* transitive_closure */
-        transitive_closure_sec_0()
+        //transitive_closure_sec_0()
         //transitive_closure_sec_1()
         //transitive_closure_sec_2()
 
@@ -331,6 +334,19 @@ pub extern "C" fn randomize_in_place(
         _ => panic!("Invalid is_some"),
     };
     let ptr = sample_op.randomize_in_place(input, seed, num);
+    ptr as usize
+}
+
+#[no_mangle]
+pub extern "C" fn etake(
+    op_id: OpId,
+    input: *const u8,
+    should_take: usize,
+    have_take: *mut usize,
+) -> usize {
+    let take_op = load_opmap().get(&op_id).unwrap();
+    let have_take = unsafe { have_take.as_mut() }.unwrap();
+    let ptr = take_op.etake(input, should_take, have_take);
     ptr as usize
 }
 

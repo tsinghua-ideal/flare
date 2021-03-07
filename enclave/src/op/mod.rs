@@ -1013,6 +1013,7 @@ pub trait OpBase: Send + Sync {
     fn set_sampler(&self, with_replacement: bool, fraction: f64) {
         unreachable!()
     }
+    fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8;
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject>;
 }
 
@@ -1089,6 +1090,9 @@ impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     }
     fn set_sampler(&self, with_replacement: bool, fraction: f64) {
         (**self).set_sampler(with_replacement, fraction)
+    }
+    fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
+        (**self).etake(input, should_take, have_take)
     }
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
         (**self).clone().__to_arc_op(id)
@@ -1404,6 +1408,15 @@ pub trait OpE: Op {
         sample = sample.into_iter().take(num as usize).collect();
         let sample_enc = self.batch_encrypt(sample);
         res_enc_to_ptr(sample_enc)
+    }
+
+    fn take_(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
+        let data_enc = unsafe{ (input as *const Vec<Self::ItemE>).as_ref() }.unwrap(); 
+        let mut data = self.batch_decrypt(data_enc.to_vec());
+        data = data.into_iter().take(should_take).collect();
+        *have_take = data.len();
+        let data_enc = self.batch_encrypt(data);
+        res_enc_to_ptr(data_enc)
     }
 
     /// Return a new RDD containing only the elements that satisfy a predicate.
@@ -1747,6 +1760,30 @@ pub trait OpE: Op {
         let op = self.sample(with_replacement, 0 as f64); //padding
         let r = op.secure_collect(tail_info);
         r
+    }
+
+    #[track_caller]
+    fn take(&self, num: usize) -> Result<PT<Vec<Self::Item>, Vec<Self::ItemE>>> 
+    where
+        Self: Sized,
+    {
+        let fe = self.get_fe();
+        let fd = self.get_fd();
+        let bfe = Box::new(move |data| batch_encrypt(data, fe.clone()));
+        let bfd = Box::new(move |data_enc| batch_decrypt(data_enc, fd.clone()));
+        Ok(Text::new(vec![], Some(bfe), Some(bfd)))
+    }
+
+    #[track_caller]
+    fn secure_take(&self, num: usize, tail_info: &TailCompInfo) -> Result<PT<Vec<Self::Item>, Vec<Self::ItemE>>> 
+    where
+        Self: Sized,
+    {
+        let fe = self.get_fe();
+        let fd = self.get_fd();
+        let bfe = Box::new(move |data| batch_encrypt(data, fe.clone()));
+        let bfd = Box::new(move |data_enc| batch_decrypt(data_enc, fd.clone()));
+        Ok(Text::rec(tail_info, Some(bfe), Some(bfd)))
     }
 
     #[track_caller]

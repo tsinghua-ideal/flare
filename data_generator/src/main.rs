@@ -25,6 +25,7 @@ fn set_up(data: Vec<u8>, dir: PathBuf, file_num: usize) {
 }
 
 fn main() {
+    
     //micro_file_reader
     let fixture =
         b"This is some textual test data.\nCan be converted to strings and there are two lines.".to_vec();
@@ -46,17 +47,19 @@ fn main() {
     set_up(bytes, PathBuf::from("/tmp/pt_pr"), 1);
 
     //tc
-    let num_edges = 200;
-    let num_vertices = 100;
+    let num_edges = 500;
+    let num_vertices = 300;
     let (bytes, bytes_enc) = generate_tc_data(num_edges, num_vertices);
     set_up(bytes_enc, PathBuf::from("/tmp/ct_tc"), 1);
     set_up(bytes, PathBuf::from("/tmp/pt_tc"), 1);
     
-    let num_edges = 1_000;
+    let num_edges = 10_000;
     let num_vertices = 1_000;
     let (bytes, bytes_enc) = generate_tc_data(num_edges, num_vertices);
     set_up(bytes_enc, PathBuf::from("/tmp/ct_tc_1"), 1);
     set_up(bytes, PathBuf::from("/tmp/pt_tc_1"), 1);
+
+
 
 }
 

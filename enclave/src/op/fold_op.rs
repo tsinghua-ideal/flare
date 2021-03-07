@@ -130,6 +130,10 @@ where
     fn set_sampler(&self, with_replacement: bool, fraction: f64) {
         self.prev.set_sampler(with_replacement, fraction)
     }
+
+    fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
+        self.prev.etake(input ,should_take, have_take)
+    }
     
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
         self.prev.clone().__to_arc_op(id)

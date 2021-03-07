@@ -403,6 +403,10 @@ where
     fn number_of_splits(&self) -> usize {
         self.vals.split_num.load(atomic::Ordering::SeqCst)
     }
+
+    fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
+        self.take_(input ,should_take, have_take)
+    }
     
     fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         
@@ -668,6 +672,10 @@ where
         self.vals.split_num.load(atomic::Ordering::SeqCst)
     }
     
+    fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
+        self.take_(input ,should_take, have_take)
+    }
+
     fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         
 		self.compute_start(tid, call_seq, input, dep_info)
@@ -949,6 +957,10 @@ where
 
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
         self.randomize_in_place_(input, seed, num)
+    }
+
+    fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
+        self.take_(input ,should_take, have_take)
     }
 
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {

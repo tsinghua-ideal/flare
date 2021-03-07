@@ -184,6 +184,10 @@ where
         self.randomize_in_place_(input, seed, num)
     }
 
+    fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
+        self.take_(input ,should_take, have_take)
+    }
+
     fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
             
         self.compute_start(tid, call_seq, input, dep_info)

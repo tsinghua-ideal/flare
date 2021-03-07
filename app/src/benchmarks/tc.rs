@@ -67,7 +67,7 @@ pub fn transitive_closure_sec_0() -> Result<()> {
         bincode::deserialize::<Vec<(Vec<u8>, Vec<u8>)>>(&file).unwrap()  //ItemE = (Vec<u8>, Vec<u8>)
     }));
 
-    let dir = PathBuf::from("/tmp/ct_tc");
+    let dir = PathBuf::from("/tmp/ct_tc_1");
     let mut tc = sc.read_source(LocalFsReaderConfig::new(dir), None, Some(deserializer), fe, fd);
     tc.cache();
     let mut data_enc = tc.secure_collect().unwrap().clone();
@@ -357,7 +357,7 @@ pub fn transitive_closure_unsec_0() -> Result<()> {
         bincode::deserialize::<Vec<(u32, u32)>>(&file).unwrap()  //Item = (u32, u32)
     }));
 
-    let dir = PathBuf::from("/tmp/pt_tc");
+    let dir = PathBuf::from("/tmp/pt_tc_1");
     let mut tc = sc.read_source(LocalFsReaderConfig::new(dir), Some(deserializer), None, lfe, lfd)
         .flat_map(Fn!(|v: Vec<(u32, u32)>| Box::new(v.into_iter()) as Box<dyn Iterator<Item = _>>), fe.clone(), fd.clone());
     tc.cache();

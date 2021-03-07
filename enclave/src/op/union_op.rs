@@ -172,6 +172,10 @@ impl<T: Data, TE: Data> OpBase for Union<T, TE>
         self.randomize_in_place_(input, seed, num)
     }
 
+    fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
+        self.take_(input ,should_take, have_take)
+    }
+
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
         if id == TypeId::of::<dyn Op<Item = T>>() {
             let x = std::ptr::null::<Self>() as *const dyn Op<Item = T>;

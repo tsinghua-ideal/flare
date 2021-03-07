@@ -70,6 +70,10 @@ fn main() -> Result<()> {
     //part_wise_sample_unsec_1()?;
     //part_wise_sample_unsec_2()?;
 
+    /* take */
+    take_sec_0()?;
+    //take_unsec_0()?;
+
     /* reduce */
     //reduce_sec_0()?;
 
@@ -94,7 +98,7 @@ fn main() -> Result<()> {
     //pagerank_unsec_0()?;
 
     /* transitive_closure */
-    transitive_closure_sec_0()?;
+    //transitive_closure_sec_0()?;
     //transitive_closure_sec_1()?;
     //transitive_closure_sec_2()?;
     //transitive_closure_unsec_0()?;

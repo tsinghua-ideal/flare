@@ -18,6 +18,8 @@ mod micro_map;
 pub use micro_map::*;
 mod micro_reduce;
 pub use micro_reduce::*;
+mod micro_take;
+pub use micro_take::*;
 mod micro_union;
 pub use micro_union::*;
 mod pagerank;
