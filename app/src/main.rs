@@ -71,7 +71,7 @@ fn main() -> Result<()> {
     //part_wise_sample_unsec_2()?;
 
     /* take */
-    take_sec_0()?;
+    //take_sec_0()?;
     //take_unsec_0()?;
 
     /* reduce */
@@ -86,8 +86,10 @@ fn main() -> Result<()> {
     //union_unsec_0()?;
 
     /* kmeans */
-    //kmeans_sec_0()?;
+    kmeans_sec_0()?;
+    //kmeans_sec_1()?;
     //kmeans_unsec_0()?;
+    //kmeans_unsec_1()?;
 
     /* linear regression */
     //lr_sec()?;

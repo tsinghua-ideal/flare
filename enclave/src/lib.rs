@@ -111,7 +111,7 @@ lazy_static! {
         //part_wise_sample_sec_0()
 
         /* take */
-        take_sec_0()
+        //take_sec_0()
 
         /* reduce */
         //reduce_sec_0()
@@ -123,7 +123,8 @@ lazy_static! {
         //union_sec_0()
 
         /* kmeans */
-        //kmeans_sec_0()
+        kmeans_sec_0()
+        //kmeans_sec_1()
 
         /* linear regression */
         //lr_sec()
@@ -370,6 +371,7 @@ pub extern "C" fn tail_compute(input: *mut u8) -> usize {
     let tail_info = unsafe{ (input as *const TailCompInfo).as_ref() }.unwrap();
     let mut tail_info = tail_info.clone();
     kmeans_sec_0_(&mut tail_info).unwrap();
+    //kmeans_sec_1_(&mut tail_info).unwrap();
     ALLOCATOR.lock().set_switch(true);
     let ptr = Box::into_raw(Box::new(tail_info.clone()));
     ALLOCATOR.lock().set_switch(false);
