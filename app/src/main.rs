@@ -96,11 +96,11 @@ fn main() -> Result<()> {
     //lr_unsec()?;
 
     /* page rank */
-    //pagerank_sec_0()?;
+    pagerank_sec_0()?;
     //pagerank_unsec_0()?;
 
     /* transitive_closure */
-    transitive_closure_sec_0()?;
+    //transitive_closure_sec_0()?;
     //transitive_closure_sec_1()?;
     //transitive_closure_sec_2()?;
     //transitive_closure_unsec_0()?;
