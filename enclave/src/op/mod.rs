@@ -634,6 +634,7 @@ pub struct NextOpId<'a> {
     cache_meta: CacheMeta,
     captured_vars: HashMap<usize, Vec<Vec<u8>>>,
     is_spec: bool,
+    is_final: bool,
 }
 
 impl<'a> NextOpId<'a> {
@@ -642,6 +643,7 @@ impl<'a> NextOpId<'a> {
             Some(nums) => nums.clone(),
             None => vec![],
         };
+        let is_final = split_nums.len() == rdd_ids.len();
         NextOpId {
             rdd_ids,
             op_ids,
@@ -650,6 +652,7 @@ impl<'a> NextOpId<'a> {
             cache_meta,
             captured_vars,
             is_spec,
+            is_final,
         }
     }
 
@@ -718,6 +721,8 @@ impl<'a> NextOpId<'a> {
 
     pub fn is_caching_final_rdd(&self) -> bool {
         self.rdd_ids[0] == self.cache_meta.caching_rdd_id
+        //It seems not useful unless a cached rdd in shuffle task is simultaniously relied on in another result task
+        && self.is_final
     }
 
     pub fn is_survivor(&self) -> bool {

@@ -123,14 +123,14 @@ lazy_static! {
         //union_sec_0()
 
         /* kmeans */
-        kmeans_sec_0()
+        //kmeans_sec_0()
         //kmeans_sec_1()
 
         /* linear regression */
         //lr_sec()
 
         /* page rank */
-        //pagerank_sec_0()
+        pagerank_sec_0()
 
         /* transitive_closure */
         //transitive_closure_sec_0()
