@@ -25,7 +25,7 @@ fn set_up(data: Vec<u8>, dir: PathBuf, file_num: usize) {
 }
 
 fn main() {
-    
+    /*
     //micro_file_reader
     let fixture =
         b"This is some textual test data.\nCan be converted to strings and there are two lines.".to_vec();
@@ -42,10 +42,15 @@ fn main() {
     set_up(bytes, PathBuf::from("/tmp/pt_km"), 1);
 
     //pagerank
-    let (bytes, bytes_enc) = generate_pagerank_data(1_000_000);
+    let (bytes, bytes_enc) = generate_pagerank_data(1_000_000, true);
     set_up(bytes_enc, PathBuf::from("/tmp/ct_pr"), 1);
     set_up(bytes, PathBuf::from("/tmp/pt_pr"), 1);
+    */
+    let (bytes, bytes_enc) = generate_pagerank_data(10_000_000, false);
+    set_up(bytes_enc, PathBuf::from("/tmp/ct_pr_1"), 1);
+    set_up(bytes, PathBuf::from("/tmp/pt_pr_1"), 1);
 
+    /*
     //tc
     let num_edges = 500;
     let num_vertices = 300;
@@ -58,9 +63,7 @@ fn main() {
     let (bytes, bytes_enc) = generate_tc_data(num_edges, num_vertices);
     set_up(bytes_enc, PathBuf::from("/tmp/ct_tc_1"), 1);
     set_up(bytes, PathBuf::from("/tmp/pt_tc_1"), 1);
-
-
-
+    */
 }
 
 fn generate_kmeans_data(num_points: usize, dimension: usize) -> (Vec<u8>, Vec<u8>) {
@@ -97,9 +100,22 @@ fn generate_kmeans_data(num_points: usize, dimension: usize) -> (Vec<u8>, Vec<u8
     (strings, bytes)
 }
 
-fn generate_pagerank_data(len: usize) -> (Vec<u8>, Vec<u8>) {
-    let mut rng = rand::thread_rng();
-    let vals: Vec<Vec<u32>> = (0..len).map(|_| (0..2).map(|_| rng.gen_range(0 as u32, 2_000_000 as u32)).collect()).collect();
+fn generate_pagerank_data(len: usize, is_random: bool) -> (Vec<u8>, Vec<u8>) {
+    let vals = match is_random {
+        true => {
+            let mut rng = rand::thread_rng();
+            (0..len).map(|_| (0..2).map(|_| rng.gen_range(0 as u32, 2_000_000 as u32)).collect()).collect()
+        },
+        false => {
+            let sq = (len as f64).sqrt().floor() as u32;
+            let mut vals = Vec::new();
+            for i in 0..sq {
+                let mut v = (0..sq).map(|v| vec![i, v]).collect::<Vec<_>>();
+                vals.append(&mut v);
+            }
+            vals
+        }
+    };
     let mut iter = vals.chunks(MAX_ENC_BL);
     let mut batch = iter.next();
     let mut data_enc = Vec::new();

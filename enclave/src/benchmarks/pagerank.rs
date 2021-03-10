@@ -156,8 +156,8 @@ pub fn pagerank_sec_0() -> Result<()> {
         bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap()  //ItemE = Vec<u8>  
     }));
 
-    let iters = 6;
-    let dir = PathBuf::from("/tmp/ct_pr");
+    let iters = 2;
+    let dir = PathBuf::from("/tmp/ct_pr_1");
     let lines = sc.read_source(LocalFsReaderConfig::new(dir), None, Some(deserializer), fe, fd)
         .map(Fn!(|file: Vec<u8>| {
             String::from_utf8(file)
