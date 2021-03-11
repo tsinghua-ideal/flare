@@ -157,7 +157,7 @@ pub fn pagerank_sec_0() -> Result<()> {
     }));
 
     let iters = 2;
-    let dir = PathBuf::from("/tmp/ct_pr_1");
+    let dir = PathBuf::from("/tmp/ct_pr_2");
     let lines = sc.read_source(LocalFsReaderConfig::new(dir), None, Some(deserializer), fe, fd)
         .map(Fn!(|file: Vec<u8>| {
             String::from_utf8(file)
@@ -351,7 +351,7 @@ pub fn pagerank_unsec_0() -> Result<()> {
     }));
 
     let iters = 2; //7 causes core dump, why? some hints: converge when 6
-    let dir = PathBuf::from("/tmp/pt_pr_1");
+    let dir = PathBuf::from("/tmp/pt_pr_2");
     let lines = sc.read_source(LocalFsReaderConfig::new(dir), Some(deserializer), None, fe, fd);
     let links = lines.flat_map(Fn!(|lines: Vec<String>| {
             Box::new(lines.into_iter().map(|line| {

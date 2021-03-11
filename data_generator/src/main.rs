@@ -45,10 +45,15 @@ fn main() {
     let (bytes, bytes_enc) = generate_pagerank_data(1_000_000, true);
     set_up(bytes_enc, PathBuf::from("/tmp/ct_pr"), 1);
     set_up(bytes, PathBuf::from("/tmp/pt_pr"), 1);
-    */
+    
     let (bytes, bytes_enc) = generate_pagerank_data(10_000_000, false);
     set_up(bytes_enc, PathBuf::from("/tmp/ct_pr_1"), 1);
     set_up(bytes, PathBuf::from("/tmp/pt_pr_1"), 1);
+    */
+
+    let (bytes, bytes_enc) = generate_pagerank_data(4_000_000, false);
+    set_up(bytes_enc, PathBuf::from("/tmp/ct_pr_2"), 1);
+    set_up(bytes, PathBuf::from("/tmp/pt_pr_2"), 1);
 
     /*
     //tc
