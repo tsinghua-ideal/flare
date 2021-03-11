@@ -37,7 +37,7 @@ pub fn file_read_sec_0() -> Result<()> {
         pt0
     });
 
-    let dir = PathBuf::from("/tmp/ct_lf");
+    let dir = PathBuf::from("/opt/data/ct_lf");
     let deserializer = Box::new(Fn!(|file: Vec<u8>| {
         bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap()  //ItemE = Vec<u8>  
     }));
@@ -67,7 +67,7 @@ pub fn file_read_sec_0() -> Result<()> {
 pub fn file_read_unsec_0() -> Result<()> {
     let context = Context::new()?;
 
-    let dir = PathBuf::from("/tmp/pt_lf");
+    let dir = PathBuf::from("/opt/data/pt_lf");
     let deserializer = Box::new(Fn!(|file: Vec<u8>| {
         String::from_utf8(file)
             .unwrap()

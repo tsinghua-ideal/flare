@@ -157,7 +157,7 @@ pub fn pagerank_sec_0() -> Result<()> {
     }));
 
     let iters = 2;
-    let dir = PathBuf::from("/tmp/ct_pr_2");
+    let dir = PathBuf::from("/opt/data/ct_pr_2");
     let lines = sc.read_source(LocalFsReaderConfig::new(dir), None, Some(deserializer), fe, fd)
         .map(Fn!(|file: Vec<u8>| {
             String::from_utf8(file)

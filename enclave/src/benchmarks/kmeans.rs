@@ -124,7 +124,7 @@ pub fn kmeans_sec_0() -> Result<()> {
     });
 
     // TODO: need to change dir
-    let dir = PathBuf::from("/tmp/ct_km");
+    let dir = PathBuf::from("/opt/data/ct_km");
     let deserializer = Box::new(Fn!(|file: Vec<u8>| {
         bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap()  //ItemE = Vec<u8>  
     }));
@@ -269,7 +269,7 @@ pub fn kmeans_sec_1() -> Result<()> {
     });
 
     // TODO: need to change dir
-    let dir = PathBuf::from("/tmp/ct_km");
+    let dir = PathBuf::from("/opt/data/ct_km");
     let deserializer = Box::new(Fn!(|file: Vec<u8>| {
         bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap()  //ItemE = Vec<u8>  
     }));
