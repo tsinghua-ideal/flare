@@ -90,6 +90,7 @@ lazy_static! {
     static ref init: Result<()> = {
         /* map */
         //map_sec_0()
+        //map_sec_1()
 
         /* group_by */
         //group_by_sec_0()
@@ -130,10 +131,10 @@ lazy_static! {
         //lr_sec()
 
         /* page rank */
-        //pagerank_sec_0()
+        pagerank_sec_0()
 
         /* transitive_closure */
-        transitive_closure_sec_0()
+        //transitive_closure_sec_0()
         //transitive_closure_sec_1()
         //transitive_closure_sec_2()
 
