@@ -309,13 +309,12 @@ impl DepInfo {
     }
 
     pub fn dep_type(&self) -> u8 {
-        self.is_shuffle / 10
+        self.is_shuffle
     }
 
     fn need_encryption(&self) -> bool {
-        match self.is_shuffle % 10 {
+        match self.is_shuffle {
             0 => false,
-            1 => true,
             _ => true,
         }
     }
@@ -627,6 +626,7 @@ impl OpId {
 }
 
 pub struct NextOpId<'a> {
+    tid: u64,
     rdd_ids: &'a Vec<usize>,
     op_ids: &'a Vec<OpId>,
     split_nums: Vec<usize>,
@@ -638,13 +638,14 @@ pub struct NextOpId<'a> {
 }
 
 impl<'a> NextOpId<'a> {
-    pub fn new(rdd_ids: &'a Vec<usize>, op_ids: &'a Vec<OpId>, split_nums: Option<&'a Vec<usize>>, cache_meta: CacheMeta, captured_vars: HashMap<usize, Vec<Vec<u8>>>, is_spec: bool) -> Self {
+    pub fn new(tid: u64, rdd_ids: &'a Vec<usize>, op_ids: &'a Vec<OpId>, split_nums: Option<&'a Vec<usize>>, cache_meta: CacheMeta, captured_vars: HashMap<usize, Vec<Vec<u8>>>, is_spec: bool) -> Self {
         let split_nums = match split_nums {
             Some(nums) => nums.clone(),
             None => vec![],
         };
         let is_final = split_nums.len() == rdd_ids.len();
         NextOpId {
+            tid,
             rdd_ids,
             op_ids,
             split_nums,
@@ -1015,7 +1016,7 @@ pub trait OpBase: Send + Sync {
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
         None
     }
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8;
+    fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8;
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8;
     fn set_sampler(&self, with_replacement: bool, fraction: f64) {
         unreachable!()
@@ -1089,8 +1090,8 @@ impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     fn number_of_splits(&self) -> usize {
         (**self).get_op_base().number_of_splits()
     }
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
-        (**self).get_op_base().iterator_start(tid, call_seq, input, dep_info)
+    fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+        (**self).get_op_base().iterator_start(call_seq, input, dep_info)
     }
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
         (**self).randomize_in_place(input, seed, num)
@@ -1114,8 +1115,8 @@ impl<I: OpE + ?Sized> Op for SerArc<I> {
     fn get_op_base(&self) -> Arc<dyn OpBase> {
         (**self).get_op_base()
     }
-    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
-        (**self).compute_start(tid, call_seq, input, dep_info)
+    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+        (**self).compute_start(call_seq, input, dep_info)
     }
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
         (**self).compute(call_seq, input)
@@ -1145,7 +1146,7 @@ pub trait Op: OpBase + 'static {
     type Item: Data;
     fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>>;
     fn get_op_base(&self) -> Arc<dyn OpBase>;
-    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8;
+    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8;
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>);
     fn cache(&self, data: Vec<Self::Item>) {
         ()

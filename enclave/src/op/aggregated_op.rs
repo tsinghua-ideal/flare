@@ -128,9 +128,9 @@ where
         self.prev.number_of_splits()
     }
 
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         
-		self.compute_start(tid, call_seq, input, dep_info)
+		self.compute_start(call_seq, input, dep_info)
     }
 
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
@@ -171,13 +171,13 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
   
-    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8{
+    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8{
         //3 is only for reduce & fold
         if dep_info.dep_type() == 3 {
             self.narrow(call_seq, input, dep_info)
         }
         else {
-            self.prev.compute_start(tid, call_seq, input, dep_info)
+            self.prev.compute_start(call_seq, input, dep_info)
         }
     }
 

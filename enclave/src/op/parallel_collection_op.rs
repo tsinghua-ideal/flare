@@ -116,9 +116,9 @@ where
         self.vals.split_num.load(atomic::Ordering::SeqCst)
     }
 
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         
-		self.compute_start(tid, call_seq, input, dep_info)
+		self.compute_start(call_seq, input, dep_info)
     }
 
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
@@ -163,12 +163,12 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
-            0 => {       //No shuffle later
+            0 | 2 => { 
                 self.narrow(call_seq, input, dep_info)
             },
-            1 => {      //Shuffle write
+            1 => {
                 self.shuffle(call_seq, input, dep_info)
             },
             _ => panic!("Invalid is_shuffle")

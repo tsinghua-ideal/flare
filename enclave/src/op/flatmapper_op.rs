@@ -73,21 +73,21 @@ where
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 1 => self.step0_of_clone(p_buf, p_data_enc, dep_info),
+            0 | 1 | 2 => self.step0_of_clone(p_buf, p_data_enc, dep_info),
             _ => panic!("invalid is_shuffle"),
         }
     }
 
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 1 => self.step1_of_clone(p_out, p_data_enc, dep_info), 
+            0 | 1 | 2 => self.step1_of_clone(p_out, p_data_enc, dep_info), 
             _ => panic!("invalid is_shuffle"),
         }   
     }
 
     fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 => self.free_res_enc(res_ptr),
+            0 | 2 => self.free_res_enc(res_ptr),
             1 => {
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
                 shuf_dep.free_res_enc(res_ptr);
@@ -124,8 +124,8 @@ where
         self.vals.split_num.load(atomic::Ordering::SeqCst)
     }
 
-    fn iterator_start(&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
-		self.compute_start(tid, call_seq, input, dep_info)
+    fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+		self.compute_start(call_seq, input, dep_info)
     }
 
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
@@ -169,9 +169,9 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
   
-    fn compute_start (&self, tid: u64, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn compute_start (&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
-            0 => {       //No shuffle later
+            0 | 2 => {   //union/ shuffle read/ narrow
                 self.narrow(call_seq, input, dep_info)
             },
             1 => {      //Shuffle write
