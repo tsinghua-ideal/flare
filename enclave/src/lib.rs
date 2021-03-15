@@ -162,9 +162,9 @@ pub extern "C" fn secure_execute(tid: u64,
     println!("rdd ids = {:?}, part_nums = {:?}, dep_info = {:?}, cache_meta = {:?}", rdd_ids, part_nums, dep_info, cache_meta);
     
     let now = Instant::now();
-    let mut call_seq = NextOpId::new(rdd_ids, op_ids, Some(part_nums), cache_meta.clone(), captured_vars.clone(), false);
+    let mut call_seq = NextOpId::new(tid, rdd_ids, op_ids, Some(part_nums), cache_meta.clone(), captured_vars.clone(), false);
     let final_op = call_seq.get_cur_op();
-    let result_ptr = final_op.iterator_start(tid, &mut call_seq, input, &dep_info); //shuffle need dep_info
+    let result_ptr = final_op.iterator_start(&mut call_seq, input, &dep_info); //shuffle need dep_info
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Cur mem: {:?}, secure_execute {:?} s", ALLOCATOR.lock().get_memory_usage(), dur);
     println!("Max mem: {:?}", ALLOCATOR.lock().get_max_memory_usage());
@@ -238,12 +238,12 @@ pub extern "C" fn spec_execute(tid: u64,
     };
     let parent_op_id = spec_call_seq.1[0];
     //identifier is not used, so set it 0 
-    let dep_info = DepInfo::new(11, 0, 0, 0, parent_op_id, child_op_id);
+    let dep_info = DepInfo::new(1, 0, 0, 0, parent_op_id, child_op_id);
     let cache_meta = cache_meta.transform();
-    let mut call_seq = NextOpId::new(&spec_call_seq.0, &spec_call_seq.1, None, cache_meta, HashMap::new(), true);
+    let mut call_seq = NextOpId::new(tid, &spec_call_seq.0, &spec_call_seq.1, None, cache_meta, HashMap::new(), true);
     let final_op = call_seq.get_cur_op();
     let input = Input::padding();
-    let result_ptr = final_op.iterator_start(tid, &mut call_seq, input, &dep_info);
+    let result_ptr = final_op.iterator_start(&mut call_seq, input, &dep_info);
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Cur mem: {:?}, spec_execute {:?} s", ALLOCATOR.lock().get_memory_usage(), dur);
     return result_ptr as usize
