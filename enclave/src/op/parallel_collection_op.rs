@@ -177,17 +177,39 @@ where
 
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
         let now = Instant::now();
+        let data_ptr = input.data;
         call_seq.fix_split_num();
+        let have_cache = call_seq.have_cache();
+        let need_cache = call_seq.need_cache();
+        if have_cache {
+            assert_eq!(data_ptr as usize, 0 as usize);
+            let key = call_seq.get_cached_triplet();
+            let val = self.get_and_remove_cached_data(key);
+            return (Box::new(val.into_iter()), None); 
+        }
+
         let data_enc = input.get_enc_data::<Vec<TE>>(); 
         let lower = input.get_lower();
         let upper = input.get_upper();
         assert!(lower.len() == 1 && upper.len() == 1);
         //println!("In parallel_collection_op(before decryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
         let data = self.batch_decrypt(data_enc[lower[0]..upper[0]].to_vec());
+        let res_iter = Box::new(data.into_iter());
         //println!("In parallel_collection_op(after decryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("in enclave decrypt {:?} s", dur);   
-        (Box::new(data.into_iter()), None)
+        println!("in enclave decrypt {:?} s", dur);  
+        if need_cache {
+            let key = call_seq.get_caching_triplet();
+            if CACHE.get(key).is_none() { 
+                return self.set_cached_data(
+                    call_seq.is_survivor(),
+                    call_seq.is_caching_final_rdd(),
+                    key,
+                    res_iter
+                );
+            }
+        }
+        (res_iter, None)
     }
 
 }

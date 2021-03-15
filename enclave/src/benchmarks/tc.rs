@@ -67,10 +67,10 @@ pub fn transitive_closure_sec_0() -> Result<()> {
         bincode::deserialize::<Vec<(Vec<u8>, Vec<u8>)>>(&file).unwrap()  //ItemE = (Vec<u8>, Vec<u8>)
     }));
 
-    let dir = PathBuf::from("/opt/data/ct_tc_1");
+    let dir = PathBuf::from("/opt/data/ct_tc");
     let mut tc = sc.read_source(LocalFsReaderConfig::new(dir), None, Some(deserializer), fe, fd);
     
-    
+    let mut data_enc = tc.collect().unwrap();
     let edges = tc.map(Fn!(|x: (u32, u32)| (x.1, x.0)), fe.clone(), fd.clone());
     
     let mut old_count = 0;
@@ -82,9 +82,10 @@ pub fn transitive_closure_sec_0() -> Result<()> {
 
     tc = sc.make_op(fe.clone(), fd.clone(), 1)
         .distinct();
-
+    data_enc = tc.collect().unwrap();
+    tc = sc.make_op(fe.clone(), fd.clone(), 1);
+    
     next_count = tc.count().unwrap();
-
 
     
     

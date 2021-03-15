@@ -67,7 +67,7 @@ pub fn transitive_closure_sec_0() -> Result<()> {
         bincode::deserialize::<Vec<(Vec<u8>, Vec<u8>)>>(&file).unwrap()  //ItemE = (Vec<u8>, Vec<u8>)
     }));
 
-    let dir = PathBuf::from("/opt/data/ct_tc_1");
+    let dir = PathBuf::from("/opt/data/ct_tc");
     let mut tc = sc.read_source(LocalFsReaderConfig::new(dir), None, Some(deserializer), fe, fd);
     tc.cache();
     let mut data_enc = tc.secure_collect().unwrap().clone();
@@ -82,9 +82,10 @@ pub fn transitive_closure_sec_0() -> Result<()> {
         data_enc.append(&mut jn.secure_collect().unwrap());
         tc = sc.parallelize(vec![], data_enc, fe.clone(), fd.clone(), 1)
             .distinct();
+        data_enc = tc.secure_collect().unwrap().clone();
+        tc = sc.parallelize(vec![], data_enc.clone(), fe.clone(), fd.clone(), 1);
         tc.cache();
         next_count = tc.secure_count().unwrap();
-        data_enc = tc.secure_collect().unwrap().clone();
         println!("next_count = {:?}", next_count);
     }
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;

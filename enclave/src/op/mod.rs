@@ -713,10 +713,12 @@ impl<'a> NextOpId<'a> {
 
     pub fn have_cache(&self) -> bool {
         self.get_cur_rdd_id() == self.cache_meta.cached_rdd_id
+        && self.cache_meta.cached_rdd_id != 0
     }
 
     pub fn need_cache(&self) -> bool {
         self.get_cur_rdd_id() == self.cache_meta.caching_rdd_id
+        && self.cache_meta.caching_rdd_id != 0
     }
 
     pub fn is_caching_final_rdd(&self) -> bool {
@@ -1389,8 +1391,11 @@ pub trait OpE: Op {
             let reduce_num = call_seq.pop_reduce_num();
             shuf_dep.change_partitioner(reduce_num);
         }
+        let now = Instant::now();
         let (data_iter, handle) = self.compute(call_seq, input);
         let data = data_iter.collect::<Vec<Self::Item>>();
+        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+        println!("compute: {:?}s, cur mem: {:?}B", dur,  crate::ALLOCATOR.lock().get_memory_usage());
         //let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
         let iter = Box::new(data) as Box<dyn Any>;
         let result_ptr = shuf_dep.do_shuffle_task(iter, call_seq.is_spec);
