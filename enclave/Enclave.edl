@@ -49,7 +49,9 @@ enclave {
         size_t data;
         size_t lower;
         size_t upper;
-        size_t block_size;
+        size_t block_len;
+        size_t init_mem_usage;
+        size_t max_mem_usage;
     };
     
     trusted {

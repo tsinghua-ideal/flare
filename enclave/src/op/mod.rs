@@ -327,19 +327,31 @@ pub struct Input {
     data: usize,
     lower: usize,
     upper: usize,
-    block_size: usize,
+    block_len: usize,
+    init_mem_usage: usize,
+    max_mem_usage: usize,
 }
 
 impl Input {
-    pub fn new<T: Data>(data: &T, lower: &mut Vec<usize>, upper: &mut Vec<usize>, block_size: usize) -> Self {
+    pub fn new<T: Data>(data: &T, 
+        lower: &mut Vec<usize>, 
+        upper: &mut Vec<usize>, 
+        block_len: usize, 
+        init_mem_usage: &mut usize, 
+        max_mem_usage: &mut usize,
+    ) -> Self {
         let data = data as *const T as usize;
         let lower = lower as *mut Vec<usize> as usize;
         let upper = upper as *mut Vec<usize> as usize;
+        let init_mem_usage = init_mem_usage as *mut usize as usize;
+        let max_mem_usage = max_mem_usage as *mut usize as usize;
         Input {
             data,
             lower,
             upper,
-            block_size,
+            block_len,
+            init_mem_usage,
+            max_mem_usage,
         }
     }
 
@@ -348,7 +360,9 @@ impl Input {
             data: 0,
             lower: 0,
             upper: 0,
-            block_size: 0,
+            block_len: 0,
+            init_mem_usage: 0,
+            max_mem_usage: 0,
         }
     }
 
@@ -364,8 +378,20 @@ impl Input {
         unsafe { (self.upper as *mut Vec<usize>).as_mut() }.unwrap()
     }
 
-    pub fn get_block_size(&self) -> usize {
-        self.block_size
+    pub fn get_block_len(&self) -> usize {
+        self.block_len
+    }
+
+    pub fn set_init_mem_usage(&self) -> &mut usize {
+        let init_mem_usage = unsafe { (self.init_mem_usage as *mut usize).as_mut() }.unwrap();
+        *init_mem_usage = crate::ALLOCATOR.lock().reset_max_memory_usage();
+        init_mem_usage
+    }
+
+    pub fn set_max_mem_usage(&self) -> &mut usize {
+        let max_mem_usage = unsafe { (self.max_mem_usage as *mut usize).as_mut() }.unwrap();
+        *max_mem_usage = crate::ALLOCATOR.lock().get_max_memory_usage();
+        max_mem_usage
     }
 
 }

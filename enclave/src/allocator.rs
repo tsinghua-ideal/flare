@@ -110,6 +110,11 @@ impl Allocator {
         self.max_usage
     }
 
+    pub fn reset_max_memory_usage(&mut self) -> usize {
+        self.max_usage = self.usage;
+        self.usage
+    }
+
 }
 
 impl Locked<Allocator> {

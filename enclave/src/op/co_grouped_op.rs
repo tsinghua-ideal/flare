@@ -208,7 +208,7 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
             )>();
         let lower = input.get_lower();
         let upper = input.get_upper();
-        let block_size = input.get_block_size();
+        let block_len = input.get_block_len();
 
         let mut num_sub_part = vec![0, 0];
         let mut upper_bound = Vec::new();
@@ -233,7 +233,7 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
         }
         num_sub_part[1] += data_enc.3.len();
         block.3.resize(num_sub_part[1], Vec::new());
-        let mut cur_size = block.get_aprox_size();
+        let mut cur_len = 0;
         let deps = self.get_deps();
         let op0 = self.op0.clone();
         let op1 = self.op1.clone();
@@ -243,14 +243,14 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
                 if lower[idx] >= upper_bound[idx] {
                     continue;
                 }
-                cur_size += get_block(&deps, &op0, &op1, idx, &num_sub_part,
+                cur_len += get_block(&deps, &op0, &op1, idx, &num_sub_part,
                     lower, upper, data_enc, &mut block, &mut sorted_max_key
                 );
                 lower[idx] += 1;
                 upper[idx] += 1;
             }
         }
-        while cur_size < block_size {
+        while cur_len < block_len {
             let entry = match sorted_max_key.first_entry() {
                 Some(entry) => entry,
                 None => break,
@@ -260,7 +260,7 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
             if lower[idx] >= upper_bound[idx] {
                 continue;
             }
-            cur_size += get_block(&deps, &op0, &op1, idx, &num_sub_part,
+            cur_len += get_block(&deps, &op0, &op1, idx, &num_sub_part,
                 lower, upper, data_enc, &mut block, &mut sorted_max_key
             );
             lower[idx] += 1;
@@ -541,13 +541,13 @@ where
     VE: Data,
     WE: Data,
 {
-    let mut inc_size = 0;
+    let mut inc_len = 0;
     if idx < num_sub_part[0] {
         match &deps[0] {
             Dependency::NarrowDependency(_nar) => {
                 let sub_data_enc = &data_enc.0[idx];
                 let mut block0 = op0.batch_decrypt(sub_data_enc[lower[idx]..upper[idx]].to_vec());
-                inc_size += block0.get_aprox_size();
+                inc_len += 1;
                 block.0[idx].append(&mut block0);
                 sorted_max_key.insert((block.0[idx].last().unwrap().0.clone(), idx), idx);
             },
@@ -559,7 +559,7 @@ where
                 for block in sub_data_enc[lower[idx]..upper[idx]].to_vec() {
                     block1.append(&mut (s.fd)(block)); //need to check security
                 }
-                inc_size += block1.get_aprox_size();
+                inc_len += 1;
                 block.1[idx].append(&mut block1);
                 sorted_max_key.insert((block.1[idx].last().unwrap().0.clone(), idx), idx);
             },
@@ -570,7 +570,7 @@ where
             Dependency::NarrowDependency(_nar) => {
                 let sub_data_enc = &data_enc.2[idx1];
                 let mut block2 = op1.batch_decrypt(sub_data_enc[lower[idx]..upper[idx]].to_vec());
-                inc_size += block2.get_aprox_size();
+                inc_len += 1;
                 block.2[idx1].append(&mut block2);
                 sorted_max_key.insert((block.2[idx1].last().unwrap().0.clone(), idx), idx);
             },
@@ -582,11 +582,11 @@ where
                 for block in sub_data_enc[lower[idx]..upper[idx]].to_vec() {
                     block3.append(&mut (s.fd)(block)); //need to check security
                 }
-                inc_size += block3.get_aprox_size();
+                inc_len += 1;
                 block.3[idx1].append(&mut block3);
                 sorted_max_key.insert((block.3[idx1].last().unwrap().0.clone(), idx), idx);
             },
         };
     }
-    inc_size
+    inc_len
 }

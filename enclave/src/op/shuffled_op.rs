@@ -110,7 +110,8 @@ where
         let buckets_enc = input.get_enc_data::<Vec<Vec<(KE, CE)>>>();
         let lower = input.get_lower();
         let upper = input.get_upper();
-        let block_size = input.get_block_size();
+        let block_len = input.get_block_len();
+        let mut cur_len = 0;
         //println!("cur mem before decryption: {:?}", crate::ALLOCATOR.lock().get_memory_usage());
         let now = Instant::now(); 
         let upper_bound = buckets_enc.iter().map(|sub_part| sub_part.len()).collect::<Vec<_>>();
@@ -127,6 +128,7 @@ where
                             let data_enc = sub_part[*l..*u].to_vec();
                             *l += 1;
                             *u += 1;
+                            cur_len += 1;
                             self.batch_decrypt(data_enc)
                         },
                         false => Vec::new(),
@@ -141,8 +143,7 @@ where
             block.resize(lower.len(), Vec::new());
         }
 
-        let mut cur_size = block.get_aprox_size();
-        while cur_size < block_size {
+        while cur_len < block_len {
             let entry = match sorted_max_key.first_entry() {
                 Some(entry) => entry,
                 None => break,
@@ -153,7 +154,7 @@ where
                 continue;
             }
             let mut inc_block = self.batch_decrypt(buckets_enc[idx][lower[idx]..upper[idx]].to_vec());
-            cur_size += inc_block.get_aprox_size();
+            cur_len += 1;
             block[idx].append(&mut inc_block); 
             sorted_max_key.insert((block[idx].last().unwrap().0.clone(), idx), idx);
             lower[idx] += 1;

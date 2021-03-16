@@ -154,6 +154,7 @@ pub extern "C" fn secure_execute(tid: u64,
     captured_vars: *const u8
 ) -> usize {
     let _init = *init; //this is necessary to let it accually execute
+    input.set_init_mem_usage();
     println!("Cur mem: {:?}, at the begining of secure execution", ALLOCATOR.lock().get_memory_usage());
     let rdd_ids = unsafe { (rdd_ids as *const Vec<usize>).as_ref() }.unwrap();
     let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();
@@ -167,6 +168,7 @@ pub extern "C" fn secure_execute(tid: u64,
     let result_ptr = final_op.iterator_start(&mut call_seq, input, &dep_info); //shuffle need dep_info
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Cur mem: {:?}, secure_execute {:?} s", ALLOCATOR.lock().get_memory_usage(), dur);
+    input.set_max_mem_usage();
     println!("Max mem: {:?}", ALLOCATOR.lock().get_max_memory_usage());
     return result_ptr as usize
 }
