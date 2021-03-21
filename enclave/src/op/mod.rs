@@ -1457,8 +1457,8 @@ pub trait OpE: Op {
     }
 
     /// Return a new RDD containing only the elements that satisfy a predicate.
-    /*
-    fn filter<F>(&self, predicate: F) -> SerArc<dyn Op<Item = Self::Item>>
+    #[track_caller]
+    fn filter<F>(&self, predicate: F) -> SerArc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>
     where
         F: Fn(&Self::Item) -> bool + Send + Sync + Clone + Copy + 'static,
         Self: Sized,
@@ -1468,9 +1468,12 @@ pub trait OpE: Op {
               -> Box<dyn Iterator<Item = _>> {
             Box::new(items.filter(predicate))
         });
-        SerArc::new(MapPartitions::new(self.get_op(), filter_fn))
+        let new_op = SerArc::new(MapPartitions::new(self.get_op(), filter_fn, self.get_fe(), self.get_fd()));
+        if !self.get_context().get_is_tail_comp() {
+            insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        }
+        new_op
     }
-    */
 
     #[track_caller]
     fn map<U, UE, F, FE, FD>(&self, f: F, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = U, ItemE = UE>>

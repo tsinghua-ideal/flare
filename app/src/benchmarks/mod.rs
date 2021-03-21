@@ -8,6 +8,8 @@ mod micro_distinct;
 pub use micro_distinct::*;
 mod micro_file_read;
 pub use micro_file_read::*;
+mod micro_filter;
+pub use micro_filter::*;
 mod micro_group_by;
 pub use micro_group_by::*;
 mod micro_join;

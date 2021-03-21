@@ -92,6 +92,9 @@ lazy_static! {
         //map_sec_0()
         //map_sec_1()
 
+        /* filter */
+        filter_sec_0()
+        
         /* group_by */
         //group_by_sec_0()
         //group_by_sec_1()
@@ -131,7 +134,7 @@ lazy_static! {
         //lr_sec()
 
         /* page rank */
-        pagerank_sec_0()
+        //pagerank_sec_0()
 
         /* transitive_closure */
         //transitive_closure_sec_0()

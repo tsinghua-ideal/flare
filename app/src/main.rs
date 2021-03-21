@@ -48,6 +48,10 @@ fn main() -> Result<()> {
     //map_unsec_0()?;
     //map_unsec_1()?;
 
+    /* filter */
+    filter_sec_0()?;
+    //filter_unsec_0()?;
+
     /* group_by */
     //group_by_sec_0()?;
     //group_by_sec_1()?;
@@ -98,7 +102,7 @@ fn main() -> Result<()> {
     //lr_unsec()?;
 
     /* page rank */
-    pagerank_sec_0()?;
+    //pagerank_sec_0()?;
     //pagerank_unsec_0()?;
 
     /* transitive_closure */
