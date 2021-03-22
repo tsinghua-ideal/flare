@@ -4,11 +4,13 @@ use std::time::Instant;
 use vega::*;
 
 fn custom_split_nodes_text_file(node: (usize, usize, Option<String>)) -> (usize, (usize, Option<Vec<String>>, String)) {
-    let neighbors = node.2.map(|s| 
-        s.split(":")
+    let neighbors = node.2.map(|s| {
+        let mut v = s.split(":")
             .map(|x| x.to_string())
-            .collect::<Vec<_>>()
-    );
+            .collect::<Vec<_>>();
+        v.split_off(v.len()-1);
+        v
+    });
     let path = node.0.to_string();
     (node.0, (node.1, neighbors, path))
 }
@@ -90,21 +92,6 @@ pub fn dijkstra_sec_0() -> Result<()> {
         pt0.into_iter().zip(pt1.into_iter()).collect::<Vec<_>>() 
     });
 
-    let fe_mp1 = Fn!(|vp: Vec<(usize, Option<Vec<String>>, String)>| {
-        let len = vp.len();
-        let mut buf0 = Vec::with_capacity(len);
-        for i in vp {
-            buf0.push(i.0);
-        }
-        let buf0 = ser_encrypt::<>(buf0);
-        buf0
-    });
-
-    let fd_mp1 = Fn!(|ve: Vec<u8>| {
-        let mut pt0: Vec<(usize, Option<Vec<String>>, String)> = ser_decrypt::<>(ve);
-        pt0
-    });
-
     let deserializer = Box::new(Fn!(|file: Vec<u8>| {
         bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap()  //ItemE = Vec<u8>
     }));
@@ -125,17 +112,17 @@ pub fn dijkstra_sec_0() -> Result<()> {
     while iterations == 0 || old[0] != new[0] {
         iterations += 1;
         old = new;
-        let node_values = nodes.map(Fn!(|x: (usize, (usize, Option<Vec<String>>, String))| x.1), fe_mp1.clone(), fd_mp1.clone());
-        let neighbors = node_values.filter(Fn!(|v: &(usize, Option<Vec<String>>, String)| v.1.is_some()))
-            .flat_map(Fn!(|node: (usize, Option<Vec<String>>, String)| {
-                let (data0, data1, data2) = node;
-                Box::new(data1.unwrap().into_iter()
+        let mapper = nodes.flat_map(Fn!(|node: (usize, (usize, Option<Vec<String>>, String))| {
+            let (nid, (data0, data1, data2)) = node.clone();
+            let mut res = Vec::new();
+            res.push(node);
+            if let Some(d) = data1 {
+                res.append(&mut d.into_iter()
                     .map(|neighbor: String| custom_split_neighbor(&data2, data0, &neighbor))
-                    .collect::<Vec<_>>()
-                    .into_iter())
-                as Box<dyn Iterator<Item = _>>
-            }), fe_mp.clone(), fd_mp.clone());
-        let mapper = nodes.union(neighbors.into());
+                    .collect::<Vec<_>>());
+            }
+            Box::new(res.into_iter()) as Box<dyn Iterator<Item = _>>
+        }), fe_mp.clone(), fd_mp.clone());
         let reducer = mapper.reduce_by_key(Fn!(|(x, y)| min_distance(x, y)), 1, fe_mp.clone(), fd_mp.clone());
         nodes = reducer.map(Fn!(|node| custom_split_nodes_iterative(node)), fe_mp.clone(), fd_mp.clone());
         result = nodes.secure_collect().unwrap();
@@ -190,21 +177,6 @@ pub fn dijkstra_unsec_0() -> Result<()> {
         pt0.into_iter().zip(pt1.into_iter()).collect::<Vec<_>>() 
     });
 
-    let fe_mp1 = Fn!(|vp: Vec<(usize, Option<Vec<String>>, String)>| {
-        let len = vp.len();
-        let mut buf0 = Vec::with_capacity(len);
-        for i in vp {
-            buf0.push(i.0);
-        }
-        let buf0 = ser_encrypt::<>(buf0);
-        buf0
-    });
-
-    let fd_mp1 = Fn!(|ve: Vec<u8>| {
-        let mut pt0: Vec<(usize, Option<Vec<String>>, String)> = ser_decrypt::<>(ve);
-        pt0
-    });
-
     let deserializer = Box::new(Fn!(|file: Vec<u8>| {
         bincode::deserialize::<Vec<(usize, usize, Option<String>)>>(&file).unwrap()  //Item = (u32, u32)
     }));
@@ -223,17 +195,17 @@ pub fn dijkstra_unsec_0() -> Result<()> {
     while iterations == 0 || old != new {
         iterations += 1;
         old = new;
-        let node_values = nodes.map(Fn!(|x: (usize, (usize, Option<Vec<String>>, String))| x.1), fe_mp1.clone(), fd_mp1.clone());
-        let neighbors = node_values.filter(Fn!(|v: &(usize, Option<Vec<String>>, String)| v.1.is_some()))
-            .flat_map(Fn!(|node: (usize, Option<Vec<String>>, String)| {
-                let (data0, data1, data2) = node;
-                Box::new(data1.unwrap().into_iter()
+        let mapper = nodes.flat_map(Fn!(|node: (usize, (usize, Option<Vec<String>>, String))| {
+            let (nid, (data0, data1, data2)) = node.clone();
+            let mut res = Vec::new();
+            res.push(node);
+            if let Some(d) = data1 {
+                res.append(&mut d.into_iter()
                     .map(|neighbor: String| custom_split_neighbor(&data2, data0, &neighbor))
-                    .collect::<Vec<_>>()
-                    .into_iter())
-                as Box<dyn Iterator<Item = _>>
-            }), fe_mp.clone(), fd_mp.clone());
-        let mapper = nodes.union(neighbors.into());
+                    .collect::<Vec<_>>());
+            }
+            Box::new(res.into_iter()) as Box<dyn Iterator<Item = _>>
+        }), fe_mp.clone(), fd_mp.clone());
         let reducer = mapper.reduce_by_key(Fn!(|(x, y)| min_distance(x, y)), 1, fe_mp.clone(), fd_mp.clone());
         nodes = reducer.map(Fn!(|node| custom_split_nodes_iterative(node)), fe_mp.clone(), fd_mp.clone());
         result = nodes.collect().unwrap();

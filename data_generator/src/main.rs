@@ -1,10 +1,11 @@
 #![feature(specialization)]
-
+use std::error::Error;
+use std::io::{self, BufRead};
 use std::collections::HashSet;
 use std::fs::{create_dir_all, File};
 use std::path::PathBuf;
 use std::io::prelude::*;
-use vega::*;
+use vega::{Fn, ser_encrypt, ser_decrypt, MAX_ENC_BL};
 use rand::Rng;
 
 #[allow(unused_must_use)]
@@ -77,13 +78,35 @@ fn main() {
 }
 
 fn generate_dijkstra_data() -> (Vec<u8>, Vec<u8>) {
+    /*
     let mut data: Vec<(usize, usize, Option<String>)> = vec![
-        (1, 0, Some(String::from("2,10:3,5"))),
-        (2, 999, Some(String::from("3,2:4,1"))),
-        (3, 999, Some(String::from("2,3:4,9:5,2"))),
-        (4, 999, Some(String::from("5,4"))),
-        (5, 999, Some(String::from("1,7:4,6"))),
+        (1, 0, Some(String::from("2,10:3,5:"))),
+        (2, 999, Some(String::from("3,2:4,1:"))),
+        (3, 999, Some(String::from("2,3:4,9:5,2:"))),
+        (4, 999, Some(String::from("5,4:"))),
+        (5, 999, Some(String::from("1,7:4,6:"))),
     ];
+    */
+    fn custom_split_nodes_textfile(node: String) -> (usize, usize, Option<String>) {
+        let s = node.split(' ').collect::<Vec<_>>();
+        if s.len() < 3 {
+            let v = s.into_iter().map(|v| v.parse::<usize>().unwrap()).collect::<Vec<_>>();
+            (v[0], v[1], None)
+        } else {
+            (s[0].parse::<usize>().unwrap(), s[1].parse::<usize>().unwrap(), Some(s[2].to_string()))
+        }
+    }
+    let mut f = match File::open("/opt/data/facebook/fb.dat") {
+        // `io::Error` 的 `description` 方法返回一个描述错误的字符串。
+        Err(why) => panic!("couldn't open for {}", why.to_string()),
+        Ok(file) => file,
+    };
+    let lines = io::BufReader::new(f).lines();
+    let mut data = lines.into_iter().map(|line| {
+        let line = line.unwrap();
+        custom_split_nodes_textfile(line)
+    }).collect::<Vec<_>>();
+
     let bytes = bincode::serialize(&data).unwrap();
     let fe = Fn!(|vp: Vec<(usize, usize, Option<String>)>|{
         ser_encrypt::<>(vp)    

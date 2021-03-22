@@ -42,8 +42,8 @@ fn main() -> Result<()> {
     INPUT_.store(num, atomic::Ordering::SeqCst);
     //Fn! will make the closures serializable. It is necessary. use serde_closure version 0.1.3.
     /* dijkstra */
-    dijkstra_sec_0()?;
-    //dijkstra_unsec_0()?;
+    //dijkstra_sec_0()?;
+    dijkstra_unsec_0()?;
 
     /* map */
     //map_sec_0()?;
