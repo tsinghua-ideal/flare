@@ -88,12 +88,15 @@ lazy_static! {
     static ref CAVE: Arc<Mutex<HashMap<u64, (usize, usize)>>> = Arc::new(Mutex::new(HashMap::new()));  //tid, (remaining_combiner, sorted_max_key)
     static ref OP_MAP: AtomicPtrWrapper<BTreeMap<OpId, Arc<dyn OpBase>>> = AtomicPtrWrapper::new(Box::into_raw(Box::new(BTreeMap::new()))); 
     static ref init: Result<()> = {
+        /* dijkstra */
+        dijkstra_sec_0()
+
         /* map */
         //map_sec_0()
         //map_sec_1()
 
         /* filter */
-        filter_sec_0()
+        //filter_sec_0()
         
         /* group_by */
         //group_by_sec_0()

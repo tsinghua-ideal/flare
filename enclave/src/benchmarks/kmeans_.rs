@@ -168,7 +168,7 @@ pub fn kmeans_sec_0_(tail_info: &mut TailCompInfo) -> Result<()> {
         ), fe_mp1.clone(), fd_mp1.clone(), 
     ).secure_collect(tail_info).unwrap();
     
-    let new_points = new_points.clone().into_iter().collect::<HashMap<usize, Vec<f64>>>();
+    let new_points = (*new_points).clone().into_iter().collect::<HashMap<usize, Vec<f64>>>();
     *temp_dist = 0.0;
     for i in 0..k as usize {
         if new_points.get(&i).is_some() {
@@ -313,7 +313,7 @@ pub fn kmeans_sec_1_(tail_info: &mut TailCompInfo) -> Result<()> {
         ), fe_mp1.clone(), fd_mp1.clone(), 
     ).secure_collect(tail_info).unwrap();
     
-    let new_points = new_points.clone().into_iter().collect::<HashMap<usize, Vec<f64>>>();
+    let new_points = (*new_points).clone().into_iter().collect::<HashMap<usize, Vec<f64>>>();
     *temp_dist = 0.0;
     for i in 0..k as usize {
         if new_points.get(&i).is_some() {

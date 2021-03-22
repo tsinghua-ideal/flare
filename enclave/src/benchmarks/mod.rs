@@ -20,6 +20,8 @@ mod micro_take;
 pub use micro_take::*;
 mod micro_union;
 pub use micro_union::*;
+mod dijkstra;
+pub use dijkstra::*;
 mod kmeans;
 pub use kmeans::*;
 mod kmeans_;

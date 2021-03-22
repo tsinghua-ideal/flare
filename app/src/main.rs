@@ -41,6 +41,9 @@ fn main() -> Result<()> {
     let num: usize = numin!();
     INPUT_.store(num, atomic::Ordering::SeqCst);
     //Fn! will make the closures serializable. It is necessary. use serde_closure version 0.1.3.
+    /* dijkstra */
+    dijkstra_sec_0()?;
+    //dijkstra_unsec_0()?;
 
     /* map */
     //map_sec_0()?;
@@ -49,7 +52,7 @@ fn main() -> Result<()> {
     //map_unsec_1()?;
 
     /* filter */
-    filter_sec_0()?;
+    //filter_sec_0()?;
     //filter_unsec_0()?;
 
     /* group_by */

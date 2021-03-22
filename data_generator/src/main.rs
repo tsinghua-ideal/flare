@@ -33,42 +33,79 @@ fn main() {
     let iteme = ser_encrypt(vec![fixture.clone()]);
     println!("ItemE = {:?}", iteme);
     let bytes = bincode::serialize(&vec![iteme]).unwrap();
-    set_up(bytes, PathBuf::from("/tmp/ct_lf"), 10);
-    set_up(fixture, PathBuf::from("/tmp/pt_lf"), 10);
+    set_up(bytes, PathBuf::from("/opt/data/ct_lf"), 10);
+    set_up(fixture, PathBuf::from("/opt/data/pt_lf"), 10);
     
     //k_means
     let (bytes, bytes_enc) = generate_kmeans_data(2_000_000, 5);
-    set_up(bytes_enc, PathBuf::from("/tmp/ct_km"), 1);
-    set_up(bytes, PathBuf::from("/tmp/pt_km"), 1);
+    set_up(bytes_enc, PathBuf::from("/opt/data/ct_km"), 1);
+    set_up(bytes, PathBuf::from("/opt/data/pt_km"), 1);
 
     //pagerank
     let (bytes, bytes_enc) = generate_pagerank_data(1_000_000, true);
-    set_up(bytes_enc, PathBuf::from("/tmp/ct_pr"), 1);
-    set_up(bytes, PathBuf::from("/tmp/pt_pr"), 1);
+    set_up(bytes_enc, PathBuf::from("/opt/data/ct_pr"), 1);
+    set_up(bytes, PathBuf::from("/opt/data/pt_pr"), 1);
     
     let (bytes, bytes_enc) = generate_pagerank_data(10_000_000, false);
-    set_up(bytes_enc, PathBuf::from("/tmp/ct_pr_1"), 1);
-    set_up(bytes, PathBuf::from("/tmp/pt_pr_1"), 1);
-    */
+    set_up(bytes_enc, PathBuf::from("/opt/data/ct_pr_1"), 1);
+    set_up(bytes, PathBuf::from("/opt/data/pt_pr_1"), 1);
 
     let (bytes, bytes_enc) = generate_pagerank_data(4_000_000, false);
-    set_up(bytes_enc, PathBuf::from("/tmp/ct_pr_2"), 1);
-    set_up(bytes, PathBuf::from("/tmp/pt_pr_2"), 1);
+    set_up(bytes_enc, PathBuf::from("/opt/data/ct_pr_2"), 1);
+    set_up(bytes, PathBuf::from("/opt/data/pt_pr_2"), 1);
+    */
 
     /*
     //tc
     let num_edges = 500;
     let num_vertices = 300;
     let (bytes, bytes_enc) = generate_tc_data(num_edges, num_vertices);
-    set_up(bytes_enc, PathBuf::from("/tmp/ct_tc"), 1);
-    set_up(bytes, PathBuf::from("/tmp/pt_tc"), 1);
+    set_up(bytes_enc, PathBuf::from("/opt/data/ct_tc"), 1);
+    set_up(bytes, PathBuf::from("/opt/data/pt_tc"), 1);
     
     let num_edges = 10_000;
     let num_vertices = 1_000;
     let (bytes, bytes_enc) = generate_tc_data(num_edges, num_vertices);
-    set_up(bytes_enc, PathBuf::from("/tmp/ct_tc_1"), 1);
-    set_up(bytes, PathBuf::from("/tmp/pt_tc_1"), 1);
+    set_up(bytes_enc, PathBuf::from("/opt/data/ct_tc_1"), 1);
+    set_up(bytes, PathBuf::from("/opt/data/pt_tc_1"), 1);
     */
+
+    //dijkstra 
+    let (bytes, bytes_enc) = generate_dijkstra_data();
+    set_up(bytes_enc, PathBuf::from("/opt/data/ct_dij"), 1);
+    set_up(bytes, PathBuf::from("/opt/data/pt_dij"), 1);
+}
+
+fn generate_dijkstra_data() -> (Vec<u8>, Vec<u8>) {
+    let mut data: Vec<(usize, usize, Option<String>)> = vec![
+        (1, 0, Some(String::from("2,10:3,5"))),
+        (2, 999, Some(String::from("3,2:4,1"))),
+        (3, 999, Some(String::from("2,3:4,9:5,2"))),
+        (4, 999, Some(String::from("5,4"))),
+        (5, 999, Some(String::from("1,7:4,6"))),
+    ];
+    let bytes = bincode::serialize(&data).unwrap();
+    let fe = Fn!(|vp: Vec<(usize, usize, Option<String>)>|{
+        ser_encrypt::<>(vp)    
+    });
+    let fd = Fn!(|ve: Vec<u8>|{  //ItemE = Vec<u8>
+        let data: Vec<(usize, usize, Option<String>)> = ser_decrypt::<>(ve);
+        data
+    });
+    let mut len = data.len();
+    let mut data_enc = Vec::with_capacity(len);
+    while len >= MAX_ENC_BL {
+        len -= MAX_ENC_BL;
+        let remain = data.split_off(MAX_ENC_BL);
+        let input = data;
+        data = remain;
+        data_enc.push(fe(input));
+    }
+    if len != 0 {
+        data_enc.push(fe(data));
+    }
+    let bytes_enc = bincode::serialize(&data_enc).unwrap();
+    (bytes, bytes_enc)
 }
 
 fn generate_kmeans_data(num_points: usize, dimension: usize) -> (Vec<u8>, Vec<u8>) {

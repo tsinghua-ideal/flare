@@ -1,3 +1,5 @@
+mod dijkstra;
+pub use dijkstra::*;
 mod kmeans;
 pub use kmeans::*;
 mod lr;

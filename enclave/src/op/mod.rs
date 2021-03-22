@@ -60,11 +60,8 @@ pub use shuffled_op::*;
 mod union_op;
 pub use union_op::*;
 
-type PT<T, TE> = Text<T, TE, 
-    Box<dyn Fn(T) -> TE>, 
-    Box<dyn Fn(TE) -> T>
-    >;
-pub type OText<T> = Text<T, T, Box<dyn Fn(T) -> T>, Box<dyn Fn(T) -> T> >; 
+type PT<T, TE> = Text<T, TE>;
+pub type OText<T> = Text<T, T>; 
 
 pub const MAX_ENC_BL: usize = 1000;
 pub type Result<T> = std::result::Result<T, &'static str>;
@@ -396,29 +393,25 @@ impl Input {
 
 }
 
-#[derive(Debug, Default)]
-pub struct Text<T, TE, FE, FD> 
+#[derive(Default, Clone)]
+pub struct Text<T, TE> 
 where
     T: Data,
     TE: Data,
-    FE: Fn(T) -> TE, 
-    FD: Fn(TE) -> T,
 {
     data: T,
     id: u64,
-    bfe: Option<FE>,
-    bfd: Option<FD>,
+    bfe: Option<Box<dyn Func(T) -> TE>>,
+    bfd: Option<Box<dyn Func(TE) -> T>>,
 }
 
-impl<T, TE, FE, FD> Text<T, TE, FE, FD> 
+impl<T, TE> Text<T, TE> 
 where
     T: Data,
     TE: Data,
-    FE: Fn(T) -> TE, 
-    FD: Fn(TE) -> T,
 {
     #[track_caller]
-    pub fn new(data: T, bfe: Option<FE>, bfd: Option<FD>) -> Self {
+    pub fn new(data: T, bfe: Option<Box<dyn Func(T) -> TE>>, bfd: Option<Box<dyn Func(TE) -> T>>) -> Self {
         let id = get_text_loc_id();
         Text {
             data,
@@ -429,7 +422,7 @@ where
     }
 
     #[track_caller]
-    pub fn rec(tail_info: &TailCompInfo, bfe: Option<FE>, bfd: Option<FD>) -> Self {
+    pub fn rec(tail_info: &TailCompInfo, bfe: Option<Box<dyn Func(T) -> TE>>, bfd: Option<Box<dyn Func(TE) -> T>>) -> Self {
         let id = get_text_loc_id();
         let data = match tail_info.get(id) {
             Some(data_enc) => {
@@ -485,12 +478,10 @@ where
 
 }
 
-impl<T, TE, FE, FD> Deref for Text<T, TE, FE, FD> 
+impl<T, TE> Deref for Text<T, TE> 
 where
     T: Data,
     TE: Data,
-    FE: Fn(T) -> TE, 
-    FD: Fn(TE) -> T,
 {
     type Target = T;
 
@@ -499,12 +490,10 @@ where
     }
 }
 
-impl<T, TE, FE, FD> DerefMut for Text<T, TE, FE, FD> 
+impl<T, TE> DerefMut for Text<T, TE> 
 where
     T: Data,
     TE: Data,
-    FE: Fn(T) -> TE, 
-    FD: Fn(TE) -> T,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.data
@@ -524,12 +513,10 @@ impl TailCompInfo {
         }
     }
 
-    pub fn insert<T, TE, FE, FD>(&mut self, text: &Text<T, TE, FE, FD>)
+    pub fn insert<T, TE>(&mut self, text: &Text<T, TE>)
     where
         T: Data,
         TE: Data,
-        FE: Fn(T) -> TE, 
-        FD: Fn(TE) -> T,
     {
         let ser = bincode::serialize(&text.get_ct()).unwrap();
         self.m.insert(text.id, ser);
