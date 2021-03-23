@@ -177,7 +177,7 @@ pub fn pagerank_sec_0() -> Result<()> {
     
     let mut ranks = links.map_values(Fn!(|_| 1.0), fe_mv.clone(), fd_mv.clone());
 
-    
+    sc.enter_loop();
     let contribs = links.join(ranks, fe_jn, fd_jn, 1)
         .values(fe_v, fd_v)
         .flat_map(Fn!(|(urls, rank): (Vec<String>, f64)| {
@@ -188,7 +188,7 @@ pub fn pagerank_sec_0() -> Result<()> {
         );
     ranks = contribs.reduce_by_key(Fn!(|(x, y)| x + y), 1, fe_mv.clone(), fd_mv.clone())
         .map_values(Fn!(|v| 0.15 + 0.85 * v), fe_mv.clone(), fd_mv.clone());
-    
+    sc.leave_loop();
 
     let _output = ranks.collect().unwrap();
     

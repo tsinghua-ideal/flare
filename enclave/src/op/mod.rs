@@ -753,7 +753,7 @@ impl<'a> NextOpId<'a> {
 pub struct SpecOpId {
     cur_op_id: OpId,
     spec_rdd_ids: Vec<usize>,
-    spec_op_ids: Vec<OpId>,
+    pub spec_op_ids: Vec<OpId>,
     end: bool,
 }
 
@@ -776,7 +776,7 @@ impl SpecOpId {
         }
     }
 
-    pub fn advance(&mut self) -> bool {
+    pub fn advance(&mut self, dep_info: &DepInfo) -> bool {
         let parent_op_id = self.cur_op_id;
         let parent_op = load_opmap().get(&parent_op_id).unwrap(); 
         let may_child_op_id = BRANCH_OP_HIS.read()
@@ -784,32 +784,67 @@ impl SpecOpId {
             .get(&parent_op_id)
             .map(|x| x.clone());
 
-        let child_op_id = if may_child_op_id.is_some() && 
-            (self.cur_op_id != self.spec_op_ids[0] || self.spec_op_ids.len() == 1) 
-        {
-            may_child_op_id.unwrap()
-        } else {
-            self.end = false;
-            return true;
-        };
-
-        let child_op = load_opmap().get(&child_op_id).unwrap();
-        if child_op.has_spec_oppty() {
-            self.spec_rdd_ids.push(0);  //just for padding
-            self.spec_op_ids.push(child_op_id);
+        fn detect_child_op(child_op_id: OpId, parent_op_id: OpId, parent_op: &Arc<dyn OpBase>, rdd_ids: &mut Vec<usize>, op_ids: &mut Vec<OpId>, end: &mut bool, cur_op_id: &mut OpId) {
+            rdd_ids.push(0); //just for padding
+            op_ids.push(child_op_id);
             //or move it to co_grouped, parallel, etc
             //padding with 0, 0
             let dep_info = DepInfo::new(0, 0, 0, 0, parent_op_id, child_op_id);
             if let Some(shuf_dep) = parent_op.get_next_shuf_dep(&dep_info) {
-                self.end = true;
+                *end = true;
             } 
+            *cur_op_id = child_op_id;
+        }
+
+        if may_child_op_id.is_some() && 
+            (self.cur_op_id != self.spec_op_ids[0] || self.spec_op_ids.len() == 1) //loop 
+        {
+            let child_op_id = may_child_op_id.unwrap();
+            let child_op = load_opmap().get(&child_op_id).unwrap();
+            if child_op.has_spec_oppty() {
+                detect_child_op(child_op_id,
+                    parent_op_id,
+                    parent_op,
+                    &mut self.spec_rdd_ids,  
+                    &mut self.spec_op_ids,
+                    &mut self.end,
+                    &mut self.cur_op_id
+                );
+                return self.end
+            } else {
+                self.end = false;
+                return true;
+            }
+        } else if self.cur_op_id != self.spec_op_ids[0] || self.spec_op_ids.len() == 1 {
+            let alt_child_op_ids = parent_op.get_next_deps().read().unwrap().clone();
+            let mut flag = false;
+            for ((_parent_op_id, child_op_id), _) in alt_child_op_ids {
+                assert!(_parent_op_id == parent_op_id);
+                let child_op = load_opmap().get(&child_op_id).unwrap();
+                if parent_op.is_in_loop() != child_op.is_in_loop() || !child_op.has_spec_oppty() {
+                    continue;
+                }
+                flag = true;   //can continue
+                detect_child_op(child_op_id,
+                    parent_op_id,
+                    parent_op,
+                    &mut self.spec_rdd_ids,  
+                    &mut self.spec_op_ids,
+                    &mut self.end,
+                    &mut self.cur_op_id
+                );
+                break;
+            }
+            if !flag {
+                self.end = false;
+                return true;
+            } else {
+                return self.end;
+            }
         } else {
             self.end = false;
             return true;
-        }
-        
-        self.cur_op_id = child_op_id;
-        self.end
+        };
     }
 
     pub fn get_spec_call_seq(&mut self, dep_info: &DepInfo) -> (Vec<usize>, Vec<OpId>) {
@@ -845,6 +880,7 @@ pub struct Context {
     last_loc_file: RwLock<&'static str>,
     last_loc_line: AtomicU32,
     num: AtomicUsize,
+    in_loop: AtomicBool,
     is_tail_comp: AtomicBool,
 }
 
@@ -854,6 +890,7 @@ impl Context {
             last_loc_file: RwLock::new("null"),
             last_loc_line: AtomicU32::new(0), 
             num: AtomicUsize::new(0),
+            in_loop: AtomicBool::new(false),
             is_tail_comp: AtomicBool::new(false),
         }))
     }
@@ -864,6 +901,14 @@ impl Context {
 
     pub fn set_num(self: &Arc<Self>, num: usize) {
         self.num.store(num, atomic::Ordering::SeqCst)
+    }
+
+    pub fn enter_loop(self: &Arc<Self>) {
+        self.in_loop.store(true, atomic::Ordering::SeqCst);
+    }
+
+    pub fn leave_loop(self: &Arc<Self>) {
+        self.in_loop.store(false, atomic::Ordering::SeqCst);
     }
 
     pub fn set_is_tail_comp(self: &Arc<Self>, is_tail_comp: bool) {
@@ -942,6 +987,7 @@ pub(crate) struct OpVals {
     pub split_num: AtomicUsize,
     pub deps: Vec<Dependency>,
     pub context: Weak<Context>,
+    pub in_loop: bool,
 }
 
 impl OpVals {
@@ -953,6 +999,7 @@ impl OpVals {
             split_num: AtomicUsize::new(split_num),
             deps: Vec::new(),
             context: Arc::downgrade(&sc),
+            in_loop: sc.in_loop.load(atomic::Ordering::SeqCst),
         }
     }
 }
@@ -1025,6 +1072,7 @@ pub trait OpBase: Send + Sync {
     }
     //has speculative opportunity
     fn has_spec_oppty(&self) -> bool;
+    fn is_in_loop(&self) -> bool;
     fn number_of_splits(&self) -> usize;
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
         None
@@ -1099,6 +1147,9 @@ impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     }
     fn has_spec_oppty(&self) -> bool {
         (**self).get_op_base().has_spec_oppty()
+    }
+    fn is_in_loop(&self) -> bool {
+        (**self).get_op_base().is_in_loop()
     }
     fn number_of_splits(&self) -> usize {
         (**self).get_op_base().number_of_splits()

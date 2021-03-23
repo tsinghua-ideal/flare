@@ -71,7 +71,7 @@ pub fn test0_sec_0() -> Result<()> {
 
 
     let mut rdd0 = sc.make_op(fe.clone(), fd.clone(), 1);
-
+    sc.enter_loop();
     let rdd1 = rdd0.group_by_key(fe_gb, fd_gb, 1);
     rdd0 = rdd1.flat_map(Fn!(|(k, vv): (i32, Vec<i32>)| {
             let mut res = Vec::with_capacity(vv.len());
@@ -87,7 +87,7 @@ pub fn test0_sec_0() -> Result<()> {
 
     let _count = rdd0.count().unwrap();
 
-
+    sc.leave_loop();
 
 
     Ok(())

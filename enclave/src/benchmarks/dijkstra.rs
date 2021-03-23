@@ -109,7 +109,7 @@ pub fn dijkstra_sec_0() -> Result<()> {
     let mut new = old.clone();
     
     
-    
+    sc.enter_loop();
     
     
     let mapper = nodes.flat_map(Fn!(|node: (usize, (usize, Option<Vec<String>>, String))| {
@@ -136,7 +136,7 @@ pub fn dijkstra_sec_0() -> Result<()> {
         Fn!(|v| v)
     ).unwrap();
         
-    
+    sc.leave_loop();
     
     
     

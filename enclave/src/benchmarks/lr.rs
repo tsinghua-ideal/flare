@@ -64,7 +64,7 @@ pub fn lr_sec() -> Result<()> {
     let nums = sc.make_op(fe, fd, 1);
     let mut w = 0 as f32;
 
-    
+    sc.enter_loop();
     let _g = nums.map(Fn!(move |p: Point|
                     p.x*(1f32/(1f32+(-p.y*(w * p.x)).exp())-1f32)*p.y
                 ),
@@ -73,7 +73,7 @@ pub fn lr_sec() -> Result<()> {
             ).reduce(Fn!(|x, y| x+y), fe_rd, fd_rd).unwrap();
    
     
-    
+    sc.leave_loop();
     
     
     

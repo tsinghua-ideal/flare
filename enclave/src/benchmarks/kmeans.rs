@@ -149,7 +149,7 @@ pub fn kmeans_sec_0() -> Result<()> {
     let mut k_points = data_rdd.take(k).unwrap();
     
     
-    
+    sc.enter_loop();
     let k_points_ct = k_points.get_ct();
     let closest = data_rdd.map(
         Fn!(move |p| {
@@ -182,7 +182,7 @@ pub fn kmeans_sec_0() -> Result<()> {
     
     
     
-    
+    sc.leave_loop();
     
     
     Ok(())
@@ -294,7 +294,7 @@ pub fn kmeans_sec_1() -> Result<()> {
     let mut k_points = data_rdd.take_sample(false, k, Some(42)).unwrap();
     
     
-    
+    sc.enter_loop();
     let k_points_ct = k_points.get_ct();
     let closest = data_rdd.map(
         Fn!(move |p| {
@@ -327,7 +327,7 @@ pub fn kmeans_sec_1() -> Result<()> {
     
     
     
-    
+    sc.leave_loop();
     
     
     Ok(())

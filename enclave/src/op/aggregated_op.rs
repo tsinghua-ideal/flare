@@ -124,6 +124,10 @@ where
         self.prev.has_spec_oppty()
     }
 
+    fn is_in_loop(&self) -> bool {
+        self.prev.is_in_loop()
+    }
+
     fn number_of_splits(&self) -> usize {
         self.prev.number_of_splits()
     }

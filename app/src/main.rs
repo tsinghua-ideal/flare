@@ -43,7 +43,7 @@ fn main() -> Result<()> {
     //Fn! will make the closures serializable. It is necessary. use serde_closure version 0.1.3.
     /* dijkstra */
     //dijkstra_sec_0()?;
-    dijkstra_unsec_0()?;
+    //dijkstra_unsec_0()?;
 
     /* map */
     //map_sec_0()?;
@@ -117,6 +117,10 @@ fn main() -> Result<()> {
 
     // test the speculative execution in loop
     //test0_sec_0()?;
+
+    //topk
+    topk_sec_0()?;
+    //topk_unsec_0()?;
 
     Ok(())
 }

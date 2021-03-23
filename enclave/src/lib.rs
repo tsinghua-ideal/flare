@@ -89,7 +89,7 @@ lazy_static! {
     static ref OP_MAP: AtomicPtrWrapper<BTreeMap<OpId, Arc<dyn OpBase>>> = AtomicPtrWrapper::new(Box::into_raw(Box::new(BTreeMap::new()))); 
     static ref init: Result<()> = {
         /* dijkstra */
-        dijkstra_sec_0()
+        //dijkstra_sec_0()
 
         /* map */
         //map_sec_0()
@@ -146,6 +146,9 @@ lazy_static! {
 
         // test the speculative execution in loop
         //test0_sec_0()
+
+        // topk
+        topk_sec_0()
     };
 }
 
@@ -211,8 +214,7 @@ pub extern "C" fn exploit_spec_oppty(tid: u64,
     if spec_op_id.is_end() {
         return 0;
     }
-
-    while !spec_op_id.advance() {}
+    while !spec_op_id.advance(&dep_info) {}
 
     //The last one is the child of shuffle dependency
     let spec_call_seq = spec_op_id.get_spec_call_seq(&dep_info);

@@ -72,9 +72,16 @@ fn main() {
     */
 
     //dijkstra 
+    /*
     let (bytes, bytes_enc) = generate_dijkstra_data();
     set_up(bytes_enc, PathBuf::from("/opt/data/ct_dij"), 1);
     set_up(bytes, PathBuf::from("/opt/data/pt_dij"), 1);
+    */
+
+    //topk
+    let (bytes, bytes_enc) = generate_topk_data();
+    set_up(bytes_enc, PathBuf::from("/opt/data/ct_topk"), 1);
+    set_up(bytes, PathBuf::from("/opt/data/pt_topk"), 1);
 }
 
 fn generate_dijkstra_data() -> (Vec<u8>, Vec<u8>) {
@@ -263,6 +270,33 @@ fn generate_tc_data(num_edges: u32, num_vertices: u32) -> (Vec<u8>, Vec<u8>) {
     }
     if len != 0 {
         data_enc.push(fe(data));
+    }
+
+    let bytes_enc = bincode::serialize(&data_enc).unwrap();
+    (bytes, bytes_enc)
+}
+
+fn generate_topk_data() -> (Vec<u8>, Vec<u8>) {
+    let mut f = match File::open("/opt/data/ml/ratings.dat") {
+        // `io::Error` 的 `description` 方法返回一个描述错误的字符串。
+        Err(why) => panic!("couldn't open for {}", why.to_string()),
+        Ok(file) => file,
+    };
+    let lines = io::BufReader::new(f).lines();
+    let mut data = lines.into_iter().map(|x| x.unwrap()).collect::<Vec<_>>();
+    let bytes = bincode::serialize(&data).unwrap();
+
+    let mut len = data.len();
+    let mut data_enc = Vec::with_capacity(len);
+    while len >= MAX_ENC_BL {
+        len -= MAX_ENC_BL;
+        let remain = data.split_off(MAX_ENC_BL);
+        let input = data;
+        data = remain;
+        data_enc.push(ser_encrypt(input));
+    }
+    if len != 0 {
+        data_enc.push(ser_encrypt(data));
     }
 
     let bytes_enc = bincode::serialize(&data_enc).unwrap();

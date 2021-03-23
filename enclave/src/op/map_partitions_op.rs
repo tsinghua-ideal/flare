@@ -132,6 +132,10 @@ where
         !self.f.has_captured_var()
     }
 
+    fn is_in_loop(&self) -> bool {
+        self.vals.in_loop
+    }
+
     fn number_of_splits(&self) -> usize {
         self.vals.split_num.load(atomic::Ordering::SeqCst)
     }

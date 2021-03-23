@@ -75,7 +75,7 @@ pub fn transitive_closure_sec_0() -> Result<()> {
     
     let mut old_count = 0;
     let mut next_count = tc.count().unwrap();
-
+    sc.enter_loop();
     old_count = next_count;
     let _jn = tc.join(edges.clone(), fe_jn.clone(), fd_jn.clone(), 1)
         .map(Fn!(|x: (u32, (u32, u32))| (x.1.1, x.1.0)), fe.clone(), fd.clone());
@@ -87,7 +87,7 @@ pub fn transitive_closure_sec_0() -> Result<()> {
     
     next_count = tc.count().unwrap();
 
-    
+    sc.leave_loop();
     
    
     Ok(())
@@ -163,7 +163,7 @@ pub fn transitive_closure_sec_1() -> Result<()> {
 
     let mut old_count = 0;
     let mut next_count = tc.count().unwrap();
-
+    sc.enter_loop();
     old_count = next_count;
     tc = tc.union(
         tc.join(edges.clone(), fe_jn.clone(), fd_jn.clone(), 1)
@@ -173,7 +173,7 @@ pub fn transitive_closure_sec_1() -> Result<()> {
 
     next_count = tc.count().unwrap();
 
-    
+    sc.leave_loop();
     
    
     Ok(())
@@ -272,7 +272,7 @@ pub fn transitive_closure_sec_2() -> Result<()> {
 
     let mut old_count = 0;
     let mut next_count = tc.count().unwrap();
-
+    sc.enter_loop();
     old_count = next_count;
     let _jn = tc.join(edges.clone(), fe_jn.clone(), fd_jn.clone(), 1)
         .map(Fn!(|x: (u32, (u32, u32))| (x.1.1, x.1.0)), fe.clone(), fd.clone());
@@ -283,7 +283,7 @@ pub fn transitive_closure_sec_2() -> Result<()> {
     next_count = tc.count().unwrap();
 
 
-
+    sc.leave_loop();
 
 
     Ok(())

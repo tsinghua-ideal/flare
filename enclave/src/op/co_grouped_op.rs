@@ -385,6 +385,10 @@ where
     fn has_spec_oppty(&self) -> bool {
         true
     }
+
+    fn is_in_loop(&self) -> bool {
+        self.vals.in_loop
+    }
     
     fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8{
         
