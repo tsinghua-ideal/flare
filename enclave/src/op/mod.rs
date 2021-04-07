@@ -63,7 +63,7 @@ pub use union_op::*;
 type PT<T, TE> = Text<T, TE>;
 pub type OText<T> = Text<T, T>; 
 
-pub const MAX_ENC_BL: usize = 1000;
+pub const MAX_ENC_BL: usize = 1024;
 pub type Result<T> = std::result::Result<T, &'static str>;
 
 extern "C" {
@@ -1255,20 +1255,21 @@ pub trait OpE: Op {
 
     fn cache_to_outside(&self, key: (usize, usize, usize), value: Vec<Self::Item>) -> Option<PThread> {
         let op = self.get_ope();
-        let handle = unsafe {
-            PThread::new(Box::new(move || {
-                let ct = op.batch_encrypt(value);
-                //println!("finish encryption, memory usage {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
-                crate::ALLOCATOR.lock().set_switch(true);
-                let ct_ptr = Box::into_raw(Box::new(ct.clone())) as *mut u8 as usize;
-                crate::ALLOCATOR.lock().set_switch(false);
-                //println!("finish copy out, memory usage {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
-                let mut res = 0;
-                ocall_cache_to_outside(&mut res, key.0, key.1, key.2, ct_ptr);
-                //TODO: Handle the case res != 0
-            }))
-        }.unwrap();
-        Some(handle)
+        //let handle = unsafe {
+        //    PThread::new(Box::new(move || {
+        let ct = op.batch_encrypt(value);
+        //println!("finish encryption, memory usage {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
+        crate::ALLOCATOR.lock().set_switch(true);
+        let ct_ptr = Box::into_raw(Box::new(ct.clone())) as *mut u8 as usize;
+        crate::ALLOCATOR.lock().set_switch(false);
+        //println!("finish copy out, memory usage {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
+        let mut res = 0;
+        unsafe { ocall_cache_to_outside(&mut res, key.0, key.1, key.2, ct_ptr); }
+        //        //TODO: Handle the case res != 0
+        //    }))
+        //}.unwrap();
+        //Some(handle)
+        None
     }
 
     fn get_and_remove_cached_data(&self, key: (usize, usize, usize)) -> Vec<Self::Item> {

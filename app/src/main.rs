@@ -105,7 +105,7 @@ fn main() -> Result<()> {
     //lr_unsec()?;
 
     /* page rank */
-    //pagerank_sec_0()?;
+    pagerank_sec_0()?;
     //pagerank_unsec_0()?;
 
     /* transitive_closure */
@@ -119,7 +119,7 @@ fn main() -> Result<()> {
     //test0_sec_0()?;
 
     //topk
-    topk_sec_0()?;
+    //topk_sec_0()?;
     //topk_unsec_0()?;
 
     Ok(())
