@@ -2,12 +2,18 @@ use core::alloc::{
     GlobalAlloc,
     Layout,
 };
-
+use core::cell::Cell;
 use sgx_alloc::System;
 use sgx_types::*;
 use std::cmp;
 use std::ptr;
 use std::thread;
+
+thread_local! {
+    static MEM_USAGE: Cell<usize> = Cell::new(0);
+    static MAX_MEM_USAGE: Cell<usize> = Cell::new(0);
+    static IS_MEM_INIT: Cell<bool> = Cell::new(true);
+}
 
 pub struct Locked<A> {
     inner: spin::Mutex<A>,
@@ -33,7 +39,7 @@ extern "C" {
     pub fn ocall_tc_memalign(align: size_t, size: size_t) -> *mut c_void;
 }
 
-const TCSNUM: usize = 10;
+const TCSNUM: usize = 32;
 
 // The minimum alignment guaranteed by the architecture. This value is used to
 // add fast paths for low alignment values. In practice, the alignment is a
@@ -48,8 +54,8 @@ const MIN_ALIGN: usize = 16;
 
 pub struct Allocator {
     switch: bool,
-    usage: usize,
-    max_usage: usize,
+    core_usage: usize,
+    core_max_usage: usize,
     mapper: [sgx_thread_t; TCSNUM],   //match num of TCS
 }
 
@@ -57,8 +63,8 @@ impl Allocator {
     pub const fn new() -> Self {
         Allocator {
             switch: false,
-            usage: 0,
-            max_usage: 0,
+            core_usage: 0,
+            core_max_usage: 0,
             mapper: [0; TCSNUM],
         }
     }
@@ -81,7 +87,7 @@ impl Allocator {
     pub fn get_switch(&self) -> bool {
         let cur = thread::rsgx_thread_self();
         let (cur_idx, _) = self.contain_thread_id(cur);
-        let res = (cur_idx != TCSNUM);
+        let res = cur_idx != TCSNUM;
         res
     }
 
@@ -103,18 +109,59 @@ impl Allocator {
     }
 
     pub fn get_memory_usage(&self) -> usize {
-        self.usage
+        match IS_MEM_INIT.with(|f| f.get()) {
+            true => self.core_usage,
+            false => MEM_USAGE.with(|f| {
+                f.get()
+            }),
+        }
     }
 
     pub fn get_max_memory_usage(&self) -> usize {
-        self.max_usage
+        match IS_MEM_INIT.with(|f| f.get()) {
+            true => self.core_max_usage,
+            false => MAX_MEM_USAGE.with(|f| {
+                f.get()
+            }),
+        }
+    }
+
+    pub fn register_usage(&self, union_usage: usize) {
+        IS_MEM_INIT.with(|f| f.set(false));
+        MEM_USAGE.with(|f| {
+            f.set(union_usage);
+        });
+    }
+
+    pub fn revoke_usage(&mut self) -> usize {
+        IS_MEM_INIT.with(|f| f.set(true));
+        let local_usage = MEM_USAGE.with(|f| {
+            let u = f.replace(0);
+            self.core_usage += u;
+            u
+        });
+        MAX_MEM_USAGE.with(|f| f.set(0));
+        self.core_max_usage = std::cmp::max(self.core_max_usage,self.core_usage);
+        local_usage
     }
 
     pub fn reset_max_memory_usage(&mut self) -> usize {
-        self.max_usage = self.usage;
-        self.usage
+        match IS_MEM_INIT.with(|f| f.get()) {
+            true => {
+                self.core_max_usage = self.core_usage;
+                self.core_usage
+            },
+            false => {
+                let usage = MEM_USAGE.with(|f| {
+                    f.get()
+                });
+                MAX_MEM_USAGE.with(|f| {
+                    f.set(usage);
+                });
+                usage
+            },
+        }
     }
-
 }
 
 impl Locked<Allocator> {
@@ -150,8 +197,17 @@ unsafe impl GlobalAlloc for Locked<Allocator> {
                 aligned_malloc(&layout)
             }
         } else {
-            bump.usage += layout.size();
-            bump.max_usage = std::cmp::max(bump.max_usage, bump.usage);
+            if IS_MEM_INIT.with(|f| f.get()) {
+                bump.core_usage += layout.size();
+                bump.core_max_usage = std::cmp::max(bump.core_max_usage,bump.core_usage);
+            } else {
+                let usage = MEM_USAGE.with(|f| {
+                    f.update(|x| x + layout.size())
+                });
+                MAX_MEM_USAGE.with(|f| {
+                    f.update(|x| std::cmp::max(x,usage));
+                });
+            }
             System.alloc(layout)
         }
     }
@@ -171,8 +227,17 @@ unsafe impl GlobalAlloc for Locked<Allocator> {
                 ptr
             }
         } else {
-            bump.usage += layout.size();
-            bump.max_usage = std::cmp::max(bump.max_usage, bump.usage);
+            if IS_MEM_INIT.with(|f| f.get()) {
+                bump.core_usage += layout.size();
+                bump.core_max_usage = std::cmp::max(bump.core_max_usage,bump.core_usage);
+            } else {
+                let usage = MEM_USAGE.with(|f| {
+                    f.update(|x| x + layout.size())
+                });
+                MAX_MEM_USAGE.with(|f| {
+                    f.update(|x| std::cmp::max(x,usage));
+                });
+            }
             System.alloc_zeroed(layout)
         }
     }
@@ -184,7 +249,17 @@ unsafe impl GlobalAlloc for Locked<Allocator> {
         if switch {
             ocall_tc_free(ptr as *mut c_void);
         } else {
-            bump.usage -= layout.size();
+            if IS_MEM_INIT.with(|f| f.get()) {
+                bump.core_usage -= layout.size();
+            } else {
+                MEM_USAGE.with(|f| {
+                    let s = layout.size();
+                    let r = s.saturating_sub(f.get());
+                    let f = f.update(|x| x.saturating_sub(s));
+                    bump.core_usage -= r;
+                    f
+                });
+            }
             System.dealloc(ptr, layout);
         }
     }
@@ -200,8 +275,22 @@ unsafe impl GlobalAlloc for Locked<Allocator> {
                 self.realloc_fallback(ptr, layout, new_size)
             }
         } else {
-            bump.usage += new_size - layout.size();
-            bump.max_usage = std::cmp::max(bump.max_usage, bump.usage);
+            if IS_MEM_INIT.with(|f| f.get()) {
+                bump.core_usage += new_size - layout.size();
+                bump.core_max_usage = std::cmp::max(bump.core_max_usage,bump.core_usage);
+            } else {
+                let usage = MEM_USAGE.with(|f| {
+                    let s = layout.size();
+                    let v = f.update(|x| x + new_size);
+                    let r = s.saturating_sub(v);
+                    let f = f.update(|x| x.saturating_sub(s));
+                    bump.core_usage -= r;
+                    f
+                });
+                MAX_MEM_USAGE.with(|f| {
+                    f.update(|x| std::cmp::max(x,usage));
+                });
+            }
             System.realloc(ptr, layout, new_size)
         }
     }

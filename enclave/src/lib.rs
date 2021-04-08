@@ -27,6 +27,7 @@
 #![feature(unboxed_closures)]
 #![feature(unsize)]
 #![feature(vec_into_raw_parts)]
+#![feature(cell_update)]
 
 #![feature(
     arbitrary_self_types,
@@ -397,6 +398,20 @@ pub extern "C" fn free_tail_info(input: *mut u8) {
     ALLOCATOR.lock().set_switch(true);
     drop(tail_info);
     ALLOCATOR.lock().set_switch(false);
+}
+
+#[no_mangle]
+pub extern "C" fn register_mem_usage(union_usage: usize) {
+    ALLOCATOR.lock().register_usage(union_usage)
+}
+
+#[no_mangle]
+pub extern "C" fn revoke_mem_usage(is_union: u8) -> usize {
+    match is_union {
+        0 => ALLOCATOR.lock().revoke_usage(),
+        1 => ALLOCATOR.lock().get_memory_usage(),  //not truely revoke, just get the current usage
+        _ => panic!("invalid is_union"),
+    }
 }
 
 #[no_mangle]

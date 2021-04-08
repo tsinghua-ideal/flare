@@ -108,6 +108,8 @@ enclave {
             [user_check] uint8_t* cached_sub_parts,
             [user_check] size_t* num_cached);
         public void finish_probe_caching([user_check] uint8_t* cached_sub_parts);
+        public void register_mem_usage(size_t union_usage);
+        public size_t revoke_mem_usage(uint8_t is_union);
         public size_t pre_touching(uint8_t zero);
     };
 
