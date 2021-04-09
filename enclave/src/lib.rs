@@ -184,6 +184,19 @@ pub extern "C" fn secure_execute(tid: u64,
 }
 
 #[no_mangle]
+pub extern "C" fn pre_merge(tid: u64,
+    op_id: OpId,
+    dep_info: DepInfo, 
+    input: Input,
+) -> usize {
+    let now = Instant::now();
+    let op = load_opmap().get(&op_id).unwrap();
+    let res = op.pre_merge(dep_info, tid, input);
+    let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+    res
+}
+
+#[no_mangle]
 pub extern "C" fn exploit_spec_oppty(tid: u64,
     op_ids: *const u8,
     cache_meta: CacheMeta,

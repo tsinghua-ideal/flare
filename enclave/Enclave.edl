@@ -64,6 +64,10 @@ enclave {
             struct dep_info_t dep_info, 
 		    struct input_t input, 
 		    [user_check] uint8_t* captured_vars);
+        public size_t pre_merge(uint64_t tid,
+            struct op_id_t op_id,
+            struct dep_info_t dep_info, 
+		    struct input_t input);
         public size_t exploit_spec_oppty(uint64_t tid,
             [user_check] uint8_t* op_ids,
             struct cache_meta_t cache_meta,

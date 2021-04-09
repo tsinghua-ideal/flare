@@ -138,6 +138,10 @@ where
     fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
         self.prev.etake(input ,should_take, have_take)
     }
+
+    fn pre_merge(&self, dep_info: DepInfo, tid: u64, input: Input) -> usize {
+        self.prev.pre_merge(dep_info, tid, input)
+    }
     
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
         self.prev.clone().__to_arc_op(id)

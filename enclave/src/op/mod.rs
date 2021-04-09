@@ -1083,6 +1083,10 @@ pub trait OpBase: Send + Sync {
         unreachable!()
     }
     fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8;
+    fn pre_merge(&self, dep_info: DepInfo, tid: u64, input: Input) -> usize {
+        let shuf_dep = self.get_next_shuf_dep(&dep_info).unwrap();
+        shuf_dep.pre_merge(tid, input)
+    }
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject>;
 }
 
@@ -1165,6 +1169,9 @@ impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     }
     fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
         (**self).etake(input, should_take, have_take)
+    }
+    fn pre_merge(&self, dep_info: DepInfo, tid: u64, input: Input) -> usize {
+        (**self).pre_merge(dep_info, tid, input)
     }
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
         (**self).clone().__to_arc_op(id)
