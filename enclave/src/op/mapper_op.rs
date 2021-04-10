@@ -217,7 +217,7 @@ where
         };
         let res_iter = Box::new(res_iter.map(f));
         
-        //println!("In mapper_op, memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
+        //println!("In mapper_op, memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
         if need_cache {
             assert!(handle.is_none());
             let key = call_seq.get_caching_triplet();
@@ -231,7 +231,7 @@ where
                 
                 /*
                 let (res_iter, handle) = self.set_cached_data(key, res_iter);
-                println!("In mapper_op (before join), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
+                println!("In mapper_op (before join), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
                 if let Some(handle) = handle {
                     handle.join();
                 }

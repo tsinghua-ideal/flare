@@ -63,7 +63,7 @@ use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 
 mod allocator;
-use allocator::{Allocator, Locked};
+use allocator::Allocator;
 mod aggregator;
 mod atomicptr_wrapper;
 use atomicptr_wrapper::AtomicPtrWrapper;
@@ -80,7 +80,7 @@ use serialization_free::{Construct, Idx, SizeBuf};
 mod utils;
 
 #[global_allocator]
-static ALLOCATOR: Locked<Allocator> = Locked::new(Allocator::new());
+static ALLOCATOR: Allocator = Allocator;
 static immediate_cout: bool = true;
 
 lazy_static! {
@@ -165,7 +165,7 @@ pub extern "C" fn secure_execute(tid: u64,
 ) -> usize {
     let _init = *init; //this is necessary to let it accually execute
     input.set_init_mem_usage();
-    println!("Cur mem: {:?}, at the begining of secure execution", ALLOCATOR.lock().get_memory_usage());
+    println!("Cur mem: {:?}, at the begining of secure execution", ALLOCATOR.get_memory_usage());
     let rdd_ids = unsafe { (rdd_ids as *const Vec<usize>).as_ref() }.unwrap();
     let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();
     let part_nums = unsafe { (part_nums as *const Vec<usize>).as_ref() }.unwrap();
@@ -177,9 +177,9 @@ pub extern "C" fn secure_execute(tid: u64,
     let final_op = call_seq.get_cur_op();
     let result_ptr = final_op.iterator_start(&mut call_seq, input, &dep_info); //shuffle need dep_info
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    println!("Cur mem: {:?}, secure_execute {:?} s", ALLOCATOR.lock().get_memory_usage(), dur);
+    println!("Cur mem: {:?}, secure_execute {:?} s", ALLOCATOR.get_memory_usage(), dur);
     input.set_max_mem_usage();
-    println!("Max mem: {:?}", ALLOCATOR.lock().get_max_memory_usage());
+    println!("Max mem: {:?}", ALLOCATOR.get_max_memory_usage());
     return result_ptr as usize
 }
 
@@ -248,7 +248,7 @@ pub extern "C" fn spec_execute(tid: u64,
     cache_meta: CacheMeta, 
     hash_ops: *mut u64,
 ) -> usize {
-    println!("Cur mem: {:?}, at the begining of speculative execution", ALLOCATOR.lock().get_memory_usage());
+    println!("Cur mem: {:?}, at the begining of speculative execution", ALLOCATOR.get_memory_usage());
     let now = Instant::now();
     let mut spec_call_seq = unsafe { Box::from_raw(spec_call_seq as *mut u8 as *mut (Vec<usize>, Vec<OpId>)) };
     //should return the hash of op_ids
@@ -269,7 +269,7 @@ pub extern "C" fn spec_execute(tid: u64,
     let input = Input::padding();
     let result_ptr = final_op.iterator_start(&mut call_seq, input, &dep_info);
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    println!("Cur mem: {:?}, spec_execute {:?} s", ALLOCATOR.lock().get_memory_usage(), dur);
+    println!("Cur mem: {:?}, spec_execute {:?} s", ALLOCATOR.get_memory_usage(), dur);
     return result_ptr as usize
 }
 
@@ -284,9 +284,9 @@ pub extern "C" fn free_res_enc(op_id: OpId, dep_info: DepInfo, input: *mut u8, i
             let buckets = unsafe {
                 Box::from_raw(input as *mut Vec<Vec<u8>>)
             };
-            ALLOCATOR.lock().set_switch(true);
+            ALLOCATOR.set_switch(true);
             drop(buckets);
-            ALLOCATOR.lock().set_switch(false);
+            ALLOCATOR.set_switch(false);
         },
         _ => panic!("invalid is_spec"),
     }
@@ -397,9 +397,9 @@ pub extern "C" fn tail_compute(input: *mut u8) -> usize {
     let mut tail_info = tail_info.clone();
     kmeans_sec_0_(&mut tail_info).unwrap();
     //kmeans_sec_1_(&mut tail_info).unwrap();
-    ALLOCATOR.lock().set_switch(true);
+    ALLOCATOR.set_switch(true);
     let ptr = Box::into_raw(Box::new(tail_info.clone()));
-    ALLOCATOR.lock().set_switch(false);
+    ALLOCATOR.set_switch(false);
     ptr as *mut u8 as usize
 }
 
@@ -408,21 +408,21 @@ pub extern "C" fn free_tail_info(input: *mut u8) {
     let tail_info = unsafe {
         Box::from_raw(input as *mut TailCompInfo)
     };
-    ALLOCATOR.lock().set_switch(true);
+    ALLOCATOR.set_switch(true);
     drop(tail_info);
-    ALLOCATOR.lock().set_switch(false);
+    ALLOCATOR.set_switch(false);
 }
 
 #[no_mangle]
 pub extern "C" fn register_mem_usage(union_usage: usize) {
-    ALLOCATOR.lock().register_usage(union_usage)
+    ALLOCATOR.register_usage(union_usage)
 }
 
 #[no_mangle]
 pub extern "C" fn revoke_mem_usage(is_union: u8) -> usize {
     match is_union {
-        0 => ALLOCATOR.lock().revoke_usage(),
-        1 => ALLOCATOR.lock().get_memory_usage(),  //not truely revoke, just get the current usage
+        0 => ALLOCATOR.revoke_usage(),
+        1 => ALLOCATOR.get_memory_usage().0,  //not truely revoke, just get the current usage
         _ => panic!("invalid is_union"),
     }
 }
@@ -450,9 +450,9 @@ pub extern "C" fn probe_caching(rdd_id: usize,
     part: usize,
 ) -> usize {
     let cached = CACHE.get_subpid(rdd_id, part);
-    ALLOCATOR.lock().set_switch(true);
+    ALLOCATOR.set_switch(true);
     let ptr = Box::into_raw(Box::new(cached.clone()));
-    ALLOCATOR.lock().set_switch(false);
+    ALLOCATOR.set_switch(false);
     ptr as *mut u8 as usize
 }
 
@@ -463,8 +463,8 @@ pub extern "C" fn finish_probe_caching(
     let cached_sub_parts = unsafe {
         Box::from_raw(cached_sub_parts as *mut Vec<usize>)
     };
-    ALLOCATOR.lock().set_switch(true);
+    ALLOCATOR.set_switch(true);
     drop(cached_sub_parts);
-    ALLOCATOR.lock().set_switch(false);
+    ALLOCATOR.set_switch(false);
 }
 

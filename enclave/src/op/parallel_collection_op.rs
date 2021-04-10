@@ -196,10 +196,10 @@ where
         let lower = input.get_lower();
         let upper = input.get_upper();
         assert!(lower.len() == 1 && upper.len() == 1);
-        //println!("In parallel_collection_op(before decryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
+        //println!("In parallel_collection_op(before decryption), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
         let data = self.batch_decrypt(data_enc[lower[0]..upper[0]].to_vec());
         let res_iter = Box::new(data.into_iter());
-        //println!("In parallel_collection_op(after decryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
+        //println!("In parallel_collection_op(after decryption), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("in enclave decrypt {:?} s", dur);  
         if need_cache {

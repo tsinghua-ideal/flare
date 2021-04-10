@@ -192,9 +192,9 @@ where
 pub fn res_enc_to_ptr<T: Clone>(result_enc: T) -> *mut u8 {
     let result_ptr;
     if crate::immediate_cout {
-        crate::ALLOCATOR.lock().set_switch(true);
+        crate::ALLOCATOR.set_switch(true);
         result_ptr = Box::into_raw(Box::new(result_enc.clone())) as *mut u8;
-        crate::ALLOCATOR.lock().set_switch(false);
+        crate::ALLOCATOR.set_switch(false);
     } else {
         result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
     }
@@ -381,13 +381,13 @@ impl Input {
 
     pub fn set_init_mem_usage(&self) -> &mut usize {
         let init_mem_usage = unsafe { (self.init_mem_usage as *mut usize).as_mut() }.unwrap();
-        *init_mem_usage = crate::ALLOCATOR.lock().reset_max_memory_usage();
+        *init_mem_usage = crate::ALLOCATOR.reset_max_memory_usage().0;
         init_mem_usage
     }
 
     pub fn set_max_mem_usage(&self) -> &mut usize {
         let max_mem_usage = unsafe { (self.max_mem_usage as *mut usize).as_mut() }.unwrap();
-        *max_mem_usage = crate::ALLOCATOR.lock().get_max_memory_usage();
+        *max_mem_usage = crate::ALLOCATOR.get_max_memory_usage().0;
         max_mem_usage
     }
 
@@ -1265,11 +1265,11 @@ pub trait OpE: Op {
         //let handle = unsafe {
         //    PThread::new(Box::new(move || {
         let ct = op.batch_encrypt(value);
-        //println!("finish encryption, memory usage {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
-        crate::ALLOCATOR.lock().set_switch(true);
+        //println!("finish encryption, memory usage {:?} B", crate::ALLOCATOR.get_memory_usage());
+        crate::ALLOCATOR.set_switch(true);
         let ct_ptr = Box::into_raw(Box::new(ct.clone())) as *mut u8 as usize;
-        crate::ALLOCATOR.lock().set_switch(false);
-        //println!("finish copy out, memory usage {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
+        crate::ALLOCATOR.set_switch(false);
+        //println!("finish copy out, memory usage {:?} B", crate::ALLOCATOR.get_memory_usage());
         let mut res = 0;
         unsafe { ocall_cache_to_outside(&mut res, key.0, key.1, key.2, ct_ptr); }
         //        //TODO: Handle the case res != 0
@@ -1303,7 +1303,7 @@ pub trait OpE: Op {
         if is_survivor {
             //cache inside enclave
             CACHE.insert(key, Box::into_raw(Box::new(res.clone())) as *mut u8 as usize);
-            //println!("After cache inside enclave, memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
+            //println!("After cache inside enclave, memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
             CACHE.insert_subpid(key.0, key.1, key.2);
         }
         //cache outside enclave
@@ -1311,7 +1311,7 @@ pub trait OpE: Op {
             (Box::new(res.into_iter()), None)
         } else {
             let handle = self.cache_to_outside(key, res.clone());
-            //println!("After launch encryption thread, memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
+            //println!("After launch encryption thread, memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
             (Box::new(res.into_iter()), handle)
         }
     }
@@ -1380,10 +1380,10 @@ pub trait OpE: Op {
     }
 
     fn free_res_enc(&self, res_ptr: *mut u8) {
-        crate::ALLOCATOR.lock().set_switch(true);
+        crate::ALLOCATOR.set_switch(true);
         let res = unsafe { Box::from_raw(res_ptr as *mut Vec<Self::ItemE>) };
         drop(res);
-        crate::ALLOCATOR.lock().set_switch(false);
+        crate::ALLOCATOR.set_switch(false);
     }
 
     fn batch_encrypt(&self, mut data: Vec<Self::Item>) -> Vec<Self::ItemE> {
@@ -1426,23 +1426,23 @@ pub trait OpE: Op {
     fn narrow(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         let (result_iter, handle) = self.compute(call_seq, input);
         /*
-        println!("In narrow(before join), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
+        println!("In narrow(before join), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
         if let Some(handle) = handle {
             handle.join();
         }
         */
         
         let result = result_iter.collect::<Vec<Self::Item>>();
-        //println!("In narrow(before encryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
+        //println!("In narrow(before encryption), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
         let result_ptr = match dep_info.need_encryption() {
             true => {
                 let now = Instant::now();
                 let result_enc = self.batch_encrypt(result); 
-                //println!("In narrow(after encryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
+                //println!("In narrow(after encryption), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
                 let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-                //println!("cur mem before copy out: {:?}, encrypt {:?} s", crate::ALLOCATOR.lock().get_memory_usage(), dur); 
+                //println!("cur mem before copy out: {:?}, encrypt {:?} s", crate::ALLOCATOR.get_memory_usage(), dur); 
                 let res_ptr = res_enc_to_ptr(result_enc);
-                //println!("cur mem after copy out: {:?}", crate::ALLOCATOR.lock().get_memory_usage()); 
+                //println!("cur mem after copy out: {:?}", crate::ALLOCATOR.get_memory_usage()); 
                 res_ptr
             },
             false => {
@@ -1468,7 +1468,7 @@ pub trait OpE: Op {
         let (data_iter, handle) = self.compute(call_seq, input);
         let data = data_iter.collect::<Vec<Self::Item>>();
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("compute: {:?}s, cur mem: {:?}B", dur,  crate::ALLOCATOR.lock().get_memory_usage());
+        println!("compute: {:?}s, cur mem: {:?}B", dur,  crate::ALLOCATOR.get_memory_usage());
         //let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
         let iter = Box::new(data) as Box<dyn Any>;
         let result_ptr = shuf_dep.do_shuffle_task(iter, call_seq.is_spec);

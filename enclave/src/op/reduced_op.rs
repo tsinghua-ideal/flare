@@ -183,12 +183,12 @@ where
             } else {
                 let (result_iter, handle) = self.compute(call_seq, input);
                 let result = result_iter.collect::<Vec<Self::Item>>();
-                //println!("In narrow(before encryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
+                //println!("In narrow(before encryption), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
                 let result_ptr = match dep_info.need_encryption() {
                     true => {
                         let now = Instant::now();
                         let result_enc = self.prev.batch_encrypt(result); 
-                        //println!("In narrow(after encryption), memroy usage: {:?} B", crate::ALLOCATOR.lock().get_memory_usage());
+                        //println!("In narrow(after encryption), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
                         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
                         println!("in enclave encrypt {:?} s", dur); 
                         res_enc_to_ptr(result_enc) 

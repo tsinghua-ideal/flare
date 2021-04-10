@@ -267,7 +267,7 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
             upper[idx] += 1;
         }
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("cur mem after decryption: {:?}, in enclave decrypt: {:?} s", crate::ALLOCATOR.lock().get_memory_usage(), dur);
+        println!("cur mem after decryption: {:?}, in enclave decrypt: {:?} s", crate::ALLOCATOR.get_memory_usage(), dur);
         let (b0, b1, b2, b3) = block;
         for i in b0.into_iter().flatten() { 
             let (k, v) = i;
@@ -307,7 +307,7 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
             );
         }
 
-        println!("cur mem after shuffle read: {:?}", crate::ALLOCATOR.lock().get_memory_usage());
+        println!("cur mem after shuffle read: {:?}", crate::ALLOCATOR.get_memory_usage());
         let result = agg.into_iter()
             .filter(|(k, (v, w))| v.len() != 0 && w.len() != 0)
             .collect::<Vec<_>>();
