@@ -157,7 +157,7 @@ pub fn pagerank_sec_0() -> Result<()> {
     }));
 
     let iters = 2;
-    let dir = PathBuf::from("/opt/data/ct_pr");
+    let dir = PathBuf::from("/opt/data/ct_pr_2");
     let lines = sc.read_source(LocalFsReaderConfig::new(dir), None, Some(deserializer), fe, fd)
         .map(Fn!(|file: Vec<u8>| {
             String::from_utf8(file)
@@ -172,13 +172,13 @@ pub fn pagerank_sec_0() -> Result<()> {
                     .collect::<Vec<_>>();
                 (parts[0].to_string(), parts[1].to_string())
             })) as Box<dyn Iterator<Item = _>>
-        }), fe_fmp, fd_fmp).distinct()
-        .group_by_key(fe_gbk, fd_gbk, 1);
+        }), fe_fmp, fd_fmp).distinct_with_num_partitions(4)
+        .group_by_key(fe_gbk, fd_gbk, 4);
     
     let mut ranks = links.map_values(Fn!(|_| 1.0), fe_mv.clone(), fd_mv.clone());
 
     sc.enter_loop();
-    let contribs = links.join(ranks, fe_jn, fd_jn, 1)
+    let contribs = links.join(ranks, fe_jn, fd_jn, 4)
         .values(fe_v, fd_v)
         .flat_map(Fn!(|(urls, rank): (Vec<String>, f64)| {
             let size = urls.len() as f64;
