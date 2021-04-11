@@ -177,9 +177,9 @@ pub extern "C" fn secure_execute(tid: u64,
     let final_op = call_seq.get_cur_op();
     let result_ptr = final_op.iterator_start(&mut call_seq, input, &dep_info); //shuffle need dep_info
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    println!("Cur mem: {:?}, secure_execute {:?} s", ALLOCATOR.get_memory_usage(), dur);
+    input.set_last_mem_usage();
     input.set_max_mem_usage();
-    println!("Max mem: {:?}", ALLOCATOR.get_max_memory_usage());
+    println!("Cur mem: {:?}, Max mem: {:?}, secure_execute {:?} s", ALLOCATOR.get_memory_usage(), ALLOCATOR.get_max_memory_usage(), dur);
     return result_ptr as usize
 }
 
@@ -411,20 +411,6 @@ pub extern "C" fn free_tail_info(input: *mut u8) {
     ALLOCATOR.set_switch(true);
     drop(tail_info);
     ALLOCATOR.set_switch(false);
-}
-
-#[no_mangle]
-pub extern "C" fn register_mem_usage(union_usage: usize) {
-    ALLOCATOR.register_usage(union_usage)
-}
-
-#[no_mangle]
-pub extern "C" fn revoke_mem_usage(is_union: u8) -> usize {
-    match is_union {
-        0 => ALLOCATOR.revoke_usage(),
-        1 => ALLOCATOR.get_memory_usage().0,  //not truely revoke, just get the current usage
-        _ => panic!("invalid is_union"),
-    }
 }
 
 #[no_mangle]

@@ -37,9 +37,6 @@ macro_rules! numin {
 }
 
 fn main() -> Result<()> {
-    println!("please input size of sub-partition: 2^b, b =");
-    let num: usize = numin!();
-    INPUT_.store(num, atomic::Ordering::SeqCst);
     //Fn! will make the closures serializable. It is necessary. use serde_closure version 0.1.3.
     /* dijkstra */
     //dijkstra_sec_0()?;

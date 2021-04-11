@@ -26,8 +26,6 @@ extern "C" {
     pub fn ocall_tc_memalign(align: size_t, size: size_t) -> *mut c_void;
 }
 
-const TCSNUM: usize = 32;
-
 // The minimum alignment guaranteed by the architecture. This value is used to
 // add fast paths for low alignment values. In practice, the alignment is a
 // constant at the call site and the branch will be optimized out.
@@ -65,33 +63,16 @@ impl Allocator {
         )
     }
 
-    //only local usage
-    pub fn register_usage(&self, union_usage: usize) {
-        MEM_USAGE.with(|f| {
-            f.set(union_usage);
-        });
-    }
-
-    //only local usage
-    pub fn revoke_usage(&self) -> usize {
-        let local_usage = MEM_USAGE.with(|f| {
-            let u = f.replace(0);
-            u
-        });
-        MAX_MEM_USAGE.with(|f| f.set(0));
-        local_usage
-    }
-
-    pub fn reset_max_memory_usage(&self) -> (usize, usize) {
+    pub fn reset_max_memory_usage(&self, init_usage: usize) -> (usize, usize) {
         let total_usage = MEM_TOTAL_USAGE.load(Ordering::SeqCst);
         MAX_MEM_TOTAL_USAGE.store(total_usage, Ordering::SeqCst);
-        let usage = MEM_USAGE.with(|f| {
-            f.get()
+        MEM_USAGE.with(|f| {
+            f.set(init_usage)
         });
         MAX_MEM_USAGE.with(|f| {
-            f.set(usage);
+            f.set(init_usage);
         });
-        (usage, total_usage)
+        (init_usage, total_usage)
     }
 }
 

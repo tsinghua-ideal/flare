@@ -12,7 +12,7 @@ use std::vec::Vec;
 use crate::CAVE;
 use crate::aggregator::Aggregator;
 use crate::basic::{AnyData, Data, Func};
-use crate::op::{load_opmap, res_enc_to_ptr, MAX_ENC_BL, Input, OpId};
+use crate::op::{res_enc_to_ptr, MAX_ENC_BL, Input, OpId};
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use downcast_rs::DowncastSync;

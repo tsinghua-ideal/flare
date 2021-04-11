@@ -163,7 +163,7 @@ where
     FE: Func(Vec<T>)->TE
 {
     let mut len = data.len();
-    let mut data_enc = Vec::with_capacity(len);
+    let mut data_enc = Vec::with_capacity(len/MAX_ENC_BL+1);
     while len >= MAX_ENC_BL {
         len -= MAX_ENC_BL;
         let remain = data.split_off(MAX_ENC_BL);
@@ -326,6 +326,7 @@ pub struct Input {
     upper: usize,
     block_len: usize,
     init_mem_usage: usize,
+    last_mem_usage: usize,
     max_mem_usage: usize,
 }
 
@@ -334,13 +335,15 @@ impl Input {
         lower: &mut Vec<usize>, 
         upper: &mut Vec<usize>, 
         block_len: usize, 
-        init_mem_usage: &mut usize, 
+        init_mem_usage: &mut usize,
+        last_mem_usage: &mut usize,  
         max_mem_usage: &mut usize,
     ) -> Self {
         let data = data as *const T as usize;
         let lower = lower as *mut Vec<usize> as usize;
         let upper = upper as *mut Vec<usize> as usize;
         let init_mem_usage = init_mem_usage as *mut usize as usize;
+        let last_mem_usage = last_mem_usage as *mut usize as usize;
         let max_mem_usage = max_mem_usage as *mut usize as usize;
         Input {
             data,
@@ -348,6 +351,7 @@ impl Input {
             upper,
             block_len,
             init_mem_usage,
+            last_mem_usage,
             max_mem_usage,
         }
     }
@@ -359,6 +363,7 @@ impl Input {
             upper: 0,
             block_len: 0,
             init_mem_usage: 0,
+            last_mem_usage: 0,
             max_mem_usage: 0,
         }
     }
@@ -381,8 +386,14 @@ impl Input {
 
     pub fn set_init_mem_usage(&self) -> &mut usize {
         let init_mem_usage = unsafe { (self.init_mem_usage as *mut usize).as_mut() }.unwrap();
-        *init_mem_usage = crate::ALLOCATOR.reset_max_memory_usage().0;
+        *init_mem_usage = crate::ALLOCATOR.reset_max_memory_usage(*init_mem_usage).0;
         init_mem_usage
+    }
+
+    pub fn set_last_mem_usage(&self) -> &mut usize {
+        let last_mem_usage = unsafe { (self.last_mem_usage as *mut usize).as_mut() }.unwrap();
+        *last_mem_usage = crate::ALLOCATOR.get_memory_usage().0;
+        last_mem_usage
     }
 
     pub fn set_max_mem_usage(&self) -> &mut usize {
