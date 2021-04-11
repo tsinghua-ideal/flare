@@ -165,12 +165,12 @@ pub extern "C" fn secure_execute(tid: u64,
 ) -> usize {
     let _init = *init; //this is necessary to let it accually execute
     input.set_init_mem_usage();
-    println!("Cur mem: {:?}, at the begining of secure execution", ALLOCATOR.get_memory_usage());
+    println!("tid: {:?}, Cur mem: {:?}, at the begining of secure execution", tid, ALLOCATOR.get_memory_usage());
     let rdd_ids = unsafe { (rdd_ids as *const Vec<usize>).as_ref() }.unwrap();
     let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();
     let part_nums = unsafe { (part_nums as *const Vec<usize>).as_ref() }.unwrap();
     let captured_vars = unsafe { (captured_vars as *const HashMap<usize, Vec<Vec<u8>>>).as_ref() }.unwrap();
-    println!("rdd ids = {:?}, part_nums = {:?}, dep_info = {:?}, cache_meta = {:?}", rdd_ids, part_nums, dep_info, cache_meta);
+    println!("tid: {:?}, rdd ids = {:?}, part_nums = {:?}, dep_info = {:?}, cache_meta = {:?}", tid, rdd_ids, part_nums, dep_info, cache_meta);
     
     let now = Instant::now();
     let mut call_seq = NextOpId::new(tid, rdd_ids, op_ids, Some(part_nums), cache_meta.clone(), captured_vars.clone(), false);
@@ -179,7 +179,7 @@ pub extern "C" fn secure_execute(tid: u64,
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     input.set_last_mem_usage();
     input.set_max_mem_usage();
-    println!("Cur mem: {:?}, Max mem: {:?}, secure_execute {:?} s", ALLOCATOR.get_memory_usage(), ALLOCATOR.get_max_memory_usage(), dur);
+    println!("tid: {:?}, Cur mem: {:?}, Max mem: {:?}, secure_execute {:?} s", tid, ALLOCATOR.get_memory_usage(), ALLOCATOR.get_max_memory_usage(), dur);
     return result_ptr as usize
 }
 

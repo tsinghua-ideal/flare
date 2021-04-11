@@ -1451,7 +1451,7 @@ pub trait OpE: Op {
                 let result_enc = self.batch_encrypt(result); 
                 //println!("In narrow(after encryption), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
                 let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-                //println!("cur mem before copy out: {:?}, encrypt {:?} s", crate::ALLOCATOR.get_memory_usage(), dur); 
+                println!("tid: {:?}, cur mem before copy out: {:?}, encrypt {:?} s", call_seq.tid, crate::ALLOCATOR.get_memory_usage(), dur); 
                 let res_ptr = res_enc_to_ptr(result_enc);
                 //println!("cur mem after copy out: {:?}", crate::ALLOCATOR.get_memory_usage()); 
                 res_ptr
@@ -1479,10 +1479,10 @@ pub trait OpE: Op {
         let (data_iter, handle) = self.compute(call_seq, input);
         let data = data_iter.collect::<Vec<Self::Item>>();
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("compute: {:?}s, cur mem: {:?}B", dur,  crate::ALLOCATOR.get_memory_usage());
+        println!("tid: {:?}, compute: {:?}s, cur mem: {:?}B", call_seq.tid, dur, crate::ALLOCATOR.get_memory_usage());
         //let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
         let iter = Box::new(data) as Box<dyn Any>;
-        let result_ptr = shuf_dep.do_shuffle_task(iter, call_seq.is_spec);
+        let result_ptr = shuf_dep.do_shuffle_task(call_seq.tid, iter, call_seq.is_spec);
         if let Some(handle) = handle {
             handle.join();
         }

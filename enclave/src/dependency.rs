@@ -112,7 +112,7 @@ pub trait ShuffleDependencyTrait: DowncastSync + Send + Sync  {
     fn change_partitioner(&self, reduce_num: usize);
     fn has_spec_oppty(&self) -> bool;
     //fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>, is_spec: bool) -> *mut u8;
-    fn do_shuffle_task(&self, iter: Box<dyn Any>, is_spec: bool) -> *mut u8;
+    fn do_shuffle_task(&self, tid: u64, iter: Box<dyn Any>, is_spec: bool) -> *mut u8;
     fn pre_merge(&self, tid: u64, input: Input) -> usize;
     fn send_sketch(&self, buf: &mut SizeBuf, p_data_enc: *mut u8);
     fn send_enc_data(&self, p_out: usize, p_data_enc: *mut u8);
@@ -264,7 +264,7 @@ where
     }
 
     //fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>, is_spec: bool) -> *mut u8 {
-    fn do_shuffle_task(&self, iter: Box<dyn Any>, is_spec: bool) -> *mut u8 {
+    fn do_shuffle_task(&self, tid: u64, iter: Box<dyn Any>, is_spec: bool) -> *mut u8 {
         let aggregator = self.aggregator.clone();
         let partitioner = self.partitioner.read().unwrap().clone();
         let num_output_splits = partitioner.get_num_of_partitions();
@@ -288,7 +288,7 @@ where
             }
         }
         */
-        
+        let now = Instant::now();
         for (count, i) in iter.downcast::<Vec<(K, V)>>().unwrap().into_iter().enumerate() {
             let (k, v) = i;
             let bucket_id = partitioner.get_partition(&k);
@@ -301,14 +301,14 @@ where
                 bucket.insert(k, aggregator.create_combiner.call((v,)));
             }
         }
-
-        //println!("cur mem after shuffle write: {:?}", crate::ALLOCATOR.get_memory_usage());
+        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+        println!("tid: {:?}, cur mem after shuffle write: {:?}, shuffle write {:?} s", tid, crate::ALLOCATOR.get_memory_usage(), dur);
         let buckets = buckets.into_iter().map(|bucket| bucket.into_iter().collect::<Vec<_>>()).collect::<Vec<_>>();
         if is_spec {
             let now = Instant::now();
             let result = self.encrypt_buckets_spec(buckets);
             let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-            //println!("cur mem before copy out: {:?}, encrypt {:?} s", crate::ALLOCATOR.get_memory_usage(), dur); 
+            println!("tid: {:?}, cur mem before copy out: {:?}, encrypt {:?} s", tid, crate::ALLOCATOR.get_memory_usage(), dur); 
             let res_ptr = res_enc_to_ptr(result);
             //println!("cur mem after copy out: {:?}", crate::ALLOCATOR.get_memory_usage()); 
             res_ptr

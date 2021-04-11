@@ -161,7 +161,7 @@ where
             upper[idx] += 1;
         }
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("cur mem after decryption: {:?}, in enclave decrypt: {:?} s", crate::ALLOCATOR.get_memory_usage(), dur);
+        println!("tid: {:?}, cur mem after decryption: {:?}, in enclave decrypt: {:?} s", tid, crate::ALLOCATOR.get_memory_usage(), dur);
         for (k, c) in block.into_iter().flatten() {
             if let Some(old_c) = combiners.get_mut(&k) {
                 let old = old_c.take().unwrap();
@@ -184,7 +184,7 @@ where
             );
         }
 
-        println!("cur mem after shuffle read: {:?}", crate::ALLOCATOR.get_memory_usage());
+        println!("tid: {:?}, cur mem after shuffle read: {:?}", tid, crate::ALLOCATOR.get_memory_usage());
         let result = combiners.into_iter().map(|(k, v)| (k, v.unwrap())).collect::<Vec<_>>();
         result
     }
