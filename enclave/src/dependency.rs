@@ -289,18 +289,33 @@ where
         }
         */
         let now = Instant::now();
-        for (count, i) in iter.downcast::<Vec<(K, V)>>().unwrap().into_iter().enumerate() {
-            let (k, v) = i;
-            let bucket_id = partitioner.get_partition(&k);
-            let bucket = &mut buckets[bucket_id];
-            if let Some(old_v) = bucket.get_mut(&k) {
-                let input = ((old_v.clone(), v),);
-                let output = aggregator.merge_value.call(input);
-                *old_v = output;
-            } else {
-                bucket.insert(k, aggregator.create_combiner.call((v,)));
+        let mut data = iter.downcast::<Vec<(K, V)>>().unwrap();
+        //data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        if aggregator.is_default {
+            for (k, v) in data.group_by_mut(|a, b| a.0 == b.0)
+                .into_iter()
+                .map(|v| (v.last().unwrap().0.clone(), Box::new(v.into_iter().map(|t| t.1.clone()).collect::<Vec<_>>())))
+            {
+                let bucket_id = partitioner.get_partition(&k);
+                let bucket = &mut buckets[bucket_id];
+                let v = (v as Box<dyn Any>).downcast::<C>().unwrap();
+                bucket.insert(k, aggregator.merge_combiners.call(((Default::default(), *v),)));
+            }
+        } else {
+            for (count, i) in data.into_iter().enumerate() {
+                let (k, v) = i;
+                let bucket_id = partitioner.get_partition(&k);
+                let bucket = &mut buckets[bucket_id];
+                if let Some(old_v) = bucket.get_mut(&k) {
+                    let input = ((old_v.clone(), v),);
+                    let output = aggregator.merge_value.call(input);
+                    *old_v = output;
+                } else {
+                    bucket.insert(k, aggregator.create_combiner.call((v,)));
+                }
             }
         }
+
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("tid: {:?}, cur mem after shuffle write: {:?}, shuffle write {:?} s", tid, crate::ALLOCATOR.get_memory_usage(), dur);
         let buckets = buckets.into_iter().map(|bucket| bucket.into_iter().collect::<Vec<_>>()).collect::<Vec<_>>();

@@ -28,6 +28,7 @@
 #![feature(unsize)]
 #![feature(vec_into_raw_parts)]
 #![feature(cell_update)]
+#![feature(slice_group_by)]
 
 #![feature(
     arbitrary_self_types,

@@ -8,6 +8,7 @@ pub struct Aggregator<K: Data, V: Data, C: Data> {
     pub create_combiner: Box<dyn Fn(V) -> C + Send + Sync>,
     pub merge_value: Box<dyn Fn((C, V)) -> C + Send + Sync>,
     pub merge_combiners: Box<dyn Fn((C, C)) -> C + Send + Sync>,
+    pub is_default: bool,
     _marker: PhantomData<K>,
 }
 
@@ -21,6 +22,7 @@ impl<K: Data, V: Data, C: Data> Aggregator<K, V, C> {
             create_combiner,
             merge_value,
             merge_combiners,
+            is_default: false,
             _marker: PhantomData,
         }
     }
@@ -43,6 +45,7 @@ impl<K: Data, V: Data> Default for Aggregator<K, V, Vec<V>> {
             create_combiner,
             merge_value,
             merge_combiners,
+            is_default: true,
             _marker: PhantomData,
         }
     }
