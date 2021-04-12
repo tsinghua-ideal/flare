@@ -272,26 +272,47 @@ where
             .map(|_| BTreeMap::new())
             .collect::<Vec<_>>();
 
-        //println!("cur mem before shuffle write: {:?}", crate::ALLOCATOR.get_memory_usage()); 
-        /* 
-        for (count, i) in iter.enumerate() {
-            let b = i.into_any().downcast::<(K, V)>().unwrap();
-            let (k, v) = *b;
-            let bucket_id = partitioner.get_partition(&k);
-            let bucket = &mut buckets[bucket_id];
-            if let Some(old_v) = bucket.get_mut(&k) {
-                let input = ((old_v.clone(), v),);
-                let output = aggregator.merge_value.call(input);
-                *old_v = output;
-            } else {
-                bucket.insert(k, aggregator.create_combiner.call((v,)));
-            }
-        }
-        */
         let now = Instant::now();
-        let mut data = iter.downcast::<Vec<(K, V)>>().unwrap();
-        //data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        let mut data = *iter.downcast::<Vec<(K, V)>>().unwrap();
         if aggregator.is_default {
+            //scheme 0:
+            /*
+            data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
+            fn feed_bucket<K, V, C>(data: Vec<(K, V)>, buckets: &mut Vec<BTreeMap<K, C>>, partitioner: &Box<dyn Partitioner>, aggregator: &Arc<Aggregator<K, V, C>>) 
+            where
+                K: Data + Eq + Hash + Ord, 
+                V: Data, 
+                C: Data,
+            {
+                let (mut ks, vs): (Vec<K>, Vec<V>) = data.into_iter().unzip();
+                ks.dedup();
+                let bucket_id = partitioner.get_partition(&ks[0]);
+                let bucket = &mut buckets[bucket_id];
+                let v = (Box::new(vs) as Box<dyn Any>).downcast::<C>().unwrap();
+                bucket.insert(ks[0].clone(), aggregator.merge_combiners.call(((Default::default(), *v),)));
+            }
+            let mut last_item = match data.first() {
+                Some(i) => i.clone(),
+                None => Default::default(),
+            };
+            while data.len() > 0 {
+                let mut idx = 0;
+                while idx < data.len() && data[idx].0 == last_item.0 {
+                    idx += 1;
+                }
+                if idx < data.len() {
+                    last_item = data[idx].clone();
+                    let r = data.split_off(idx);
+                    feed_bucket(data, &mut buckets, &partitioner, &aggregator);
+                    data = r;
+                } else {
+                    feed_bucket(data, &mut buckets, &partitioner, &aggregator);
+                    data = Vec::new();
+                }
+            }
+            */
+            //scheme 1
             for (k, v) in data.group_by_mut(|a, b| a.0 == b.0)
                 .into_iter()
                 .map(|v| (v.last().unwrap().0.clone(), Box::new(v.into_iter().map(|t| t.1.clone()).collect::<Vec<_>>())))
@@ -301,6 +322,7 @@ where
                 let v = (v as Box<dyn Any>).downcast::<C>().unwrap();
                 bucket.insert(k, aggregator.merge_combiners.call(((Default::default(), *v),)));
             }
+            
         } else {
             for (count, i) in data.into_iter().enumerate() {
                 let (k, v) = i;
