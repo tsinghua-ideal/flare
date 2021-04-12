@@ -162,6 +162,7 @@ where
         }
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("tid: {:?}, cur mem after decryption: {:?}, in enclave decrypt: {:?} s", tid, crate::ALLOCATOR.get_memory_usage(), dur);
+        let now = Instant::now(); 
         for (k, c) in block.into_iter().flatten() {
             if let Some(old_c) = combiners.get_mut(&k) {
                 let old = old_c.take().unwrap();
@@ -172,6 +173,8 @@ where
                 combiners.insert(k, Some(c));
             }
         }
+        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+        println!("tid: {:?}, shuffle read: {:?} s", tid, dur);
 
         if lower.iter().zip(upper_bound.iter()).filter(|(l, ub)| l < ub).count() > 0 {
             let min_max_k = sorted_max_key.first_entry().unwrap();

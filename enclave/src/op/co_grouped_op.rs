@@ -268,6 +268,7 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
         }
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("tid: {:?}, cur mem after decryption: {:?}, in enclave decrypt: {:?} s", tid, crate::ALLOCATOR.get_memory_usage(), dur);
+        let now = Instant::now();
         let (b0, b1, b2, b3) = block;
         for i in b0.into_iter().flatten() { 
             let (k, v) = i;
@@ -295,6 +296,8 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
                 temp.1.push(w);
             }
         }
+        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+        println!("tid: {:?}, shuffle read: {:?} s", tid, dur);
 
         if lower.iter().zip(upper_bound.iter()).filter(|(l, ub)| l < ub).count() > 0 {
             let min_max_k = sorted_max_key.first_entry().unwrap();
