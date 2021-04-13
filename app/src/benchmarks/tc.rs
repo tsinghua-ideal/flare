@@ -74,7 +74,7 @@ pub fn transitive_closure_sec_0() -> Result<()> {
     let edges = tc.map(Fn!(|x: (u32, u32)| (x.1, x.0)), fe.clone(), fd.clone());
     
     let mut old_count = 0;
-    let mut next_count = tc.secure_count().unwrap(); println!("next_count = {:?}", next_count);
+    let mut next_count = tc.secure_count().unwrap();
     while next_count != old_count {
         old_count = next_count;
         let jn = tc.join(edges.clone(), fe_jn.clone(), fd_jn.clone(), 1)
@@ -367,14 +367,14 @@ pub fn transitive_closure_unsec_0() -> Result<()> {
     
     // This join is iterated until a fixed point is reached.
     let mut old_count = 0;
-    let mut next_count = tc.count().unwrap(); println!("next_count = {:?}", next_count);
+    let mut next_count = tc.count().unwrap();
     while next_count != old_count {
         old_count = next_count;
         let jn = tc.join(edges.clone(), fe_jn.clone(), fd_jn.clone(), 1)
-            .map(Fn!(|x: (u32, (u32, u32))| (x.1.1, x.1.0)), fe.clone(), fd.clone());  println!("jn next_count = {:?}", jn.count().unwrap());
+            .map(Fn!(|x: (u32, (u32, u32))| (x.1.1, x.1.0)), fe.clone(), fd.clone());
         data.append(&mut jn.collect().unwrap());
         tc = sc.parallelize(data, vec![], fe.clone(), fd.clone(), 1)
-            .distinct();  println!("tc next_count = {:?}", tc.count().unwrap());
+            .distinct();
         tc.cache();
         next_count = tc.count().unwrap();
         data = tc.collect().unwrap();
