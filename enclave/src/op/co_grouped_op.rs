@@ -208,29 +208,17 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
             )>();
         let lower = input.get_lower();
         let upper = input.get_upper();
+        let upper_bound = input.get_upper_bound();
         let block_len = input.get_block_len();
 
         let mut num_sub_part = vec![0, 0];
-        let mut upper_bound = Vec::new();
         let mut block = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        for sub_part in &data_enc.0 {
-            upper_bound.push(sub_part.len());
-        }
         num_sub_part[0] += data_enc.0.len();
         block.0.resize(num_sub_part[0], Vec::new());
-        for sub_part in &data_enc.1 {
-            upper_bound.push(sub_part.len());
-        }
         num_sub_part[0] += data_enc.1.len();
         block.1.resize(num_sub_part[0], Vec::new());
-        for sub_part in &data_enc.2 {
-            upper_bound.push(sub_part.len());
-        }
         num_sub_part[1] += data_enc.2.len();
         block.2.resize(num_sub_part[1], Vec::new());
-        for sub_part in &data_enc.3 {
-            upper_bound.push(sub_part.len());
-        }
         num_sub_part[1] += data_enc.3.len();
         block.3.resize(num_sub_part[1], Vec::new());
         let mut cur_len = 0;

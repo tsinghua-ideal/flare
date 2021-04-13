@@ -98,6 +98,24 @@ where
     }
 
     pub fn compute_inner(&self, tid: u64, input: Input) -> Vec<(K, C)> {
+        fn combine<K, V, C>(combiners: &mut BTreeMap<K, Option<C>>, aggregator: &Arc<Aggregator<K, V, C>>, block: Vec<(K, C)>)
+        where
+            K: Data + Eq + Hash + Ord,
+            V: Data, 
+            C: Data,
+        {
+            for (k, c) in block.into_iter() {
+                if let Some(old_c) = combiners.get_mut(&k) {
+                    let old = old_c.take().unwrap();
+                    let input = ((old, c),);
+                    let output = aggregator.merge_combiners.call(input);
+                    *old_c = Some(output);
+                } else {
+                    combiners.insert(k, Some(c));
+                }
+            }
+        }
+        
         let aggregator = self.aggregator.clone(); 
         let remained_ptr = CAVE.lock().unwrap().remove(&tid);
         let (mut combiners, mut sorted_max_key): (BTreeMap<K, Option<C>>, BTreeMap<(K, usize), usize>) = match remained_ptr {
@@ -110,39 +128,32 @@ where
         let buckets_enc = input.get_enc_data::<Vec<Vec<(KE, CE)>>>();
         let lower = input.get_lower();
         let upper = input.get_upper();
+        let upper_bound = input.get_upper_bound();
         let block_len = input.get_block_len();
         let mut cur_len = 0;
         //println!("cur mem before decryption: {:?}", crate::ALLOCATOR.get_memory_usage());
         let now = Instant::now(); 
-        let upper_bound = buckets_enc.iter().map(|sub_part| sub_part.len()).collect::<Vec<_>>();
-        let mut block = Vec::new();
         if sorted_max_key.is_empty() {
-            block = buckets_enc.iter()
+            sorted_max_key = buckets_enc.iter()
                 .enumerate()
-                .map(|(idx, sub_part)| {
+                .filter_map(|(idx, sub_part)| {
                     let l = &mut lower[idx];
                     let u = &mut upper[idx];
                     let ub = upper_bound[idx];
                     match *l < ub {
                         true => {
-                            let data_enc = sub_part[*l..*u].to_vec();
+                            let block = self.batch_decrypt(sub_part[*l..*u].to_vec());
                             *l += 1;
                             *u += 1;
-                            cur_len += 1;
-                            self.batch_decrypt(data_enc)
+                            //cur_len += 1;  //consider remove it
+                            let r = ((block.last().unwrap().0.clone(), idx), idx);
+                            combine(&mut combiners, &aggregator, block);
+                            Some(r)
                         },
-                        false => Vec::new(),
+                        false => None,
                     }
-                }).collect::<Vec<_>>();
-            sorted_max_key = block.iter()
-                .enumerate()
-                .filter(|(idx, sub_part)| sub_part.last().is_some())
-                .map(|(idx, sub_part)| ((sub_part.last().unwrap().0.clone(), idx), idx))
-                .collect::<BTreeMap<_, _>>();
-        } else {
-            block.resize(lower.len(), Vec::new());
+                }).collect::<BTreeMap<_, _>>();
         }
-
         while cur_len < block_len {
             let entry = match sorted_max_key.first_entry() {
                 Some(entry) => entry,
@@ -153,28 +164,15 @@ where
             if lower[idx] >= upper_bound[idx] {
                 continue;
             }
-            let mut inc_block = self.batch_decrypt(buckets_enc[idx][lower[idx]..upper[idx]].to_vec());
-            cur_len += 1;
-            block[idx].append(&mut inc_block); 
-            sorted_max_key.insert((block[idx].last().unwrap().0.clone(), idx), idx);
+            let block = self.batch_decrypt(buckets_enc[idx][lower[idx]..upper[idx]].to_vec());
+            sorted_max_key.insert((block.last().unwrap().0.clone(), idx), idx);
+            combine(&mut combiners, &aggregator, block);
             lower[idx] += 1;
             upper[idx] += 1;
+            cur_len += 1;
         }
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("tid: {:?}, cur mem after decryption: {:?}, in enclave decrypt: {:?} s", tid, crate::ALLOCATOR.get_memory_usage(), dur);
-        let now = Instant::now(); 
-        for (k, c) in block.into_iter().flatten() {
-            if let Some(old_c) = combiners.get_mut(&k) {
-                let old = old_c.take().unwrap();
-                let input = ((old, c),);
-                let output = aggregator.merge_combiners.call(input);
-                *old_c = Some(output);
-            } else {
-                combiners.insert(k, Some(c));
-            }
-        }
-        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("tid: {:?}, shuffle read: {:?} s", tid, dur);
 
         if lower.iter().zip(upper_bound.iter()).filter(|(l, ub)| l < ub).count() > 0 {
             let min_max_k = sorted_max_key.first_entry().unwrap();

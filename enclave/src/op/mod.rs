@@ -324,6 +324,7 @@ pub struct Input {
     data: usize,
     lower: usize,
     upper: usize,
+    upper_bound: usize,
     block_len: usize,
     init_mem_usage: usize,
     last_mem_usage: usize,
@@ -333,7 +334,8 @@ pub struct Input {
 impl Input {
     pub fn new<T: Data>(data: &T, 
         lower: &mut Vec<usize>, 
-        upper: &mut Vec<usize>, 
+        upper: &mut Vec<usize>,
+        upper_bound: &Vec<usize>,
         block_len: usize, 
         init_mem_usage: &mut usize,
         last_mem_usage: &mut usize,  
@@ -342,6 +344,7 @@ impl Input {
         let data = data as *const T as usize;
         let lower = lower as *mut Vec<usize> as usize;
         let upper = upper as *mut Vec<usize> as usize;
+        let upper_bound = upper_bound as *const Vec<usize> as usize;
         let init_mem_usage = init_mem_usage as *mut usize as usize;
         let last_mem_usage = last_mem_usage as *mut usize as usize;
         let max_mem_usage = max_mem_usage as *mut usize as usize;
@@ -349,6 +352,7 @@ impl Input {
             data,
             lower,
             upper,
+            upper_bound,
             block_len,
             init_mem_usage,
             last_mem_usage,
@@ -361,6 +365,7 @@ impl Input {
             data: 0,
             lower: 0,
             upper: 0,
+            upper_bound: 0,
             block_len: 0,
             init_mem_usage: 0,
             last_mem_usage: 0,
@@ -378,6 +383,10 @@ impl Input {
 
     pub fn get_upper(&self) -> &mut Vec<usize> {
         unsafe { (self.upper as *mut Vec<usize>).as_mut() }.unwrap()
+    }
+
+    pub fn get_upper_bound(&self) -> &Vec<usize> {
+        unsafe { (self.upper_bound as *mut Vec<usize>).as_ref() }.unwrap()
     }
 
     pub fn get_block_len(&self) -> usize {
