@@ -67,18 +67,18 @@ pub fn transitive_closure_sec_0() -> Result<()> {
         bincode::deserialize::<Vec<(Vec<u8>, Vec<u8>)>>(&file).unwrap()  //ItemE = (Vec<u8>, Vec<u8>)
     }));
 
-    let dir = PathBuf::from("/opt/data/ct_tc_1");
+    let dir = PathBuf::from("/opt/data/ct_tc");
     let mut tc = sc.read_source(LocalFsReaderConfig::new(dir), None, Some(deserializer), fe, fd);
     tc.cache();
     let mut data_enc = (*tc.secure_collect().unwrap()).clone();
     let edges = tc.map(Fn!(|x: (u32, u32)| (x.1, x.0)), fe.clone(), fd.clone());
     
     let mut old_count = 0;
-    let mut next_count = tc.secure_count().unwrap();
+    let mut next_count = tc.secure_count().unwrap(); println!("next_count = {:?}", next_count);
     while next_count != old_count {
         old_count = next_count;
         let jn = tc.join(edges.clone(), fe_jn.clone(), fd_jn.clone(), 1)
-            .map(Fn!(|x: (u32, (u32, u32))| (x.1.1, x.1.0)), fe.clone(), fd.clone());
+            .map(Fn!(|x: (u32, (u32, u32))| (x.1.1, x.1.0)), fe.clone(), fd.clone()); 
         data_enc.append(&mut jn.secure_collect().unwrap());
         tc = sc.parallelize(vec![], data_enc, fe.clone(), fd.clone(), 1)
             .distinct();
@@ -358,7 +358,7 @@ pub fn transitive_closure_unsec_0() -> Result<()> {
         bincode::deserialize::<Vec<(u32, u32)>>(&file).unwrap()  //Item = (u32, u32)
     }));
 
-    let dir = PathBuf::from("/opt/data/pt_tc_1");
+    let dir = PathBuf::from("/opt/data/pt_tc");
     let mut tc = sc.read_source(LocalFsReaderConfig::new(dir), Some(deserializer), None, lfe, lfd)
         .flat_map(Fn!(|v: Vec<(u32, u32)>| Box::new(v.into_iter()) as Box<dyn Iterator<Item = _>>), fe.clone(), fd.clone());
     tc.cache();
@@ -367,14 +367,14 @@ pub fn transitive_closure_unsec_0() -> Result<()> {
     
     // This join is iterated until a fixed point is reached.
     let mut old_count = 0;
-    let mut next_count = tc.count().unwrap();
+    let mut next_count = tc.count().unwrap(); println!("next_count = {:?}", next_count);
     while next_count != old_count {
         old_count = next_count;
         let jn = tc.join(edges.clone(), fe_jn.clone(), fd_jn.clone(), 1)
-            .map(Fn!(|x: (u32, (u32, u32))| (x.1.1, x.1.0)), fe.clone(), fd.clone());
+            .map(Fn!(|x: (u32, (u32, u32))| (x.1.1, x.1.0)), fe.clone(), fd.clone());  println!("jn next_count = {:?}", jn.count().unwrap());
         data.append(&mut jn.collect().unwrap());
         tc = sc.parallelize(data, vec![], fe.clone(), fd.clone(), 1)
-            .distinct();
+            .distinct();  println!("tc next_count = {:?}", tc.count().unwrap());
         tc.cache();
         next_count = tc.count().unwrap();
         data = tc.collect().unwrap();

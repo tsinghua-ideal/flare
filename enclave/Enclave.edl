@@ -73,6 +73,7 @@ enclave {
             [user_check] uint8_t* op_ids,
             struct cache_meta_t cache_meta,
             struct dep_info_t dep_info);
+        public void free_spec_seq([user_check] uint8_t* input);
         public size_t spec_execute(uint64_t tid,
             size_t spec_call_seq,
             struct cache_meta_t cache_meta, 

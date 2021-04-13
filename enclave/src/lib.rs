@@ -237,10 +237,21 @@ pub extern "C" fn exploit_spec_oppty(tid: u64,
     if spec_call_seq.0.is_empty() && spec_call_seq.1.is_empty() {
         ptr = 0;
     } else {
-        //no need to copy out
-        ptr = Box::into_raw(Box::new(spec_call_seq)) as *mut u8 as usize;
+        crate::ALLOCATOR.set_switch(true);
+        ptr = Box::into_raw(Box::new(spec_call_seq.clone())) as *mut u8 as usize;
+        crate::ALLOCATOR.set_switch(false);
     }
     ptr
+}
+
+#[no_mangle]
+pub extern "C" fn free_spec_seq(input: *mut u8) {
+    let spec_call_seq = unsafe {
+        Box::from_raw(input as *mut (Vec<usize>, Vec<OpId>))
+    };
+    ALLOCATOR.set_switch(true);
+    drop(spec_call_seq);
+    ALLOCATOR.set_switch(false);
 }
 
 #[no_mangle]
@@ -251,7 +262,7 @@ pub extern "C" fn spec_execute(tid: u64,
 ) -> usize {
     println!("Cur mem: {:?}, at the begining of speculative execution", ALLOCATOR.get_memory_usage());
     let now = Instant::now();
-    let mut spec_call_seq = unsafe { Box::from_raw(spec_call_seq as *mut u8 as *mut (Vec<usize>, Vec<OpId>)) };
+    let mut spec_call_seq = unsafe { (spec_call_seq as *mut (Vec<usize>, Vec<OpId>)).as_ref() }.unwrap().clone();
     //should return the hash of op_ids
     let hash_ops = unsafe { hash_ops.as_mut() }.unwrap();
     *hash_ops = default_hash(&spec_call_seq.1);

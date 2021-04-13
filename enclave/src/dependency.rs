@@ -275,10 +275,7 @@ where
         let now = Instant::now();
         let mut data = *iter.downcast::<Vec<(K, V)>>().unwrap();
         if aggregator.is_default {
-            //scheme 0:
-            /*
             data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-
             fn feed_bucket<K, V, C>(data: Vec<(K, V)>, buckets: &mut Vec<BTreeMap<K, C>>, partitioner: &Box<dyn Partitioner>, aggregator: &Arc<Aggregator<K, V, C>>) 
             where
                 K: Data + Eq + Hash + Ord, 
@@ -311,18 +308,6 @@ where
                     data = Vec::new();
                 }
             }
-            */
-            //scheme 1
-            for (k, v) in data.group_by_mut(|a, b| a.0 == b.0)
-                .into_iter()
-                .map(|v| (v.last().unwrap().0.clone(), Box::new(v.into_iter().map(|t| t.1.clone()).collect::<Vec<_>>())))
-            {
-                let bucket_id = partitioner.get_partition(&k);
-                let bucket = &mut buckets[bucket_id];
-                let v = (v as Box<dyn Any>).downcast::<C>().unwrap();
-                bucket.insert(k, aggregator.merge_combiners.call(((Default::default(), *v),)));
-            }
-            
         } else {
             for (count, i) in data.into_iter().enumerate() {
                 let (k, v) = i;
