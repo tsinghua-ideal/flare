@@ -1,6 +1,7 @@
 #![feature(specialization)]
 use std::error::Error;
-use std::io::{self, BufRead};
+use std::fs;
+use std::io::{self, BufRead, BufReader, Read};
 use std::collections::HashSet;
 use std::fs::{create_dir_all, File};
 use std::path::PathBuf;
@@ -56,6 +57,12 @@ fn main() {
     set_up(bytes, PathBuf::from("/opt/data/pt_pr_2"), 1);
     */
 
+    //adapt data of pagerank to opaque
+    /* 
+    let data = convert_pagerank_data(PathBuf::from("/opt/data/pt_pr"), 1);
+    set_up(data, PathBuf::from("/opt/data/pr_opaque"), 1);
+    */
+
     /*
     //tc
     let num_edges = 500;
@@ -71,6 +78,10 @@ fn main() {
     set_up(bytes, PathBuf::from("/opt/data/pt_tc_1"), 1);
     */
 
+    //adapt data of tc to opaque
+    let data = convert_tc_data(PathBuf::from("/opt/data/pt_tc_1"), 1);
+    set_up(data, PathBuf::from("/opt/data/tc_opaque_1"), 1);
+
     //dijkstra 
     /*
     let (bytes, bytes_enc) = generate_dijkstra_data();
@@ -79,9 +90,12 @@ fn main() {
     */
 
     //topk
+    /* 
     let (bytes, bytes_enc) = generate_topk_data();
     set_up(bytes_enc, PathBuf::from("/opt/data/ct_topk"), 1);
     set_up(bytes, PathBuf::from("/opt/data/pt_topk"), 1);
+    */
+
 }
 
 fn generate_dijkstra_data() -> (Vec<u8>, Vec<u8>) {
@@ -220,6 +234,43 @@ fn generate_pagerank_data(len: usize, is_random: bool) -> (Vec<u8>, Vec<u8>) {
     (strings, bytes)
 }
 
+fn convert_pagerank_data(dir: PathBuf, file_num: i32) -> Vec<u8> {
+    let mut content = vec![];
+    (0..file_num).for_each(|idx| {
+        let f_name = format!("test_file_{}", idx);
+        let path = dir.join(f_name.as_str());
+        let file = fs::File::open(path).unwrap();
+        let mut reader = BufReader::new(file);
+        reader.read_to_end(&mut content).unwrap();
+    });
+    let mut m = HashSet::new();
+    let mut lines = String::from_utf8(content)
+        .unwrap()
+        .lines()
+        .map(|s| s.to_string())
+        .map(|line| {
+            let parts = line.split(" ")
+                .collect::<Vec<_>>();
+            let src = parts[0].parse::<u32>().unwrap();
+            let dst = parts[1].parse::<u32>().unwrap();
+            m.insert(src);
+            m.insert(dst);
+            vec![src, dst, 0]
+        }).collect::<Vec<_>>();
+    for i in m {
+        lines.push(vec![i, i, 1]);
+    }
+    lines.into_iter()
+        .map(|n| n.iter()
+            .map(|val| val.to_string())
+            .collect::<Vec<_>>()
+            .join(" ")
+        ).collect::<Vec<_>>()
+        .join("\n")
+        .as_bytes()
+        .to_vec()
+}
+
 fn generate_tc_data(num_edges: u32, num_vertices: u32) -> (Vec<u8>, Vec<u8>) {
     let mut rng = rand::thread_rng();
     
@@ -274,6 +325,26 @@ fn generate_tc_data(num_edges: u32, num_vertices: u32) -> (Vec<u8>, Vec<u8>) {
 
     let bytes_enc = bincode::serialize(&data_enc).unwrap();
     (bytes, bytes_enc)
+}
+
+fn convert_tc_data(dir: PathBuf, file_num: i32) -> Vec<u8> {
+    let mut content = vec![];
+    (0..file_num).for_each(|idx| {
+        let f_name = format!("test_file_{}", idx);
+        let path = dir.join(f_name.as_str());
+        let file = fs::File::open(path).unwrap();
+        let mut reader = BufReader::new(file);
+        reader.read_to_end(&mut content).unwrap();
+    });
+    let data: Vec<(u32, u32)> = bincode::deserialize(&content).unwrap();
+    data.into_iter()
+        .map(|(from, to)| {
+            let v = vec![from.to_string(), to.to_string()];
+            v.join(" ")
+        }).collect::<Vec<_>>()
+        .join("\n")
+        .as_bytes()
+        .to_vec()
 }
 
 fn generate_topk_data() -> (Vec<u8>, Vec<u8>) {

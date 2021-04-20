@@ -44,8 +44,10 @@ pub fn lr_sec() -> Result<()> {
     let mut rng = rand::thread_rng();
     let point_num = 1_000_000;
     let mut data: Vec<Point> = Vec::with_capacity(point_num);
-    for _ in 0..point_num { 
-        let point = Point { x: rng.gen(), y: rng.gen() };
+    for i in 0..point_num { 
+        let x = rng.gen::<f32>();
+        let y =  match i % 2 {0 => -1.0, 1 => 1.0, _ => panic!("should not happen")};
+        let point = Point {x, y};
         data.push(point);
     } 
     let mut len = data.len();
@@ -103,8 +105,10 @@ pub fn lr_unsec() -> Result<()> {
     let mut rng = rand::thread_rng();
     let point_num = 1_000_000;
     let mut data: Vec<Point> = Vec::with_capacity(point_num);
-    for _ in 0..point_num { 
-        let point = Point { x: rng.gen(), y: rng.gen() };
+    for i in 0..point_num { 
+        let x = rng.gen::<f32>();
+        let y =  match i % 2 {0 => -1.0, 1 => 1.0, _ => panic!("should not happen")};
+        let point = Point { x, y };
         data.push(point);
     } 
 
