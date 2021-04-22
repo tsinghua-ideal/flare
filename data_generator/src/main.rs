@@ -2,25 +2,50 @@
 use std::error::Error;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{create_dir_all, File};
 use std::path::PathBuf;
 use std::io::prelude::*;
-use vega::{Fn, ser_encrypt, ser_decrypt, MAX_ENC_BL};
+use vega::{Data, Fn, ser_encrypt, ser_decrypt, MAX_ENC_BL};
 use rand::Rng;
 
+fn into_file_parts<T: Data>(mut data: Vec<T>, file_num: usize) -> Vec<Vec<u8>> {
+    let len_per_file = (data.len() - 1) / file_num + 1;
+    let mut ser = Vec::new();
+    for i in 0..file_num {
+        let mut data_per_file = data.split_off(std::cmp::min(len_per_file, data.len())); 
+        std::mem::swap(&mut data_per_file, &mut data);
+        ser.push(bincode::serialize(&data_per_file).unwrap());
+    }
+    ser
+}
+
+fn into_file_parts_str(mut data: Vec<String>, file_num: usize) -> Vec<Vec<u8>> {
+    let len_per_file = (data.len() - 1) / file_num + 1;
+    let mut bytes = Vec::new();
+    for i in 0..file_num {
+        let mut data_per_file = data.split_off(std::cmp::min(len_per_file, data.len())); 
+        std::mem::swap(&mut data_per_file, &mut data);
+        bytes.push(data_per_file
+            .join("\n")
+            .as_bytes()
+            .to_vec());
+    }
+    bytes
+}
+
 #[allow(unused_must_use)]
-fn set_up(data: Vec<u8>, dir: PathBuf, file_num: usize) {
+fn set_up(mut data: Vec<Vec<u8>>, dir: PathBuf) {
     println!("Creating tests in dir: {}", (&dir).to_str().unwrap());
     create_dir_all(&dir);
-
-    (0..file_num).for_each(|idx| {
+    
+    (0..data.len()).for_each(|idx| {
         let f_name = format!("test_file_{}", idx);
         let path = dir.join(f_name.as_str());
         let file_name = path.as_path().to_str().unwrap();
         if !std::path::Path::new(file_name).exists() {
             let mut f = File::create(file_name).unwrap();
-            f.write_all(&data).unwrap();
+            f.write_all(&data[idx]).unwrap();
         }
     });
 
@@ -35,70 +60,50 @@ fn main() {
     let iteme = ser_encrypt(vec![fixture.clone()]);
     println!("ItemE = {:?}", iteme);
     let bytes = bincode::serialize(&vec![iteme]).unwrap();
-    set_up(bytes, PathBuf::from("/opt/data/ct_lf"), 10);
-    set_up(fixture, PathBuf::from("/opt/data/pt_lf"), 10);
-    
+    set_up(vec![bytes], PathBuf::from("/opt/data/ct_lf"));
+    set_up(vec![fixture], PathBuf::from("/opt/data/pt_lf"));
+    */
+
     //k_means
-    let (bytes, bytes_enc) = generate_kmeans_data(2_000_000, 5);
-    set_up(bytes_enc, PathBuf::from("/opt/data/ct_km"), 1);
-    set_up(bytes, PathBuf::from("/opt/data/pt_km"), 1);
-
-    //pagerank
-    let (bytes, bytes_enc) = generate_pagerank_data(1_000_000, true);
-    set_up(bytes_enc, PathBuf::from("/opt/data/ct_pr"), 1);
-    set_up(bytes, PathBuf::from("/opt/data/pt_pr"), 1);
-    
-    let (bytes, bytes_enc) = generate_pagerank_data(10_000_000, false);
-    set_up(bytes_enc, PathBuf::from("/opt/data/ct_pr_1"), 1);
-    set_up(bytes, PathBuf::from("/opt/data/pt_pr_1"), 1);
-
-    let (bytes, bytes_enc) = generate_pagerank_data(4_000_000, false);
-    set_up(bytes_enc, PathBuf::from("/opt/data/ct_pr_2"), 1);
-    set_up(bytes, PathBuf::from("/opt/data/pt_pr_2"), 1);
-    */
-
-    //adapt data of pagerank to opaque
-    /* 
-    let data = convert_pagerank_data(PathBuf::from("/opt/data/pt_pr"), 1);
-    set_up(data, PathBuf::from("/opt/data/pr_opaque"), 1);
-    */
-
     /*
+    generate_kmeans_data(2_000_000, 5, "km");
+    let data = convert_kmeans_data(PathBuf::from("/opt/data/pt_km"), 16);
+    set_up(vec![data], PathBuf::from("/opt/data/km_opaque"));
+    */
+    /*
+    //pagerank
+    generate_pagerank_data(1_000_000, true, "pr");
+    generate_pagerank_data(10_000_000, false, "pr_1");
+
+    generate_pagerank_data(4_000_000, false, "pr_2");
+    
+    //adapt data of pagerank to opaque
+
+    let data = convert_pagerank_data(PathBuf::from("/opt/data/pt_pr"), 1);
+    set_up(vec![data], PathBuf::from("/opt/data/pr_opaque"));
+
     //tc
     let num_edges = 500;
     let num_vertices = 300;
-    let (bytes, bytes_enc) = generate_tc_data(num_edges, num_vertices);
-    set_up(bytes_enc, PathBuf::from("/opt/data/ct_tc"), 1);
-    set_up(bytes, PathBuf::from("/opt/data/pt_tc"), 1);
+    generate_tc_data(num_edges, num_vertices, "tc");
     
     let num_edges = 10_000;
     let num_vertices = 1_000;
-    let (bytes, bytes_enc) = generate_tc_data(num_edges, num_vertices);
-    set_up(bytes_enc, PathBuf::from("/opt/data/ct_tc_1"), 1);
-    set_up(bytes, PathBuf::from("/opt/data/pt_tc_1"), 1);
-    */
+    generate_tc_data(num_edges, num_vertices, "tc_1");
 
     //adapt data of tc to opaque
     let data = convert_tc_data(PathBuf::from("/opt/data/pt_tc_1"), 1);
-    set_up(data, PathBuf::from("/opt/data/tc_opaque_1"), 1);
-
+    set_up(vec![data], PathBuf::from("/opt/data/tc_opaque_1"));
+    */
     //dijkstra 
+    generate_dijkstra_data("dij_1");
     /*
-    let (bytes, bytes_enc) = generate_dijkstra_data();
-    set_up(bytes_enc, PathBuf::from("/opt/data/ct_dij"), 1);
-    set_up(bytes, PathBuf::from("/opt/data/pt_dij"), 1);
-    */
-
     //topk
-    /* 
-    let (bytes, bytes_enc) = generate_topk_data();
-    set_up(bytes_enc, PathBuf::from("/opt/data/ct_topk"), 1);
-    set_up(bytes, PathBuf::from("/opt/data/pt_topk"), 1);
+    generate_topk_data("topk");
     */
-
 }
 
-fn generate_dijkstra_data() -> (Vec<u8>, Vec<u8>) {
+fn generate_dijkstra_data(s: &str) {
     /*
     let mut data: Vec<(usize, usize, Option<String>)> = vec![
         (1, 0, Some(String::from("2,10:3,5:"))),
@@ -117,7 +122,7 @@ fn generate_dijkstra_data() -> (Vec<u8>, Vec<u8>) {
             (s[0].parse::<usize>().unwrap(), s[1].parse::<usize>().unwrap(), Some(s[2].to_string()))
         }
     }
-    let mut f = match File::open("/opt/data/facebook/fb.dat") {
+    let f = match File::open("/opt/data/facebook/fb.dat") {
         // `io::Error` 的 `description` 方法返回一个描述错误的字符串。
         Err(why) => panic!("couldn't open for {}", why.to_string()),
         Ok(file) => file,
@@ -127,8 +132,46 @@ fn generate_dijkstra_data() -> (Vec<u8>, Vec<u8>) {
         let line = line.unwrap();
         custom_split_nodes_textfile(line)
     }).collect::<Vec<_>>();
+    //generate new data
+    let mut hs = HashSet::new();
+    let mut rng = rand::thread_rng();
+    for _ in 0..1_000_000 {
+        let pair = (rng.gen_range(4039 as usize, 100_000 as usize), rng.gen_range(4039 as usize, 100_000 as usize));
+        hs.insert(pair);
+    }
+    let mut hm = HashMap::new();
+    for pair in hs {
+        let e = hm.entry(pair.0).or_insert((3000 as usize, vec![]));
+        e.1.push((pair.1, rng.gen_range(1 as usize, 3000 as usize)));
+    }
+    for i in hm {
+        let (p0, (p1, p2)) = i;
+        let v = p2.into_iter().map(|(x, y)| {
+            let mut s = x.to_string();
+            s.push_str(",");
+            s.push_str(&y.to_string());
+            s
+        }).collect::<Vec<_>>();
+        let mut s = v.join(":");
+        s.push_str(":");
+        data.push((p0, p1, Some(s)));
+    }
+    let zero = &mut data[0];
+    let zero_s = zero.2.as_mut().unwrap();
+    let mut hs = HashSet::new();
+    for _ in 0..100 {
+        hs.insert(rng.gen_range(4039 as usize, 100_000 as usize));
+    } 
+    for i in hs {
+        zero_s.push_str(&i.to_string());
+        zero_s.push_str(",");
+        zero_s.push_str(&rng.gen_range(1 as usize, 3000 as usize).to_string());
+        zero_s.push_str(":");
+    }
 
-    let bytes = bincode::serialize(&data).unwrap();
+    let mut pt_path = String::from("/opt/data/pt_");
+    pt_path.push_str(s);
+    set_up(into_file_parts(data.clone(), 16) , PathBuf::from(pt_path));
     let fe = Fn!(|vp: Vec<(usize, usize, Option<String>)>|{
         ser_encrypt::<>(vp)    
     });
@@ -148,45 +191,64 @@ fn generate_dijkstra_data() -> (Vec<u8>, Vec<u8>) {
     if len != 0 {
         data_enc.push(fe(data));
     }
-    let bytes_enc = bincode::serialize(&data_enc).unwrap();
-    (bytes, bytes_enc)
+    let mut ct_path = String::from("/opt/data/ct_");
+    ct_path.push_str(s);
+    set_up(into_file_parts(data_enc, 16), PathBuf::from(ct_path));
 }
 
-fn generate_kmeans_data(num_points: usize, dimension: usize) -> (Vec<u8>, Vec<u8>) {
+fn generate_kmeans_data(num_points: usize, dimension: usize, s: &str) {
     let mut rng = rand::thread_rng();
-    let vals: Vec<Vec<f64>> = (0..num_points).map(|_| (0..dimension).map(|_| rng.gen_range(0 as f64, 20 as f64)).collect()).collect();
-    let mut iter = vals.chunks(MAX_ENC_BL);
-    let mut batch = iter.next();
-    let mut data_enc = Vec::new();
-    while batch.is_some() {
-        let part = batch.unwrap()
-            .iter()
-            .map(|n| n.iter()
-                .map(|val| val.to_string())
-                .collect::<Vec<_>>()
-                .join(" ")
-            ).collect::<Vec<_>>()
-            .join("\n")
-            .as_bytes()
-            .to_vec();
-        data_enc.push(ser_encrypt(vec![part]));
-        batch = iter.next();
+    let mut data: Vec<Vec<f64>> = (0..num_points).map(|_| (0..dimension).map(|_| rng.gen_range(0 as f64, 20 as f64)).collect()).collect();
+    let vals = data.clone();
+    let mut len = data.len();
+    let mut data_enc = Vec::with_capacity(len);
+    while len >= MAX_ENC_BL {
+        len -= MAX_ENC_BL;
+        let remain = data.split_off(MAX_ENC_BL);
+        let input = data;
+        data = remain;
+        data_enc.push(ser_encrypt(input));
     }
+    if len != 0 {
+        data_enc.push(ser_encrypt(data));
+    }
+    let mut ct_path = String::from("/opt/data/ct_");
+    ct_path.push_str(s);
+    set_up(into_file_parts(data_enc, 16), PathBuf::from(ct_path));
 
     let strings = vals.into_iter()
         .map(|n| n.into_iter()
             .map(|val| val.to_string())
             .collect::<Vec<_>>()
             .join(" ")
-        ).collect::<Vec<_>>()
-        .join("\n")
-        .as_bytes()
-        .to_vec();
-    let bytes = bincode::serialize(&data_enc).unwrap();
-    (strings, bytes)
+        ).collect::<Vec<_>>();
+
+    let mut pt_path = String::from("/opt/data/pt_");
+    pt_path.push_str(s);
+    set_up(into_file_parts_str(strings, 16), PathBuf::from(pt_path));
 }
 
-fn generate_pagerank_data(len: usize, is_random: bool) -> (Vec<u8>, Vec<u8>) {
+fn convert_kmeans_data(dir: PathBuf, file_num: i32) -> Vec<u8> {
+    let mut lines = Vec::new();
+    (0..file_num).for_each(|idx| {
+        let f_name = format!("test_file_{}", idx);
+        let path = dir.join(f_name.as_str());
+        let file = fs::File::open(path).unwrap();
+        let mut reader = BufReader::new(file);
+        let mut content = vec![];
+        reader.read_to_end(&mut content).unwrap();
+        lines.append(&mut String::from_utf8(content)
+            .unwrap()
+            .lines()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>());
+    });
+    lines.join("\n")
+        .as_bytes()
+        .to_vec()
+}
+
+fn generate_pagerank_data(len: usize, is_random: bool, s: &str) {
     let vals = match is_random {
         true => {
             let mut rng = rand::thread_rng();
@@ -225,13 +287,15 @@ fn generate_pagerank_data(len: usize, is_random: bool) -> (Vec<u8>, Vec<u8>) {
             .map(|val| val.to_string())
             .collect::<Vec<_>>()
             .join(" ")
-        ).collect::<Vec<_>>()
-        .join("\n")
-        .as_bytes()
-        .to_vec();
+        ).collect::<Vec<_>>();
 
-    let bytes = bincode::serialize(&data_enc).unwrap();
-    (strings, bytes)
+    let mut ct_path = String::from("/opt/data/ct_");
+    ct_path.push_str(s);
+    set_up(into_file_parts(data_enc, 16), PathBuf::from(ct_path));
+
+    let mut pt_path = String::from("/opt/data/pt_");
+    pt_path.push_str(s);
+    set_up(into_file_parts_str(strings, 16), PathBuf::from(pt_path));
 }
 
 fn convert_pagerank_data(dir: PathBuf, file_num: i32) -> Vec<u8> {
@@ -241,7 +305,7 @@ fn convert_pagerank_data(dir: PathBuf, file_num: i32) -> Vec<u8> {
         let path = dir.join(f_name.as_str());
         let file = fs::File::open(path).unwrap();
         let mut reader = BufReader::new(file);
-        reader.read_to_end(&mut content).unwrap();
+        reader.read_to_end(&mut content).unwrap(); //may occur error
     });
     let mut m = HashSet::new();
     let mut lines = String::from_utf8(content)
@@ -271,7 +335,7 @@ fn convert_pagerank_data(dir: PathBuf, file_num: i32) -> Vec<u8> {
         .to_vec()
 }
 
-fn generate_tc_data(num_edges: u32, num_vertices: u32) -> (Vec<u8>, Vec<u8>) {
+fn generate_tc_data(num_edges: u32, num_vertices: u32, s: &str) {
     let mut rng = rand::thread_rng();
     
     let mut hset = HashSet::new();
@@ -285,7 +349,9 @@ fn generate_tc_data(num_edges: u32, num_vertices: u32) -> (Vec<u8>, Vec<u8>) {
         }
     }
     let mut data = hset.into_iter().collect::<Vec<_>>();
-    let bytes = bincode::serialize(&data).unwrap();
+    let mut pt_path = String::from("/opt/data/pt_");
+    pt_path.push_str(s);
+    set_up(into_file_parts(data.clone(), 16), PathBuf::from(pt_path));
 
     let fe = Fn!(|vp: Vec<(u32, u32)> | -> (Vec<u8>, Vec<u8>) {
         let len = vp.len();
@@ -322,9 +388,9 @@ fn generate_tc_data(num_edges: u32, num_vertices: u32) -> (Vec<u8>, Vec<u8>) {
     if len != 0 {
         data_enc.push(fe(data));
     }
-
-    let bytes_enc = bincode::serialize(&data_enc).unwrap();
-    (bytes, bytes_enc)
+    let mut ct_path = String::from("/opt/data/ct_");
+    ct_path.push_str(s);
+    set_up(into_file_parts(data_enc, 16), PathBuf::from(ct_path));
 }
 
 fn convert_tc_data(dir: PathBuf, file_num: i32) -> Vec<u8> {
@@ -347,7 +413,7 @@ fn convert_tc_data(dir: PathBuf, file_num: i32) -> Vec<u8> {
         .to_vec()
 }
 
-fn generate_topk_data() -> (Vec<u8>, Vec<u8>) {
+fn generate_topk_data(s: &str) {
     let mut f = match File::open("/opt/data/ml/ratings.dat") {
         // `io::Error` 的 `description` 方法返回一个描述错误的字符串。
         Err(why) => panic!("couldn't open for {}", why.to_string()),
@@ -355,7 +421,9 @@ fn generate_topk_data() -> (Vec<u8>, Vec<u8>) {
     };
     let lines = io::BufReader::new(f).lines();
     let mut data = lines.into_iter().map(|x| x.unwrap()).collect::<Vec<_>>();
-    let bytes = bincode::serialize(&data).unwrap();
+    let mut pt_path = String::from("/opt/data/pt_");
+    pt_path.push_str(s);
+    set_up(into_file_parts(data.clone(), 16), PathBuf::from(pt_path));
 
     let mut len = data.len();
     let mut data_enc = Vec::with_capacity(len);
@@ -370,6 +438,7 @@ fn generate_topk_data() -> (Vec<u8>, Vec<u8>) {
         data_enc.push(ser_encrypt(data));
     }
 
-    let bytes_enc = bincode::serialize(&data_enc).unwrap();
-    (bytes, bytes_enc)
+    let mut ct_path = String::from("/opt/data/ct_");
+    ct_path.push_str(s);
+    set_up(into_file_parts(data_enc, 16), PathBuf::from(ct_path));
 }

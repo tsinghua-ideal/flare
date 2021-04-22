@@ -17,13 +17,20 @@ pub trait ReaderConfiguration<I: Data> {
 
 pub struct LocalFsReaderConfig {
     dir_path: PathBuf,   //placeholder
+    executor_partitions: Option<u64>,
 }
 
 impl LocalFsReaderConfig {
     pub fn new<T: Into<PathBuf>>(path: T) -> LocalFsReaderConfig {
         LocalFsReaderConfig {
             dir_path: path.into(),
+            executor_partitions: None,
         }
+    }
+
+    pub fn num_partitions_per_executor(mut self, num: u64) -> Self {
+        self.executor_partitions = Some(num);
+        self
     }
 }
 
@@ -91,6 +98,7 @@ where
     fn new(config: LocalFsReaderConfig, context: Arc<Context>, sec_decoder: Option<F0>, fe: FE, fd: FD) -> Self {
         let LocalFsReaderConfig {
             dir_path,
+            executor_partitions,
         } = config;
 
         let mut num: usize = 0;

@@ -139,10 +139,10 @@ lazy_static! {
         //lr_sec()
 
         /* page rank */
-        pagerank_sec_0()
+        //pagerank_sec_0()
 
         /* transitive_closure */
-        //transitive_closure_sec_0()
+        transitive_closure_sec_0()
         //transitive_closure_sec_1()
         //transitive_closure_sec_2()
 

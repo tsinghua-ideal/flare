@@ -96,22 +96,27 @@ pub fn dijkstra_sec_0() -> Result<()> {
         bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap()  //ItemE = Vec<u8>
     }));
 
-    let dir = PathBuf::from("/opt/data/ct_dij");
+    let dir = PathBuf::from("/opt/data/ct_dij_1");
     let mut nodes = sc.read_source(LocalFsReaderConfig::new(dir), None, Some(deserializer), fe, fd)
         .map(Fn!(|node| custom_split_nodes_text_file(node)), fe_mp.clone(), fd_mp.clone());
-    let mut old = nodes.secure_aggregate(
-        0,
-        Fn!(|local_sum: usize, node: (usize, (usize, Option<Vec<String>>, String))| local_sum + node.1.0),
-        Fn!(|local_sum0, local_sum1| local_sum0 + local_sum1),  
-        Fn!(|v| v), 
-        Fn!(|v| v)
-    ).unwrap().to_plain();
-    let mut new = old.clone();
+    let mut old = vec![0];
+    let mut new = vec![0];
+
     let mut iterations = 0;
-    let mut result = Text::<_, _>::new(Vec::new(), None, None);
+    let mut result = nodes.secure_collect().unwrap();
     while iterations == 0 || old[0] != new[0] {
         iterations += 1;
         old = new;
+        //nodes = sc.parallelize(vec![], (*result).clone(), fe_mp.clone(), fd_mp.clone(), 1);
+        nodes.cache();
+        new = nodes.secure_aggregate(
+            0,
+            Fn!(|local_sum: usize, node: (usize, (usize, Option<Vec<String>>, String))| local_sum + node.1.0),
+            Fn!(|local_sum0, local_sum1| local_sum0 + local_sum1),  
+            Fn!(|v| v), 
+            Fn!(|v| v)
+        ).unwrap().to_plain();
+        println!("new = {:?}", new[0]);
         let mapper = nodes.flat_map(Fn!(|node: (usize, (usize, Option<Vec<String>>, String))| {
             let (nid, (data0, data1, data2)) = node.clone();
             let mut res = Vec::new();
@@ -125,17 +130,7 @@ pub fn dijkstra_sec_0() -> Result<()> {
         }), fe_mp.clone(), fd_mp.clone());
         let reducer = mapper.reduce_by_key(Fn!(|(x, y)| min_distance(x, y)), 1, fe_mp.clone(), fd_mp.clone());
         nodes = reducer.map(Fn!(|node| custom_split_nodes_iterative(node)), fe_mp.clone(), fd_mp.clone());
-        result = nodes.secure_collect().unwrap();
-        nodes = sc.parallelize(vec![], (*result).clone(), fe_mp.clone(), fd_mp.clone(), 1);
-        nodes.cache();
-        new = nodes.secure_aggregate(
-            0,
-            Fn!(|local_sum: usize, node: (usize, (usize, Option<Vec<String>>, String))| local_sum + node.1.0),
-            Fn!(|local_sum0, local_sum1| local_sum0 + local_sum1),  
-            Fn!(|v| v), 
-            Fn!(|v| v)
-        ).unwrap().to_plain();
-        println!("new = {:?}", new[0]);
+        //result = nodes.secure_collect().unwrap();
     }
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Finished after {:?} iterations, time {:?}s", iterations, dur);

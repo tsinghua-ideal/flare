@@ -46,35 +46,13 @@ fn merge_results(a: (Vec<f64>, i32), b: (Vec<f64>, i32)) -> (Vec<f64>, i32) {
 pub fn kmeans_sec_0_(tail_info: &mut TailCompInfo) -> Result<()> {
     let sc = Context::new()?;
 
-    let fe = Fn!(|vp: Vec<Vec<u8>>|{
+    let fe = Fn!(|vp: Vec<Vec<f64>>|{
         ser_encrypt::<>(vp)    
     });
 
     let fd = Fn!(|ve: Vec<u8>|{  //ItemE = Vec<u8>
-        let data: Vec<Vec<u8>> = ser_decrypt::<>(ve);
+        let data: Vec<Vec<f64>> = ser_decrypt::<>(ve);
         data
-    });
-
-    let fe_mp0 = Fn!(|vp: Vec<Vec<String>>| {
-        let buf0 = ser_encrypt::<>(vp);
-        buf0
-    });
-
-    let fd_mp0 = Fn!(|ve: Vec<u8>| {
-        let buf0 = ve;
-        let pt0: Vec<Vec<String>> = ser_decrypt::<>(buf0); 
-        pt0
-    });
-
-    let fe_fmp = Fn!(|vp: Vec<Vec<f64>>| {
-        let buf0 = ser_encrypt::<>(vp);
-        buf0
-    });
-
-    let fd_fmp = Fn!(|ve: Vec<u8>| {
-        let buf0 = ve;
-        let pt0: Vec<Vec<f64>> = ser_decrypt::<>(buf0); 
-        pt0
     });
 
     let fe_mp = Fn!(|vp: Vec<(usize, (Vec<f64>, i32))>| {
@@ -129,19 +107,7 @@ pub fn kmeans_sec_0_(tail_info: &mut TailCompInfo) -> Result<()> {
         bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap()  //ItemE = Vec<u8>  
     }));
 
-    let lines = sc.read_source(LocalFsReaderConfig::new(dir), None, Some(deserializer), fe, fd)
-        .map(Fn!(|file: Vec<u8>| {
-            String::from_utf8(file)
-            .unwrap()
-            .lines()
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>()
-        }), fe_mp0, fd_mp0);
-    let data_rdd = lines.flat_map(Fn!(|lines: Vec<String>| {
-        Box::new(lines.into_iter().map(|line| {
-            parse_vector::<>(line)
-        })) as Box<dyn Iterator<Item = _>>
-    }), fe_fmp, fd_fmp);
+    let data_rdd = sc.read_source(LocalFsReaderConfig::new(dir), None, Some(deserializer), fe, fd);
     
 
     let k = 10;
@@ -274,7 +240,7 @@ pub fn kmeans_sec_1_(tail_info: &mut TailCompInfo) -> Result<()> {
         bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap()  //ItemE = Vec<u8>  
     }));
 
-    let lines = sc.read_source(LocalFsReaderConfig::new(dir), None, Some(deserializer), fe, fd)
+    let lines = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(1), None, Some(deserializer), fe, fd)
         .map(Fn!(|file: Vec<u8>| {
             String::from_utf8(file)
             .unwrap()
