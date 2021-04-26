@@ -70,19 +70,21 @@ fn main() {
     let data = convert_kmeans_data(PathBuf::from("/opt/data/pt_km"), 16);
     set_up(vec![data], PathBuf::from("/opt/data/km_opaque"));
     */
-    /*
+    
     //pagerank
+    /*
     generate_pagerank_data(1_000_000, true, "pr");
     generate_pagerank_data(10_000_000, false, "pr_1");
 
     generate_pagerank_data(4_000_000, false, "pr_2");
-    
+    */
     //adapt data of pagerank to opaque
 
-    let data = convert_pagerank_data(PathBuf::from("/opt/data/pt_pr"), 1);
-    set_up(vec![data], PathBuf::from("/opt/data/pr_opaque"));
+    let data = convert_pagerank_data(PathBuf::from("/opt/data/pt_pr_2"), 16);
+    set_up(vec![data], PathBuf::from("/opt/data/pr_opaque_2"));
 
     //tc
+    /*
     let num_edges = 500;
     let num_vertices = 300;
     generate_tc_data(num_edges, num_vertices, "tc");
@@ -90,14 +92,15 @@ fn main() {
     let num_edges = 10_000;
     let num_vertices = 1_000;
     generate_tc_data(num_edges, num_vertices, "tc_1");
-
-    //adapt data of tc to opaque
-    let data = convert_tc_data(PathBuf::from("/opt/data/pt_tc_1"), 1);
-    set_up(vec![data], PathBuf::from("/opt/data/tc_opaque_1"));
     */
+    //adapt data of tc to opaque
+    let data = convert_tc_data(PathBuf::from("/opt/data/pt_tc"), 16);
+    set_up(vec![data], PathBuf::from("/opt/data/tc_opaque"));
+    
+    /*
     //dijkstra 
     generate_dijkstra_data("dij_1");
-    /*
+    
     //topk
     generate_topk_data("topk");
     */
@@ -299,28 +302,29 @@ fn generate_pagerank_data(len: usize, is_random: bool, s: &str) {
 }
 
 fn convert_pagerank_data(dir: PathBuf, file_num: i32) -> Vec<u8> {
-    let mut content = vec![];
+    let mut lines = Vec::new();
+    let mut m = HashSet::new();
     (0..file_num).for_each(|idx| {
         let f_name = format!("test_file_{}", idx);
         let path = dir.join(f_name.as_str());
         let file = fs::File::open(path).unwrap();
         let mut reader = BufReader::new(file);
-        reader.read_to_end(&mut content).unwrap(); //may occur error
+        let mut content = vec![];
+        reader.read_to_end(&mut content).unwrap();
+        lines.append(&mut String::from_utf8(content)
+            .unwrap()
+            .lines()
+            .map(|s| s.to_string())
+            .map(|line| {
+                let parts = line.split(" ")
+                    .collect::<Vec<_>>();
+                let src = parts[0].parse::<u32>().unwrap();
+                let dst = parts[1].parse::<u32>().unwrap();
+                m.insert(src);
+                m.insert(dst);
+                vec![src, dst, 0]
+            }).collect::<Vec<_>>());
     });
-    let mut m = HashSet::new();
-    let mut lines = String::from_utf8(content)
-        .unwrap()
-        .lines()
-        .map(|s| s.to_string())
-        .map(|line| {
-            let parts = line.split(" ")
-                .collect::<Vec<_>>();
-            let src = parts[0].parse::<u32>().unwrap();
-            let dst = parts[1].parse::<u32>().unwrap();
-            m.insert(src);
-            m.insert(dst);
-            vec![src, dst, 0]
-        }).collect::<Vec<_>>();
     for i in m {
         lines.push(vec![i, i, 1]);
     }
@@ -394,21 +398,22 @@ fn generate_tc_data(num_edges: u32, num_vertices: u32, s: &str) {
 }
 
 fn convert_tc_data(dir: PathBuf, file_num: i32) -> Vec<u8> {
-    let mut content = vec![];
+    let mut lines = Vec::new();
     (0..file_num).for_each(|idx| {
         let f_name = format!("test_file_{}", idx);
         let path = dir.join(f_name.as_str());
         let file = fs::File::open(path).unwrap();
         let mut reader = BufReader::new(file);
+        let mut content = vec![];
         reader.read_to_end(&mut content).unwrap();
+        let data: Vec<(u32, u32)> = bincode::deserialize(&content).unwrap();
+        lines.append(&mut data.into_iter()
+            .map(|(from, to)| {
+                let v = vec![from.to_string(), to.to_string()];
+                v.join(" ")
+            }).collect::<Vec<_>>());
     });
-    let data: Vec<(u32, u32)> = bincode::deserialize(&content).unwrap();
-    data.into_iter()
-        .map(|(from, to)| {
-            let v = vec![from.to_string(), to.to_string()];
-            v.join(" ")
-        }).collect::<Vec<_>>()
-        .join("\n")
+    lines.join("\n")
         .as_bytes()
         .to_vec()
 }
