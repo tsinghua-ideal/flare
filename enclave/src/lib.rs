@@ -190,10 +190,13 @@ pub extern "C" fn pre_merge(tid: u64,
     dep_info: DepInfo, 
     input: Input,
 ) -> usize {
+    input.set_init_mem_usage();
     let now = Instant::now();
     let op = load_opmap().get(&op_id).unwrap();
     let res = op.pre_merge(dep_info, tid, input);
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+    input.set_last_mem_usage();
+    input.set_max_mem_usage();
     res
 }
 
