@@ -156,9 +156,9 @@ pub fn pagerank_sec_0() -> Result<()> {
         bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap()  //ItemE = Vec<u8>  
     }));
 
-    let iters = 2;
-    let dir = PathBuf::from("/opt/data/ct_pr_2");
-    let lines = sc.read_source(LocalFsReaderConfig::new(dir), None, Some(deserializer), fe, fd)
+    let iters = 1;
+    let dir = PathBuf::from("/opt/data/ct_pr_4");
+    let lines = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(1), None, Some(deserializer), fe, fd)
         .map(Fn!(|file: Vec<u8>| {
             String::from_utf8(file)
             .unwrap()
@@ -172,13 +172,13 @@ pub fn pagerank_sec_0() -> Result<()> {
                     .collect::<Vec<_>>();
                 (parts[0].to_string(), parts[1].to_string())
             })) as Box<dyn Iterator<Item = _>>
-        }), fe_fmp, fd_fmp).distinct_with_num_partitions(2)
-        .group_by_key(fe_gbk, fd_gbk, 2);
+        }), fe_fmp, fd_fmp).distinct_with_num_partitions(1)
+        .group_by_key(fe_gbk, fd_gbk, 1);
     
     let mut ranks = links.map_values(Fn!(|_| 1.0), fe_mv.clone(), fd_mv.clone());
 
     sc.enter_loop();
-    let contribs = links.join(ranks, fe_jn, fd_jn, 2)
+    let contribs = links.join(ranks, fe_jn, fd_jn, 1)
         .values(fe_v, fd_v)
         .flat_map(Fn!(|(urls, rank): (Vec<String>, f64)| {
             let size = urls.len() as f64;
@@ -186,7 +186,7 @@ pub fn pagerank_sec_0() -> Result<()> {
                 as Box<dyn Iterator<Item = _>>
             }), fe_mv.clone(), fd_mv.clone(),
         );
-    ranks = contribs.reduce_by_key(Fn!(|(x, y)| x + y), 2, fe_mv.clone(), fd_mv.clone())
+    ranks = contribs.reduce_by_key(Fn!(|(x, y)| x + y), 1, fe_mv.clone(), fd_mv.clone())
         .map_values(Fn!(|v| 0.15 + 0.85 * v), fe_mv.clone(), fd_mv.clone());
     sc.leave_loop();
 

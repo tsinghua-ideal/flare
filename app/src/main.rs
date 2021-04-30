@@ -92,7 +92,7 @@ fn main() -> Result<()> {
     //union_unsec_0()?;
 
     /* kmeans */
-    //kmeans_sec_0()?;
+    kmeans_sec_0()?;
     //kmeans_sec_1()?;
     //kmeans_unsec_0()?;
     //kmeans_unsec_1()?;
@@ -106,7 +106,7 @@ fn main() -> Result<()> {
     //pagerank_unsec_0()?;
 
     /* transitive_closure */
-    transitive_closure_sec_0()?;
+    //transitive_closure_sec_0()?;
     //transitive_closure_sec_1()?;
     //transitive_closure_sec_2()?;
     //transitive_closure_unsec_0()?;

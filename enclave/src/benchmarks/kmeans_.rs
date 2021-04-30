@@ -107,7 +107,7 @@ pub fn kmeans_sec_0_(tail_info: &mut TailCompInfo) -> Result<()> {
         bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap()  //ItemE = Vec<u8>  
     }));
 
-    let data_rdd = sc.read_source(LocalFsReaderConfig::new(dir), None, Some(deserializer), fe, fd);
+    let data_rdd = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(1), None, Some(deserializer), fe, fd);
     
 
     let k = 10;

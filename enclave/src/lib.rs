@@ -132,7 +132,7 @@ lazy_static! {
         //union_sec_0()
 
         /* kmeans */
-        //kmeans_sec_0()
+        kmeans_sec_0()
         //kmeans_sec_1()
 
         /* linear regression */
@@ -142,7 +142,7 @@ lazy_static! {
         //pagerank_sec_0()
 
         /* transitive_closure */
-        transitive_closure_sec_0()
+        //transitive_closure_sec_0()
         //transitive_closure_sec_1()
         //transitive_closure_sec_2()
 
