@@ -132,14 +132,14 @@ lazy_static! {
         //union_sec_0()
 
         /* kmeans */
-        kmeans_sec_0()
+        //kmeans_sec_0()
         //kmeans_sec_1()
 
         /* linear regression */
         //lr_sec()
 
         /* page rank */
-        //pagerank_sec_0()
+        pagerank_sec_0()
 
         /* transitive_closure */
         //transitive_closure_sec_0()
@@ -158,7 +158,6 @@ lazy_static! {
 pub extern "C" fn secure_execute(tid: u64, 
     rdd_ids: *const u8,
     op_ids: *const u8,
-    part_nums: *const u8,
     cache_meta: CacheMeta,
     dep_info: DepInfo, 
     input: Input, 
@@ -169,12 +168,11 @@ pub extern "C" fn secure_execute(tid: u64,
     println!("tid: {:?}, Cur mem: {:?}, at the begining of secure execution", tid, ALLOCATOR.get_memory_usage());
     let rdd_ids = unsafe { (rdd_ids as *const Vec<usize>).as_ref() }.unwrap();
     let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();
-    let part_nums = unsafe { (part_nums as *const Vec<usize>).as_ref() }.unwrap();
     let captured_vars = unsafe { (captured_vars as *const HashMap<usize, Vec<Vec<u8>>>).as_ref() }.unwrap();
-    println!("tid: {:?}, rdd ids = {:?}, part_nums = {:?}, dep_info = {:?}, cache_meta = {:?}", tid, rdd_ids, part_nums, dep_info, cache_meta);
+    println!("tid: {:?}, rdd ids = {:?}, dep_info = {:?}, cache_meta = {:?}", tid, rdd_ids, dep_info, cache_meta);
     
     let now = Instant::now();
-    let mut call_seq = NextOpId::new(tid, rdd_ids, op_ids, Some(part_nums), cache_meta.clone(), captured_vars.clone(), false);
+    let mut call_seq = NextOpId::new(tid, rdd_ids, op_ids, cache_meta.clone(), captured_vars.clone(), false, &dep_info);
     let final_op = call_seq.get_cur_op();
     let result_ptr = final_op.iterator_start(&mut call_seq, input, &dep_info); //shuffle need dep_info
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
@@ -203,17 +201,23 @@ pub extern "C" fn pre_merge(tid: u64,
 #[no_mangle]
 pub extern "C" fn exploit_spec_oppty(tid: u64,
     op_ids: *const u8,
+    part_nums: *const u8,
     cache_meta: CacheMeta,
     dep_info: DepInfo,  
 ) -> usize {  //return where has an opportunity, if so, return spec_call_seq
     let _init = *init; //this is necessary to let it accually execute
     let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();
+    let mut part_nums = unsafe { (part_nums as *const Vec<usize>).as_ref() }.unwrap().clone();
     if dep_info.dep_type() == 1 {
+        assert!(part_nums.len() == op_ids.len()+1);
+        let reduce_num = part_nums.remove(0);
         let (parent_id, _) = dep_info.get_op_key();
         let parent = load_opmap().get(&parent_id).unwrap();
-        parent.sup_next_shuf_dep(&dep_info);  //set shuf dep if missing when in loop
+        parent.sup_next_shuf_dep(&dep_info, reduce_num);  //set shuf dep if missing when in loop
     }
     let len = op_ids.len();
+    let final_op = load_opmap().get(&op_ids[0]).unwrap();
+    final_op.fix_split_num(part_nums[0]);
     if len > 1 {
         let mut idx = 0;
         while idx < len - 1 {
@@ -221,6 +225,7 @@ pub extern "C" fn exploit_spec_oppty(tid: u64,
             let child_id = op_ids[idx];
             BRANCH_OP_HIS.write().unwrap().insert(parent_id, child_id);
             let parent = load_opmap().get(&parent_id).unwrap();
+            parent.fix_split_num(part_nums[idx + 1]);
             parent.or_insert_nar_child(child_id);
             idx += 1;
         }
@@ -279,7 +284,7 @@ pub extern "C" fn spec_execute(tid: u64,
     //identifier is not used, so set it 0 
     let dep_info = DepInfo::new(1, 0, 0, 0, parent_op_id, child_op_id);
     let cache_meta = cache_meta.transform();
-    let mut call_seq = NextOpId::new(tid, &spec_call_seq.0, &spec_call_seq.1, None, cache_meta, HashMap::new(), true);
+    let mut call_seq = NextOpId::new(tid, &spec_call_seq.0, &spec_call_seq.1, cache_meta, HashMap::new(), true, &dep_info);
     let final_op = call_seq.get_cur_op();
     let input = Input::padding();
     let result_ptr = final_op.iterator_start(&mut call_seq, input, &dep_info);

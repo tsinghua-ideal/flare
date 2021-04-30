@@ -245,7 +245,6 @@ where
     }
 
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
-        call_seq.fix_split_num();
         let data_enc  = input.get_enc_data::<Vec<UE>>();
         let lower = input.get_lower();
         let upper = input.get_upper();

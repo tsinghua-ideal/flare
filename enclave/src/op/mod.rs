@@ -662,31 +662,25 @@ pub struct NextOpId<'a> {
     tid: u64,
     rdd_ids: &'a Vec<usize>,
     op_ids: &'a Vec<OpId>,
-    split_nums: Vec<usize>,
     cur_idx: usize,
     cache_meta: CacheMeta,
     captured_vars: HashMap<usize, Vec<Vec<u8>>>,
     is_spec: bool,
-    is_final: bool,
+    is_shuffle: bool,
 }
 
 impl<'a> NextOpId<'a> {
-    pub fn new(tid: u64, rdd_ids: &'a Vec<usize>, op_ids: &'a Vec<OpId>, split_nums: Option<&'a Vec<usize>>, cache_meta: CacheMeta, captured_vars: HashMap<usize, Vec<Vec<u8>>>, is_spec: bool) -> Self {
-        let split_nums = match split_nums {
-            Some(nums) => nums.clone(),
-            None => vec![],
-        };
-        let is_final = split_nums.len() == rdd_ids.len();
+    pub fn new(tid: u64, rdd_ids: &'a Vec<usize>, op_ids: &'a Vec<OpId>, cache_meta: CacheMeta, captured_vars: HashMap<usize, Vec<Vec<u8>>>, is_spec: bool, dep_info: &DepInfo) -> Self {
+        let is_shuffle = dep_info.is_shuffle == 1;
         NextOpId {
             tid,
             rdd_ids,
             op_ids,
-            split_nums,
             cur_idx: 0,
             cache_meta,
             captured_vars,
             is_spec,
-            is_final,
+            is_shuffle,
         }
     }
 
@@ -697,18 +691,7 @@ impl<'a> NextOpId<'a> {
     fn get_cur_op_id(&self) -> OpId {
         self.op_ids[self.cur_idx]
     }
-
-    fn fix_split_num(&self) {
-        if !self.is_spec {
-            let op = self.get_cur_op();
-            op.fix_split_num(self.split_nums[self.cur_idx]);
-        }
-    }
-
-    fn pop_reduce_num(&mut self) -> usize {
-        self.split_nums.remove(0)
-    }
-
+    
     fn get_part_id(&self) -> usize {
         self.cache_meta.part_id
     }
@@ -758,7 +741,7 @@ impl<'a> NextOpId<'a> {
     pub fn is_caching_final_rdd(&self) -> bool {
         self.rdd_ids[0] == self.cache_meta.caching_rdd_id
         //It seems not useful unless a cached rdd in shuffle task is simultaniously relied on in another result task
-        && self.is_final
+        && !self.is_shuffle
     }
 
     pub fn is_survivor(&self) -> bool {
@@ -1047,29 +1030,37 @@ pub trait OpBase: Send + Sync {
         res
     }
     //supplement
-    fn sup_next_shuf_dep(&self, dep_info: &DepInfo) {
+    fn sup_next_shuf_dep(&self, dep_info: &DepInfo, reduce_num: usize) {
         let cur_key = dep_info.get_op_key();
         BRANCH_OP_HIS.write().unwrap().insert(cur_key.0, cur_key.1);
         let next_deps = self.get_next_deps().read().unwrap().clone();
-        if next_deps.get(&cur_key).is_none() {
-            let child = load_opmap().get(&cur_key.1).unwrap();
-            for value in child.get_deps() {
-                match value {
-                    Dependency::ShuffleDependency(shuf_dep) => {
-                        if dep_info.identifier == shuf_dep.get_identifier() {
-                            self.get_next_deps().write().unwrap().insert(
-                                cur_key, 
-                                Dependency::ShuffleDependency(
-                                    shuf_dep.set_parent_and_child(cur_key.0, cur_key.1)
-                                )
-                            );
-                            break;
-                        }
-                    },
-                    Dependency::NarrowDependency(_) => (),
+        match next_deps.get(&cur_key) {
+            None => {  //not exist, add the dependency
+                let child = load_opmap().get(&cur_key.1).unwrap();
+                for value in child.get_deps() {
+                    match value {
+                        Dependency::ShuffleDependency(shuf_dep) => {
+                            if dep_info.identifier == shuf_dep.get_identifier() {
+                                self.get_next_deps().write().unwrap().insert(
+                                    cur_key, 
+                                    Dependency::ShuffleDependency(
+                                        shuf_dep.set_parent_and_child(cur_key.0, cur_key.1)
+                                    )
+                                );
+                                break;
+                            }
+                        },
+                        Dependency::NarrowDependency(_) => (),
+                    };
+                }  
+            },
+            Some(dep) => { //already exist, check and change the partitioner
+                match dep {
+                    Dependency::ShuffleDependency(shuf_dep) => shuf_dep.change_partitioner(reduce_num),
+                    Dependency::NarrowDependency(nar_dep) => panic!("should not be narrow dep"),
                 };
-            }  
-        };
+            },
+        }
     }
     fn or_insert_nar_child(&self, child: OpId) {
         let next_deps = self.get_next_deps().read().unwrap().clone();
@@ -1480,10 +1471,6 @@ pub trait OpE: Op {
 
     fn shuffle(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
-        if !call_seq.is_spec {
-            let reduce_num = call_seq.pop_reduce_num();
-            shuf_dep.change_partitioner(reduce_num);
-        }
         let now = Instant::now();
         let (data_iter, handle) = self.compute(call_seq, input);
         let data = data_iter.collect::<Vec<Self::Item>>();

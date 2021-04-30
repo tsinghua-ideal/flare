@@ -472,7 +472,6 @@ where
     
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
         let data_ptr = input.data;
-        call_seq.fix_split_num();
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
         
@@ -747,7 +746,6 @@ where
     
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
         let data_ptr = input.data;
-        call_seq.fix_split_num();
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
         
@@ -1027,7 +1025,6 @@ where
 
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
         let data_ptr = input.data;
-        call_seq.fix_split_num();
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
 
