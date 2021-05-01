@@ -106,7 +106,7 @@ pub fn lr_unsec() -> Result<()> {
 
     let mut rng = rand::thread_rng();
     let normal = Normal::new(0.0, 1.0).unwrap();
-    let point_num = 1_000_000;
+    let point_num = 20_000_000;
     let mut data: Vec<Point> = Vec::with_capacity(point_num);
     for i in 0..point_num { 
         let x = normal.sample(&mut rng);
