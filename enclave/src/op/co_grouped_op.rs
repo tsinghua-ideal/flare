@@ -192,10 +192,20 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
     pub fn compute_inner(&self, tid: u64, input: Input) -> Vec<(K, (Vec<V>, Vec<W>))> {
         let remained_ptr = CAVE.lock().unwrap().remove(&tid);
         let (mut agg, mut sorted_max_key): (BTreeMap<K, (Vec<V>, Vec<W>)>, BTreeMap<(K, usize), usize>) = match remained_ptr {
-            Some((a_ptr, s_ptr)) => (
-                *unsafe { Box::from_raw(a_ptr as *mut u8 as *mut BTreeMap<K, (Vec<V>, Vec<W>)>) },
-                *unsafe { Box::from_raw(s_ptr as *mut u8 as *mut BTreeMap<(K, usize), usize>) }
-            ),
+            Some((a_ptr, s_ptr)) => {
+                let a = unsafe { Box::from_raw(a_ptr as *mut u8 as *mut Vec<u8>) };
+                let s = unsafe { Box::from_raw(s_ptr as *mut u8 as *mut Vec<u8>) };
+                let a_c = a.clone();
+                let s_c = s.clone();
+                crate::ALLOCATOR.set_switch(true);
+                drop(a);
+                drop(s);
+                crate::ALLOCATOR.set_switch(false);
+                (
+                    bincode::deserialize(decrypt(&a_c).as_ref()).unwrap(), 
+                    bincode::deserialize(decrypt(&s_c).as_ref()).unwrap(),
+                )
+            },
             None => (BTreeMap::new(), BTreeMap::new()),
         };
 
@@ -289,12 +299,12 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
 
         if lower.iter().zip(upper_bound.iter()).filter(|(l, ub)| l < ub).count() > 0 {
             let min_max_k = sorted_max_key.first_entry().unwrap();
-            let remained_a = agg.split_off(&min_max_k.key().0);
-            let remained_s = sorted_max_key;
+            let remained_a = encrypt(bincode::serialize(&agg.split_off(&min_max_k.key().0)).unwrap().as_ref());;
+            let remained_s = encrypt(bincode::serialize(&sorted_max_key).unwrap().as_ref());
             //Temporary stored for next computation
             CAVE.lock().unwrap().insert(tid, 
-                (Box::into_raw(Box::new(remained_a)) as *mut u8 as usize,
-                Box::into_raw(Box::new(remained_s)) as *mut u8 as usize)
+                (res_enc_to_ptr(remained_a) as usize,
+                res_enc_to_ptr(remained_s) as usize)
             );
         }
 

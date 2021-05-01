@@ -119,10 +119,20 @@ where
         let aggregator = self.aggregator.clone(); 
         let remained_ptr = CAVE.lock().unwrap().remove(&tid);
         let (mut combiners, mut sorted_max_key): (BTreeMap<K, Option<C>>, BTreeMap<(K, usize), usize>) = match remained_ptr {
-            Some((c_ptr, s_ptr)) => (
-                *unsafe { Box::from_raw(c_ptr as *mut u8 as *mut BTreeMap<K, Option<C>>) },
-                *unsafe { Box::from_raw(s_ptr as *mut u8 as *mut BTreeMap<(K, usize), usize>) }
-            ),
+            Some((c_ptr, s_ptr)) => {
+                let c = unsafe { Box::from_raw(c_ptr as *mut u8 as *mut Vec<u8>) };
+                let s = unsafe { Box::from_raw(s_ptr as *mut u8 as *mut Vec<u8>) };
+                let c_c = c.clone();
+                let s_c = s.clone();
+                crate::ALLOCATOR.set_switch(true);
+                drop(c);
+                drop(s);
+                crate::ALLOCATOR.set_switch(false);
+                (
+                    bincode::deserialize(decrypt(&c_c).as_ref()).unwrap(), 
+                    bincode::deserialize(decrypt(&s_c).as_ref()).unwrap(),
+                )
+            },
             None => (BTreeMap::new(), BTreeMap::new()),
         };
         let buckets_enc = input.get_enc_data::<Vec<Vec<(KE, CE)>>>();
@@ -176,12 +186,12 @@ where
 
         if lower.iter().zip(upper_bound.iter()).filter(|(l, ub)| l < ub).count() > 0 {
             let min_max_k = sorted_max_key.first_entry().unwrap();
-            let remained_c = combiners.split_off(&min_max_k.key().0);
-            let remained_s = sorted_max_key;
+            let remained_c = encrypt(bincode::serialize(&combiners.split_off(&min_max_k.key().0)).unwrap().as_ref());
+            let remained_s = encrypt(bincode::serialize(&sorted_max_key).unwrap().as_ref());
             //Temporary stored for next computation
             CAVE.lock().unwrap().insert(tid, 
-                (Box::into_raw(Box::new(remained_c)) as *mut u8 as usize, 
-                Box::into_raw(Box::new(remained_s)) as *mut u8 as usize)
+                (res_enc_to_ptr(remained_c) as usize, 
+                res_enc_to_ptr(remained_s)as usize)
             );
         }
 

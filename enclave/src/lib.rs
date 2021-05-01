@@ -92,6 +92,7 @@ lazy_static! {
     static ref init: Result<()> = {
         /* dijkstra */
         //dijkstra_sec_0()
+        //dijkstra_sec_1()
 
         /* map */
         //map_sec_0()

@@ -40,6 +40,7 @@ fn main() -> Result<()> {
     //Fn! will make the closures serializable. It is necessary. use serde_closure version 0.1.3.
     /* dijkstra */
     //dijkstra_sec_0()?;
+    //dijkstra_sec_1()?;
     //dijkstra_unsec_0()?;
 
     /* map */
