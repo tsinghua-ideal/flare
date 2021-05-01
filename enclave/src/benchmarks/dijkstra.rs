@@ -125,7 +125,7 @@ pub fn dijkstra_sec_0() -> Result<()> {
     let reducer = mapper.reduce_by_key(Fn!(|(x, y)| min_distance(x, y)), 1, fe_mp.clone(), fd_mp.clone());
     nodes = reducer.map(Fn!(|node| custom_split_nodes_iterative(node)), fe_mp.clone(), fd_mp.clone());
     
-    nodes = sc.make_op(fe_mp.clone(), fd_mp.clone(), 1);
+    //nodes = sc.make_op(fe_mp.clone(), fd_mp.clone(), 1);
 
     new = nodes.aggregate(
         0,

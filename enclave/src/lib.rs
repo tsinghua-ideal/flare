@@ -239,7 +239,6 @@ pub extern "C" fn exploit_spec_oppty(tid: u64,
 
     let mut spec_op_id = SpecOpId::new(cache_meta.clone(), &op_ids);
     
-    //return 0;
     if spec_op_id.is_end() {
         return 0;
     }
