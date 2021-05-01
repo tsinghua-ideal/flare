@@ -147,6 +147,9 @@ lazy_static! {
         //transitive_closure_sec_1()
         //transitive_closure_sec_2()
 
+        /* triangle counting */
+        //triangle_counting_sec_0()
+
         // test the speculative execution in loop
         //test0_sec_0()
 
@@ -170,7 +173,7 @@ pub extern "C" fn secure_execute(tid: u64,
     let rdd_ids = unsafe { (rdd_ids as *const Vec<usize>).as_ref() }.unwrap();
     let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();
     let captured_vars = unsafe { (captured_vars as *const HashMap<usize, Vec<Vec<u8>>>).as_ref() }.unwrap();
-    println!("tid: {:?}, rdd ids = {:?}, dep_info = {:?}, cache_meta = {:?}", tid, rdd_ids, dep_info, cache_meta);
+    println!("tid: {:?}, rdd ids = {:?}, op ids = {:?}, dep_info = {:?}, cache_meta = {:?}", tid, rdd_ids, op_ids, dep_info, cache_meta);
     
     let now = Instant::now();
     let mut call_seq = NextOpId::new(tid, rdd_ids, op_ids, cache_meta.clone(), captured_vars.clone(), false, &dep_info);
@@ -204,11 +207,13 @@ pub extern "C" fn exploit_spec_oppty(tid: u64,
     op_ids: *const u8,
     part_nums: *const u8,
     cache_meta: CacheMeta,
-    dep_info: DepInfo,  
+    dep_info: DepInfo,
+    spec_identifier: *mut usize
 ) -> usize {  //return where has an opportunity, if so, return spec_call_seq
     let _init = *init; //this is necessary to let it accually execute
     let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();
     let mut part_nums = unsafe { (part_nums as *const Vec<usize>).as_ref() }.unwrap().clone();
+    let identifier = unsafe { spec_identifier.as_mut() }.unwrap();
     if dep_info.dep_type() == 1 {
         assert!(part_nums.len() == op_ids.len()+1);
         let reduce_num = part_nums.remove(0);
@@ -232,13 +237,13 @@ pub extern "C" fn exploit_spec_oppty(tid: u64,
         }
     }
 
-    let mut spec_op_id = SpecOpId::new(cache_meta.clone());
+    let mut spec_op_id = SpecOpId::new(cache_meta.clone(), &op_ids);
     
     //return 0;
     if spec_op_id.is_end() {
         return 0;
     }
-    while !spec_op_id.advance(&dep_info) {}
+    while !spec_op_id.advance(&dep_info, identifier) {}
 
     //The last one is the child of shuffle dependency
     let spec_call_seq = spec_op_id.get_spec_call_seq(&dep_info);
@@ -246,6 +251,7 @@ pub extern "C" fn exploit_spec_oppty(tid: u64,
     if spec_call_seq.0.is_empty() && spec_call_seq.1.is_empty() {
         ptr = 0;
     } else {
+        println!("spec_call_seq = {:?}", spec_call_seq);
         crate::ALLOCATOR.set_switch(true);
         ptr = Box::into_raw(Box::new(spec_call_seq.clone())) as *mut u8 as usize;
         crate::ALLOCATOR.set_switch(false);

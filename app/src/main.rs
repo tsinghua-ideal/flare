@@ -113,6 +113,10 @@ fn main() -> Result<()> {
     //transitive_closure_unsec_0()?;
     //transitive_closure_unsec_1()?;
 
+    /* triangle counting */
+    //triangle_counting_sec_0()?;
+    //triangle_counting_unsec_0()?;
+
     // test the speculative execution in loop
     //test0_sec_0()?;
 

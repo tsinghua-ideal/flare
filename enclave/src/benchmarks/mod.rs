@@ -36,3 +36,5 @@ mod test0;
 pub use test0::*;
 mod topk;
 pub use topk::*;
+mod tri;
+pub use tri::*;

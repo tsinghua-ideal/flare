@@ -754,6 +754,8 @@ impl<'a> NextOpId<'a> {
 }
 
 pub struct SpecOpId {
+    cut_op_ids: Vec<OpId>,
+    idx: usize,
     cur_op_id: OpId,
     spec_rdd_ids: Vec<usize>,
     pub spec_op_ids: Vec<OpId>,
@@ -761,9 +763,22 @@ pub struct SpecOpId {
 }
 
 impl SpecOpId {
-    pub fn new(cache_meta: CacheMeta) -> Self {
+    pub fn new(cache_meta: CacheMeta, op_ids: &Vec<OpId>) -> Self {
         if cache_meta.caching_rdd_id != 0 {
+            let mut cut_op_ids = Vec::new();
+            let mut flag = false;
+            for id in op_ids.iter().rev() {
+                if id == &cache_meta.caching_op_id {
+                    flag = true;
+                }
+                if flag {
+                    cut_op_ids.push(*id);
+                }
+            }
+            assert!(cut_op_ids.len() != 0);
             SpecOpId {
+                cut_op_ids,
+                idx: 0,
                 cur_op_id: cache_meta.caching_op_id,
                 spec_rdd_ids: vec![cache_meta.caching_rdd_id],
                 spec_op_ids: vec![cache_meta.caching_op_id],
@@ -771,6 +786,8 @@ impl SpecOpId {
             }
         } else {
             SpecOpId {
+                cut_op_ids: Vec::new(),
+                idx: 0,
                 cur_op_id: Default::default(),
                 spec_rdd_ids: Vec::new(),
                 spec_op_ids: Vec::new(),
@@ -779,7 +796,8 @@ impl SpecOpId {
         }
     }
 
-    pub fn advance(&mut self, dep_info: &DepInfo) -> bool {
+    pub fn advance(&mut self, dep_info: &DepInfo, identifier: &mut usize) -> bool {
+        self.idx += 1;
         let parent_op_id = self.cur_op_id;
         let parent_op = load_opmap().get(&parent_op_id).unwrap(); 
         let may_child_op_id = BRANCH_OP_HIS.read()
@@ -787,19 +805,28 @@ impl SpecOpId {
             .get(&parent_op_id)
             .map(|x| x.clone());
 
-        fn detect_child_op(child_op_id: OpId, parent_op_id: OpId, parent_op: &Arc<dyn OpBase>, rdd_ids: &mut Vec<usize>, op_ids: &mut Vec<OpId>, end: &mut bool, cur_op_id: &mut OpId) {
+        fn detect_child_op(child_op_id: OpId, parent_op_id: OpId, parent_op: &Arc<dyn OpBase>, rdd_ids: &mut Vec<usize>, op_ids: &mut Vec<OpId>, end: &mut bool, cur_op_id: &mut OpId) -> usize {
             rdd_ids.push(0); //just for padding
             op_ids.push(child_op_id);
             //or move it to co_grouped, parallel, etc
             //padding with 0, 0
             let dep_info = DepInfo::new(0, 0, 0, 0, parent_op_id, child_op_id);
+            let mut identifier = 0;
             if let Some(shuf_dep) = parent_op.get_next_shuf_dep(&dep_info) {
                 *end = true;
+                identifier = shuf_dep.get_identifier();
             } 
             *cur_op_id = child_op_id;
+            identifier
         }
-
-        if may_child_op_id.is_some() && 
+        /* 
+        if ((may_child_op_id.is_some() && dep_info.dep_type() != 1) ||
+                may_child_op_id.filter(|x| match self.cut_op_ids.get(self.idx) {
+                    Some(op_id) => x != op_id,
+                    None => 
+                     false, //
+                }).is_some()
+            ) &&
             (self.cur_op_id != self.spec_op_ids[0] || self.spec_op_ids.len() == 1) //loop 
         {
             let child_op_id = may_child_op_id.unwrap();
@@ -818,17 +845,23 @@ impl SpecOpId {
                 self.end = false;
                 return true;
             }
-        } else if self.cur_op_id != self.spec_op_ids[0] || self.spec_op_ids.len() == 1 {
+        } else */ 
+        if self.cur_op_id != self.spec_op_ids[0] || self.spec_op_ids.len() == 1 {
             let alt_child_op_ids = parent_op.get_next_deps().read().unwrap().clone();
             let mut flag = false;
             for ((_parent_op_id, child_op_id), _) in alt_child_op_ids {
                 assert!(_parent_op_id == parent_op_id);
                 let child_op = load_opmap().get(&child_op_id).unwrap();
-                if parent_op.is_in_loop() != child_op.is_in_loop() || !child_op.has_spec_oppty() {
+                if parent_op.is_in_loop() != child_op.is_in_loop() || !child_op.has_spec_oppty() || 
+                    match self.cut_op_ids.get(self.idx) {
+                        Some(op_id) => &child_op_id == op_id,
+                        None => child_op_id == dep_info.child_op_id && dep_info.dep_type() == 1, 
+                    }
+                {
                     continue;
                 }
                 flag = true;   //can continue
-                detect_child_op(child_op_id,
+                *identifier = detect_child_op(child_op_id,
                     parent_op_id,
                     parent_op,
                     &mut self.spec_rdd_ids,  
@@ -1895,6 +1928,37 @@ pub trait OpE: Op {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         }
         new_op
+    }
+
+    #[track_caller]
+    fn key_by<T, F>(&self, func: F) -> SerArc<dyn OpE<Item = (T, Self::Item), ItemE = (Vec<u8>, Self::ItemE)>>
+    where
+        Self: Sized,
+        T: Data,
+        F: SerFunc(&Self::Item) -> T,
+    {
+        let fe = self.get_fe();
+        let fe_wrapper_mp = Fn!(move |v: Vec<(T, Self::Item)>| {
+            let len = v.len();
+            let (vx, vy): (Vec<T>, Vec<Self::Item>) = v.into_iter().unzip();
+            let ct_x = ser_encrypt(vx);
+            let ct_y = (fe)(vy);
+            (ct_x, ct_y)
+        });
+
+        let fd = self.get_fd();
+        let fd_wrapper_mp = Fn!(move |v: (Vec<u8>, Self::ItemE)| {
+            let (vx, vy) = v;
+            let pt_x: Vec<T> = ser_decrypt(vx);
+            let mut pt_y = (fd)(vy);
+            pt_y.resize_with(pt_x.len(), Default::default); //this case occurs when a cogrouped op follows it
+            pt_x.into_iter().zip(pt_y.into_iter()).collect::<Vec<_>>()
+        });
+       
+        self.map(Fn!(move |k: Self::Item| -> (T, Self::Item) {
+            let t = (func)(&k);
+            (t, k)
+        }), fe_wrapper_mp, fd_wrapper_mp)
     }
 
 }
