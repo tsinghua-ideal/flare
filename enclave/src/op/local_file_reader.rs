@@ -48,10 +48,12 @@ impl<I: Data> ReaderConfiguration<I> for LocalFsReaderConfig {
         if !reader.get_context().get_is_tail_comp() {
             insert_opmap(reader.get_op_id(), reader.get_op_base());
         }
+        let local_num_splits: usize = 1;
         let read_files = 
-            |_part: usize, readers: Box<dyn Iterator<Item = O>>| {
+            Fn!(move |part: usize, readers: Box<dyn Iterator<Item = O>>| {
+                let _part = part % local_num_splits;
                 readers
-            };
+            });
         reader.get_context().add_num(1);
         let files_per_executor = Arc::new(
             MapPartitions::new(Arc::new(reader) as Arc<dyn Op<Item = _>>, read_files, fe.clone(), fd.clone()),
@@ -100,18 +102,7 @@ where
             dir_path,
             executor_partitions,
         } = config;
-
-        let mut num: usize = 0;
-        let sgx_status = unsafe { 
-            ocall_get_addr_map_len(&mut num)
-        };
-        match sgx_status {
-            sgx_status_t::SGX_SUCCESS => {},
-            _ => {
-                panic!("[-] OCALL Enclave Failed {}!", sgx_status.as_str());
-            }
-        }
-        let vals = Arc::new(OpVals::new(context, num));
+        let vals = Arc::new(OpVals::new(context, 1)); // 1 is temporarily set
  
         LocalFsReader {
             vals,

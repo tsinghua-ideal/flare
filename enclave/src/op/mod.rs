@@ -79,8 +79,6 @@ extern "C" {
         part_id: usize,
         sub_part_id: usize,
     ) -> sgx_status_t;
-    pub fn ocall_get_addr_map_len(ret_val: *mut usize,
-    ) -> sgx_status_t;
 }
 
 pub fn default_hash<T: Hash>(t: &T) -> u64 {

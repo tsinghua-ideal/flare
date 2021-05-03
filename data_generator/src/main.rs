@@ -8,6 +8,14 @@ use std::path::PathBuf;
 use std::io::prelude::*;
 use vega::{Data, Fn, ser_encrypt, ser_decrypt, MAX_ENC_BL};
 use rand::Rng;
+use rand_distr::{Normal, Distribution};
+use serde_derive::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Point {
+    x: Vec<f32>,
+    y: f32,
+}
 
 fn into_file_parts<T: Data>(mut data: Vec<T>, file_num: usize) -> Vec<Vec<u8>> {
     let len_per_file = (data.len() - 1) / file_num + 1;
@@ -64,6 +72,10 @@ fn main() {
     set_up(vec![fixture], PathBuf::from("/opt/data/pt_lf"));
     */
 
+    /* logistic regression */
+    generate_logistic_regression_data(20_000_000, 1, "lr_20");
+
+
     //k_means
     /*
     generate_kmeans_data(2_000_000, 5, "km");
@@ -79,10 +91,10 @@ fn main() {
     generate_pagerank_data(4_000_000, false, "pr_2");
     */
     //adapt data of pagerank to opaque
-
+    /*
     let data = convert_pagerank_data(PathBuf::from("/opt/data/pt_pr_2"), 16);
     set_up(vec![data], PathBuf::from("/opt/data/pr_opaque_2"));
-
+    */
     //tc
     /*
     let num_edges = 500;
@@ -94,9 +106,10 @@ fn main() {
     generate_tc_data(num_edges, num_vertices, "tc_1");
     */
     //adapt data of tc to opaque
+    /*
     let data = convert_tc_data(PathBuf::from("/opt/data/pt_tc"), 16);
     set_up(vec![data], PathBuf::from("/opt/data/tc_opaque"));
-    
+    */    
     /*
     //dijkstra 
     generate_dijkstra_data("dij_1");
@@ -182,6 +195,52 @@ fn generate_dijkstra_data(s: &str) {
         let data: Vec<(usize, usize, Option<String>)> = ser_decrypt::<>(ve);
         data
     });
+    let mut len = data.len();
+    let mut data_enc = Vec::with_capacity(len);
+    while len >= MAX_ENC_BL {
+        len -= MAX_ENC_BL;
+        let remain = data.split_off(MAX_ENC_BL);
+        let input = data;
+        data = remain;
+        data_enc.push(fe(input));
+    }
+    if len != 0 {
+        data_enc.push(fe(data));
+    }
+    let mut ct_path = String::from("/opt/data/ct_");
+    ct_path.push_str(s);
+    set_up(into_file_parts(data_enc, 16), PathBuf::from(ct_path));
+}
+
+fn generate_logistic_regression_data(num_points: usize, dimension: usize, s: &str) {
+    let fe = Fn!(|vp: Vec<Point>| {
+        let buf0 = ser_encrypt::<>(vp);
+        buf0
+    });
+
+    let fd = Fn!(|ve: Vec<u8>| {
+        let buf0 = ve;
+        let pt0: Vec<Point> = ser_decrypt::<>(buf0); 
+        pt0
+    });
+    
+    let mut rng = rand::thread_rng();
+    let normal = Normal::new(0.0 as f32, 1.0).unwrap();
+    let mut data: Vec<Point> = Vec::with_capacity(num_points);
+    for i in 0..num_points {
+        let mut x = Vec::with_capacity(dimension); 
+        for j in 0..dimension {
+            x.push(normal.sample(&mut rng));
+        }    
+        let y =  match i % 2 {0 => -1.0, 1 => 1.0, _ => panic!("should not happen")};
+        let point = Point {x, y};
+        data.push(point);
+    } 
+
+    let mut pt_path = String::from("/opt/data/pt_");
+    pt_path.push_str(s);
+    set_up(into_file_parts(data.clone(), 16) , PathBuf::from(pt_path));
+
     let mut len = data.len();
     let mut data_enc = Vec::with_capacity(len);
     while len >= MAX_ENC_BL {

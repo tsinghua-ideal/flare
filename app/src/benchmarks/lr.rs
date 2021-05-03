@@ -1,12 +1,13 @@
 use std::time::Instant;
+use std::path::PathBuf;
 use vega::*;
 use rand::Rng;
 use rand_distr::{Normal, Distribution};
 use serde_derive::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct Point {
-    x: f32,
+    x: Vec<f32>,
     y: f32,
 }
 
@@ -24,58 +25,55 @@ pub fn lr_sec() -> Result<()> {
         pt0
     });
 
-    let fe_mp = Fn!(|vp: Vec<f32>| {
+    let fe_mp = Fn!(|vp: Vec<Vec<f32>>| {
         let buf0 = ser_encrypt::<>(vp);
         buf0
     });
 
     let fd_mp = Fn!(|ve: Vec<u8>| {
         let buf0 = ve;
-        let pt0: Vec<f32> = ser_decrypt::<>(buf0); 
+        let pt0: Vec<Vec<f32>> = ser_decrypt::<>(buf0); 
         pt0
     });
 
-    let fe_rd = Fn!(|vp: Vec<f32>| {
+    let fe_rd = Fn!(|vp: Vec<Vec<f32>>| {
         vp
     });
-    let fd_rd = Fn!(|ve: Vec<f32>| {
+    let fd_rd = Fn!(|ve: Vec<Vec<f32>>| {
         ve
     });
 
-    let mut rng = rand::thread_rng();
-    let normal = Normal::new(0.0, 1.0).unwrap();
-    let point_num = 20_000_000; 
-    let mut data: Vec<Point> = Vec::with_capacity(point_num);
-    for i in 0..point_num { 
-        let x = normal.sample(&mut rng);
-        let y =  match i % 2 {0 => -1.0, 1 => 1.0, _ => panic!("should not happen")};
-        let point = Point {x, y};
-        data.push(point);
-    } 
-    let mut len = data.len();
-    let mut data_enc = Vec::with_capacity(len);
-    while len >= MAX_ENC_BL {
-        len -= MAX_ENC_BL;
-        let remain = data.split_off(MAX_ENC_BL);
-        let input = data;
-        data = remain;
-        data_enc.push(fe(input));
-    }
-    if len != 0 {
-        data_enc.push(fe(data));
-    }
+    let deserializer = Box::new(Fn!(|file: Vec<u8>| {
+        bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap()  //ItemE = (Vec<u8>, Vec<u8>)
+    }));
 
-    let points_rdd = sc.make_rdd(vec![], data_enc, fe, fd, 1);
-    let mut w = rng.gen::<f32>();  //TODO: wrapper with Ciphertext? 
+    let mut rng = rand::thread_rng();
+    let dim = 5;
+    let dir = PathBuf::from("/opt/data/ct_lr_3_5");
+    let mut points_rdd = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(2), None, Some(deserializer), fe, fd);
+    let mut w = (0..dim).map(|_| rng.gen::<f32>()).collect::<Vec<_>>();  //TODO: wrapper with Ciphertext? 
     let now = Instant::now();
     for i in 0..3 {
-        let g = points_rdd.map(Fn!(move |p: Point| 
-                p.x * (1f32/(1f32+(-p.y * (w * p.x)).exp())-1f32) * p.y
-            ),
+        let w_c = w.clone();
+        let g = points_rdd.map(Fn!(move |p: Point| {
+                let y = p.y;
+                p.x.iter().zip(w.iter())
+                    .map(|(&x, &w): (&f32, &f32)| x * (1f32/(1f32+(-y * (w * x)).exp())-1f32) * y)
+                    .collect::<Vec<_>>()
+            }),
             fe_mp, 
             fd_mp
-        ).secure_reduce(Fn!(|x, y| x+y), fe_rd, fd_rd).unwrap();
-        w -= g.to_plain()[0];
+        ).secure_reduce(Fn!(|x: Vec<f32>, y: Vec<f32>| x.into_iter()
+                .zip(y.into_iter())
+                .map(|(x, y)| x + y)
+                .collect::<Vec<_>>()
+            ), 
+            fe_rd, 
+            fd_rd).unwrap();
+        w = w_c.into_iter()
+            .zip(g.to_plain().remove(0).into_iter())
+            .map(|(w, g)| w-g)
+            .collect::<Vec<_>>();
         println!("{:?}: w = {:?}", i, w);
     } 
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
@@ -88,45 +86,67 @@ pub fn lr_sec() -> Result<()> {
 // unsecure mode
 pub fn lr_unsec() -> Result<()> {
     let sc = Context::new()?;
+
+    let lfe = Fn!(|vp: Vec<Vec<Point>>| {
+        vp
+    });
+    let lfd = Fn!(|ve: Vec<Vec<Point>>| {
+        ve
+    });
+
     let fe = Fn!(|vp: Vec<Point>| {
-        vp
+        let buf0 = ser_encrypt::<>(vp);
+        buf0
     });
 
-    let fd = Fn!(|ve: Vec<Point>| {
-        ve
+    let fd = Fn!(|ve: Vec<u8>| {
+        let buf0 = ve;
+        let pt0: Vec<Point> = ser_decrypt::<>(buf0); 
+        pt0
     });
 
-    let fe_mp = Fn!(|vp: Vec<f32>| {
-        vp
+    let fe_mp = Fn!(|vp: Vec<Vec<f32>>| {
+        let buf0 = ser_encrypt::<>(vp);
+        buf0
     });
 
-    let fd_mp = Fn!(|ve: Vec<f32>| {
-        ve
+    let fd_mp = Fn!(|ve: Vec<u8>| {
+        let buf0 = ve;
+        let pt0: Vec<Vec<f32>> = ser_decrypt::<>(buf0); 
+        pt0
     });
 
     let mut rng = rand::thread_rng();
-    let normal = Normal::new(0.0, 1.0).unwrap();
-    let point_num = 20_000_000;
-    let mut data: Vec<Point> = Vec::with_capacity(point_num);
-    for i in 0..point_num { 
-        let x = normal.sample(&mut rng);
-        let y =  match i % 2 {0 => -1.0, 1 => 1.0, _ => panic!("should not happen")};
-        let point = Point {x, y};
-        data.push(point);
-    } 
+    let dim = 5;
+    let deserializer = Box::new(Fn!(|file: Vec<u8>| {
+        bincode::deserialize::<Vec<Point>>(&file).unwrap()  //Item = Point
+    }));
 
-    let points_rdd = sc.make_rdd(data, vec![], fe, fd, 1);
-    let mut w = rng.gen::<f32>(); 
+    let dir = PathBuf::from("/opt/data/pt_lr_3_5");
+    let mut points_rdd = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(3), Some(deserializer), None, lfe, lfd)
+        .flat_map(Fn!(|v: Vec<Point>| Box::new(v.into_iter()) as Box<dyn Iterator<Item = _>>), fe.clone(), fd.clone());
+    let mut w = (0..dim).map(|_| rng.gen::<f32>()).collect::<Vec<_>>();  
     let iter_num = 3;
     let now = Instant::now();
     for i in 0..iter_num {
-        let g = points_rdd.map(Fn!(move |p: Point| 
-                p.x * (1f32/(1f32+(-p.y * (w * p.x)).exp())-1f32) * p.y
-            ),
+        let w_c = w.clone();
+        let g = points_rdd.map(Fn!(move |p: Point| {
+                let y = p.y;    
+                p.x.iter().zip(w.iter())
+                    .map(|(&x, &w): (&f32, &f32)| x * (1f32/(1f32+(-y * (w * x)).exp())-1f32) * y)
+                    .collect::<Vec<_>>()
+            }),
             fe_mp, 
-            fd_mp
-        ).reduce(Fn!(|x, y| x+y)).unwrap();
-        w -= g.unwrap();
+            fd_mp)
+        .reduce(Fn!(|x: Vec<f32>, y: Vec<f32>| x.into_iter()
+            .zip(y.into_iter())
+            .map(|(x, y)| x + y)
+            .collect::<Vec<_>>()))
+        .unwrap();
+        w = w_c.into_iter()
+            .zip(g.unwrap().into_iter())
+            .map(|(x, y)| x-y)
+            .collect::<Vec<_>>();
         println!("{:?}: w = {:?}", i, w);
     } 
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;

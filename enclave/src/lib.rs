@@ -213,6 +213,7 @@ pub extern "C" fn exploit_spec_oppty(tid: u64,
     let _init = *init; //this is necessary to let it accually execute
     let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();
     let mut part_nums = unsafe { (part_nums as *const Vec<usize>).as_ref() }.unwrap().clone();
+    println!("in exploit_spec_oppty, part_nums = {:?}", part_nums);
     let identifier = unsafe { spec_identifier.as_mut() }.unwrap();
     if dep_info.dep_type() == 1 {
         assert!(part_nums.len() == op_ids.len()+1);
@@ -250,7 +251,6 @@ pub extern "C" fn exploit_spec_oppty(tid: u64,
     if spec_call_seq.0.is_empty() && spec_call_seq.1.is_empty() {
         ptr = 0;
     } else {
-        println!("spec_call_seq = {:?}", spec_call_seq);
         crate::ALLOCATOR.set_switch(true);
         ptr = Box::into_raw(Box::new(spec_call_seq.clone())) as *mut u8 as usize;
         crate::ALLOCATOR.set_switch(false);

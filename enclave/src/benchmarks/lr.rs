@@ -1,12 +1,13 @@
 
+use std::path::PathBuf;
 use crate::*;
 
 
 use serde_derive::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct Point {
-    x: f32,
+    x: Vec<f32>,
     y: f32,
 }
 
@@ -24,59 +25,56 @@ pub fn lr_sec() -> Result<()> {
         pt0
     });
 
-    let fe_mp = Fn!(|vp: Vec<f32>| {
+    let fe_mp = Fn!(|vp: Vec<Vec<f32>>| {
         let buf0 = ser_encrypt::<>(vp);
         buf0
     });
 
     let fd_mp = Fn!(|ve: Vec<u8>| {
         let buf0 = ve;
-        let pt0: Vec<f32> = ser_decrypt::<>(buf0); 
+        let pt0: Vec<Vec<f32>> = ser_decrypt::<>(buf0); 
         pt0
     });
 
-    let fe_rd = Fn!(|vp: Vec<f32>| {
+    let fe_rd = Fn!(|vp: Vec<Vec<f32>>| {
         vp
     });
-    let fd_rd = Fn!(|ve: Vec<f32>| {
+    let fd_rd = Fn!(|ve: Vec<Vec<f32>>| {
         ve
     });
 
+    let deserializer = Box::new(Fn!(|file: Vec<u8>| {
+        bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap()  //ItemE = (Vec<u8>, Vec<u8>)
+    }));
     
     
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    let nums = sc.make_op(fe, fd, 1);
-    let mut w = 0 as f32;
+    let dim = 5;
+    let dir = PathBuf::from("/opt/data/ct_lr_3_5");
+    let mut points_rdd = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(2), None, Some(deserializer), fe, fd);
+    let mut w = Vec::new();
 
     sc.enter_loop();
-    let _g = nums.map(Fn!(move |p: Point|
-                    p.x*(1f32/(1f32+(-p.y*(w * p.x)).exp())-1f32)*p.y
-                ),
-                fe_mp,
-                fd_mp,
-            ).reduce(Fn!(|x, y| x+y), fe_rd, fd_rd).unwrap();
+    let w_c = w.clone();
+    let g = points_rdd.map(Fn!(move |p: Point| {
+            let y = p.y;
+            p.x.iter().zip(w.iter())
+                .map(|(&x, &w): (&f32, &f32)| x * (1f32/(1f32+(-y * (w * x)).exp())-1f32) * y)
+                .collect::<Vec<_>>()
+        }),
+        fe_mp, 
+        fd_mp
+    ).reduce(Fn!(|x: Vec<f32>, y: Vec<f32>| x.into_iter()
+            .zip(y.into_iter())
+            .map(|(x, y)| x + y)
+            .collect::<Vec<_>>()
+        ), 
+        fe_rd, 
+        fd_rd).unwrap();
    
     
+
+
+
     sc.leave_loop();
     
     
