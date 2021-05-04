@@ -156,22 +156,24 @@ pub fn transitive_closure_sec_1() -> Result<()> {  //may lead to core dump, but 
         bincode::deserialize::<Vec<(Vec<u8>, Vec<u8>)>>(&file).unwrap()  //ItemE = (Vec<u8>, Vec<u8>)
     }));
 
-    let dir = PathBuf::from("/opt/data/ct_tc");
-    let mut tc = sc.read_source(LocalFsReaderConfig::new(dir), None, Some(deserializer), fe, fd);
+    let dir = PathBuf::from("/opt/data/ct_tc_1");
+    let mut tc = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(1), None, Some(deserializer), fe, fd);
     tc.cache();
     let edges = tc.map(Fn!(|x: (u32, u32)| (x.1, x.0)), fe.clone(), fd.clone());
     
     let mut old_count = 0;
     let mut next_count = tc.secure_count().unwrap();
-    while next_count != old_count {
+    let mut iter = 0;
+    while next_count != old_count && iter < 5 {
         old_count = next_count;
         tc = tc.union(
             tc.join(edges.clone(), fe_jn.clone(), fd_jn.clone(), 1)
                 .map(Fn!(|x: (u32, (u32, u32))| (x.1.1, x.1.0)), fe.clone(), fd.clone())
                 .into()
-        ).distinct();
+        ).distinct_with_num_partitions(1);
         tc.cache();
         next_count = tc.secure_count().unwrap();
+        iter += 1;
         println!("next_count = {:?}", next_count);
     }
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
@@ -362,22 +364,22 @@ pub fn transitive_closure_unsec_0() -> Result<()> {
     let mut tc = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(1), Some(deserializer), None, lfe, lfd)
         .flat_map(Fn!(|v: Vec<(u32, u32)>| Box::new(v.into_iter()) as Box<dyn Iterator<Item = _>>), fe.clone(), fd.clone());
     tc.cache();
-    let mut data = tc.collect().unwrap();
     let edges = tc.map(Fn!(|x: (u32, u32)| (x.1, x.0)), fe.clone(), fd.clone());
     
     // This join is iterated until a fixed point is reached.
     let mut old_count = 0;
     let mut next_count = tc.count().unwrap();
-    while next_count != old_count {
+    let mut iter = 0;
+    while next_count != old_count && iter < 5 {
         old_count = next_count;
-        let jn = tc.join(edges.clone(), fe_jn.clone(), fd_jn.clone(), 1)
-            .map(Fn!(|x: (u32, (u32, u32))| (x.1.1, x.1.0)), fe.clone(), fd.clone());
-        data.append(&mut jn.collect().unwrap());
-        tc = sc.parallelize(data, vec![], fe.clone(), fd.clone(), 1)
-            .distinct();
+        tc = tc.union(
+            tc.join(edges.clone(), fe_jn.clone(), fd_jn.clone(), 1)
+                .map(Fn!(|x: (u32, (u32, u32))| (x.1.1, x.1.0)), fe.clone(), fd.clone())
+                .into()
+        ).distinct_with_num_partitions(1);
         tc.cache();
         next_count = tc.count().unwrap();
-        data = tc.collect().unwrap();
+        iter += 1;
         println!("next_count = {:?}", next_count);
     }
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
@@ -460,7 +462,7 @@ pub fn transitive_closure_unsec_1() -> Result<()> {
             .collect::<Vec<_>>() 
     });
     let now = Instant::now();
-    let mut tc = sc.parallelize(data, vec![], fe.clone(), fd.clone(), 2);
+    let mut tc = sc.parallelize(data, vec![], fe.clone(), fd.clone(), 1);
     // Linear transitive closure: each round grows paths by one edge,
     // by joining the graph's edges with the already-discovered paths.
     // e.g. join the path (y, z) from the TC with the edge (x, y) from

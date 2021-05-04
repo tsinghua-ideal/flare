@@ -133,6 +133,12 @@ where
                     bincode::deserialize(decrypt(&s_c).as_ref()).unwrap(),
                 )
             },
+            /*
+            Some((c_ptr, s_ptr)) => (
+                *unsafe { Box::from_raw(c_ptr as *mut u8 as *mut BTreeMap<K, Option<C>>) },
+                *unsafe { Box::from_raw(s_ptr as *mut u8 as *mut BTreeMap<(K, usize), usize>) }
+            ),
+            */
             None => (BTreeMap::new(), BTreeMap::new()),
         };
         let buckets_enc = input.get_enc_data::<Vec<Vec<(KE, CE)>>>();
@@ -193,6 +199,14 @@ where
                 (res_enc_to_ptr(remained_c) as usize, 
                 res_enc_to_ptr(remained_s)as usize)
             );
+            /*
+            let remained_c = combiners.split_off(&min_max_k.key().0);
+            let remained_s = sorted_max_key;
+            CAVE.lock().unwrap().insert(tid, 
+                (Box::into_raw(Box::new(remained_c)) as *mut u8 as usize, 
+                Box::into_raw(Box::new(remained_s)) as *mut u8 as usize)
+            );
+            */
         }
 
         println!("tid: {:?}, cur mem after shuffle read: {:?}", tid, crate::ALLOCATOR.get_memory_usage());

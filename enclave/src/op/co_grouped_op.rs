@@ -206,6 +206,12 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
                     bincode::deserialize(decrypt(&s_c).as_ref()).unwrap(),
                 )
             },
+            /*
+            Some((a_ptr, s_ptr)) => (
+                *unsafe { Box::from_raw(a_ptr as *mut u8 as *mut BTreeMap<K, (Vec<V>, Vec<W>)>) },
+                *unsafe { Box::from_raw(s_ptr as *mut u8 as *mut BTreeMap<(K, usize), usize>) }
+            ),
+            */
             None => (BTreeMap::new(), BTreeMap::new()),
         };
 
@@ -306,6 +312,14 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
                 (res_enc_to_ptr(remained_a) as usize,
                 res_enc_to_ptr(remained_s) as usize)
             );
+            /* 
+            let remained_a = agg.split_off(&min_max_k.key().0);
+            let remained_s = sorted_max_key;
+            CAVE.lock().unwrap().insert(tid,
+                (Box::into_raw(Box::new(remained_a)) as *mut u8 as usize,
+                Box::into_raw(Box::new(remained_s)) as *mut u8 as usize)
+            );
+            */
         }
 
         println!("tid: {:?}, cur mem after shuffle read: {:?}", tid, crate::ALLOCATOR.get_memory_usage());
