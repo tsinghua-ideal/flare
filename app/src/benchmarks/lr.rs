@@ -50,7 +50,7 @@ pub fn lr_sec() -> Result<()> {
     let mut rng = rand::thread_rng();
     let dim = 5;
     let dir = PathBuf::from("/opt/data/ct_lr_3_5");
-    let mut points_rdd = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(2), None, Some(deserializer), fe, fd);
+    let mut points_rdd = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(1), None, Some(deserializer), fe, fd);
     let mut w = (0..dim).map(|_| rng.gen::<f32>()).collect::<Vec<_>>();  //TODO: wrapper with Ciphertext? 
     let now = Instant::now();
     for i in 0..3 {
@@ -123,7 +123,7 @@ pub fn lr_unsec() -> Result<()> {
     }));
 
     let dir = PathBuf::from("/opt/data/pt_lr_3_5");
-    let mut points_rdd = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(3), Some(deserializer), None, lfe, lfd)
+    let mut points_rdd = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(1), Some(deserializer), None, lfe, lfd)
         .flat_map(Fn!(|v: Vec<Point>| Box::new(v.into_iter()) as Box<dyn Iterator<Item = _>>), fe.clone(), fd.clone());
     let mut w = (0..dim).map(|_| rng.gen::<f32>()).collect::<Vec<_>>();  
     let iter_num = 3;

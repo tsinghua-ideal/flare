@@ -227,21 +227,21 @@ where
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 1 | 2  => self.step0_of_clone(p_buf, p_data_enc, dep_info),
+            0 | 1 | 2 | 3 => self.step0_of_clone(p_buf, p_data_enc, dep_info),
             _ => panic!("invalid is_shuffle"),
         }
     }
 
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 1 | 2 => self.step1_of_clone(p_out, p_data_enc, dep_info),
+            0 | 1 | 2 | 3 => self.step1_of_clone(p_out, p_data_enc, dep_info),
             _ => panic!("invalid is_shuffle"),
         }   
     }
 
     fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 2 => self.free_res_enc(res_ptr),
+            0 | 2 | 3 => self.free_res_enc(res_ptr),
             1 => {
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
                 shuf_dep.free_res_enc(res_ptr);
@@ -344,6 +344,15 @@ where
             1 => {      //Shuffle write
                 self.shuffle(call_seq, input, dep_info)
             }
+            3 => {
+                let result = self.compute_inner(call_seq.tid, input);
+                let now = Instant::now();
+                let result_enc = self.batch_encrypt(result); 
+                println!("In narrow(after encryption), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
+                let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+                let res_ptr = res_enc_to_ptr(result_enc);
+                res_ptr
+            }
             _ => panic!("Invalid is_shuffle"),
         }
     }
@@ -359,7 +368,11 @@ where
             return (Box::new(val.into_iter()), None); 
         }
         
-        let data = self.compute_inner(call_seq.tid, input);
+        let data_enc = input.get_enc_data::<Vec<(KE, CE)>>(); 
+        let lower = input.get_lower();
+        let upper = input.get_upper();
+        assert!(lower.len() == 1 && upper.len() == 1);
+        let data = self.batch_decrypt(data_enc[lower[0]..upper[0]].to_vec());
         let res_iter = Box::new(data.into_iter());
 
         if need_cache {
