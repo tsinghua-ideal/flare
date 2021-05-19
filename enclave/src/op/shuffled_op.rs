@@ -348,8 +348,8 @@ where
                 let result = self.compute_inner(call_seq.tid, input);
                 let now = Instant::now();
                 let result_enc = self.batch_encrypt(result); 
-                println!("In narrow(after encryption), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
                 let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+                println!("In shuffled_op, encryption, time {:?} s, memroy usage: {:?} B", dur, crate::ALLOCATOR.get_memory_usage());
                 let res_ptr = res_enc_to_ptr(result_enc);
                 res_ptr
             }

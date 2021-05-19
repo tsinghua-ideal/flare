@@ -19,6 +19,7 @@
 
 #![feature(box_syntax)]
 #![feature(coerce_unsized)]
+#![feature(drain_filter)]
 #![feature(fn_traits)]
 #![feature(map_first_last)]
 #![feature(raw)]

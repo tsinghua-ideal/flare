@@ -24,6 +24,7 @@ where
     FE: Func(Vec<(K, (Vec<V>, Vec<W>))>) -> (KE, (CE, DE)) + Clone, 
     FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
 {
+    pub is_for_join: bool,
     pub(crate) vals: Arc<OpVals>,
     pub(crate) next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     pub(crate) op0: Arc<dyn OpE<Item = (K, V), ItemE = (KE, VE)>>,
@@ -179,6 +180,7 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
         vals.deps = deps;
         let vals = Arc::new(vals);
         CoGrouped {
+            is_for_join: false,
             vals,
             next_deps: Arc::new(RwLock::new(HashMap::new())),
             op0,
@@ -189,7 +191,7 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
         }
     }
 
-    pub fn compute_inner(&self, tid: u64, input: Input) -> Vec<(K, (Vec<V>, Vec<W>))> {
+    pub fn compute_inner(&self, tid: u64, input: Input) -> Vec<Vec<(K, (Vec<V>, Vec<W>))>> {
         let remained_ptr = CAVE.lock().unwrap().remove(&tid);
         let (mut agg, mut sorted_max_key): (BTreeMap<K, (Vec<V>, Vec<W>)>, BTreeMap<(K, usize), usize>) = match remained_ptr {
             /*
@@ -323,9 +325,62 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
         }
 
         println!("tid: {:?}, cur mem after shuffle read: {:?}", tid, crate::ALLOCATOR.get_memory_usage());
-        let result = agg.into_iter()
-            .filter(|(k, (v, w))| v.len() != 0 && w.len() != 0)
-            .collect::<Vec<_>>();
+        let now = Instant::now();
+        let result = if self.is_for_join {
+            let mut len = 0;
+            let agg = agg.into_iter()
+                .filter(|(k, (v, w))| v.len() != 0 && w.len() != 0)
+                .collect::<Vec<_>>()
+                .split_inclusive(|(k, (v, w))| {
+                    len += v.len() * w.len();
+                    let res = len > MAX_ENC_BL;
+                    len = (!res as usize) * len;
+                    res
+                }).flat_map(|x| {
+                    let mut x = x.to_vec();
+                    let mut y = x.drain_filter(|(k, (v, w))| v.len()*w.len() > MAX_ENC_BL)
+                        .flat_map(|(k, (v, w))| {
+                            let vlen = v.len();
+                            let wlen = w.len();
+                            {
+                                if vlen > wlen {
+                                    let chunk_size = (MAX_ENC_BL-1)/wlen+1;
+                                    let chunk_num =  (vlen-1)/chunk_size+1;
+                                    let kk = vec![k; chunk_num].into_iter();
+                                    let vv = v.chunks(chunk_size).map(|x| x.to_vec()).collect::<Vec<_>>().into_iter();
+                                    let ww = vec![w; chunk_num].into_iter();
+                                    kk.zip(vv.zip(ww))
+                                } else {
+                                    let chunk_size = (MAX_ENC_BL-1)/vlen+1;
+                                    let chunk_num =  (wlen-1)/chunk_size+1;
+                                    let kk = vec![k; chunk_num].into_iter();
+                                    let ww = w.chunks(chunk_size).map(|x| x.to_vec()).collect::<Vec<_>>().into_iter();
+                                    let vv = vec![v; chunk_num].into_iter();
+                                    kk.zip(vv.zip(ww))
+                                }
+                            }
+                        }).map(|x| vec![x])
+                        .collect::<Vec<_>>();
+                    y.push(x);
+                    y
+                }).collect::<Vec<_>>();
+            agg
+        } else {
+            let mut len = 0;
+            let agg = agg.into_iter()
+                .filter(|(k, (v, w))| v.len() != 0 && w.len() != 0)
+                .collect::<Vec<_>>()
+                .split_inclusive(|(k, (v, w))| {
+                    len += v.len() * w.len();
+                    let res = len > MAX_ENC_BL;
+                    len = (!res as usize) * len;
+                    res
+                }).map(|x| x.to_vec())
+                .collect::<Vec<_>>();
+            agg
+        };
+        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+        println!("tid: {:?}, split: {:?} s", tid, dur);
         result
     }
 }
@@ -468,11 +523,15 @@ where
                 self.shuffle(call_seq, input, dep_info)
             },
             3 => {
-                let result = self.compute_inner(call_seq.tid, input);
+                let results = self.compute_inner(call_seq.tid, input);
                 let now = Instant::now();
-                let result_enc = self.batch_encrypt(result); 
-                println!("In narrow(after encryption), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
+                let mut result_enc = Vec::with_capacity(results.len());
+                for result in results {
+                    result_enc.push((self.fe)(result));
+                }
+                
                 let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+                println!("In co_grouped_op, encryption, time {:?} s, memroy usage: {:?} B", dur, crate::ALLOCATOR.get_memory_usage());
                 let res_ptr = res_enc_to_ptr(result_enc);
                 res_ptr
             }

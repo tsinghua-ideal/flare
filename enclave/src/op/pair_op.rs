@@ -247,7 +247,9 @@ where
         FE: SerFunc(Vec<(K, (Vec<V>, Vec<W>))>) -> (KE, (CE, DE)), 
         FD: SerFunc((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))>, 
     {
-        let new_op = SerArc::new(CoGrouped::new(self.get_ope(), other.get_ope(), fe, fd, partitioner));
+        let mut cogrouped = CoGrouped::new(self.get_ope(), other.get_ope(), fe, fd, partitioner);
+        cogrouped.is_for_join = true;
+        let new_op = SerArc::new(cogrouped);
         if !self.get_context().get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         }

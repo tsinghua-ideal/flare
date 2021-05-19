@@ -742,6 +742,10 @@ impl<'a> NextOpId<'a> {
         && !self.is_shuffle
     }
 
+    pub fn is_head(&self) -> bool {
+        self.cur_idx == self.rdd_ids.len() - 1
+    }
+
     pub fn is_survivor(&self) -> bool {
         match self.cache_meta.is_survivor {
             0 => false,
