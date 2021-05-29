@@ -199,6 +199,29 @@ pub fn res_enc_to_ptr<T: Clone>(result_enc: T) -> *mut u8 {
     result_ptr
 }
 
+//acc stays outside enclave, and v stays inside enclave
+pub fn merge_enc<T: Clone>(acc: &mut Vec<T>, v: &T) {
+    crate::ALLOCATOR.set_switch(true);
+    let mut v = v.clone();
+    acc.push(v);
+    crate::ALLOCATOR.set_switch(false);
+}
+
+pub fn create_enc<T: Clone>() -> Vec<T> {
+    crate::ALLOCATOR.set_switch(true);
+    let acc = Vec::new();
+    crate::ALLOCATOR.set_switch(false);
+    acc
+}
+
+//The result_enc stays outside
+pub fn to_ptr<T: Clone>(result_enc: T) -> *mut u8 {
+    crate::ALLOCATOR.set_switch(true);
+    let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
+    crate::ALLOCATOR.set_switch(false);
+    result_ptr
+}
+
 #[track_caller]
 fn get_text_loc_id() -> u64 {
     let loc = Location::caller();
@@ -1278,7 +1301,7 @@ pub trait OpE: Op {
 
     fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>>;
     
-    fn cache_from_outside(&self, key: (usize, usize, usize)) -> Vec<Self::Item> {
+    fn cache_from_outside(&self, key: (usize, usize, usize)) -> Option<&Vec<Self::ItemE>> {
         let mut ptr: usize = 0;
         let sgx_status = unsafe { 
             ocall_cache_from_outside(&mut ptr, key.0, key.1, key.2)
@@ -1290,7 +1313,7 @@ pub trait OpE: Op {
             }
         }
         if ptr == 0 {
-            return Vec::new();
+            return None;
         }
         /*
         let ct_ = unsafe {
@@ -1300,10 +1323,9 @@ pub trait OpE: Op {
         forget(ct_);
         self.batch_decrypt(*ct)
         */
-        let ct = unsafe {
+        Some(unsafe {
             (ptr as *const u8 as *const Vec<Self::ItemE>).as_ref()
-        }.unwrap();
-        self.batch_decrypt(ct.clone())
+        }.unwrap())
     }
 
     fn cache_to_outside(&self, key: (usize, usize, usize), value: Vec<Self::Item>) -> Option<PThread> {
@@ -1338,7 +1360,8 @@ pub trait OpE: Op {
             //cache outside enclave
             None => {
                 println!("get cached data outside enclave");
-                self.cache_from_outside(key)
+                let ct = self.cache_from_outside(key).unwrap();
+                self.batch_decrypt(ct.clone())
             },
         };
         val
@@ -1470,53 +1493,94 @@ pub trait OpE: Op {
     }
 
     fn narrow(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
-        let (result_iter, handle) = self.compute(call_seq, input);
-        /*
-        println!("In narrow(before join), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
-        if let Some(handle) = handle {
-            handle.join();
+        if call_seq.is_head() && dep_info.dep_type() == 2 {
+            println!("optimized narrow");
+            if call_seq.have_cache() {
+                assert_eq!(input.data as usize, 0 as usize);
+                let key = call_seq.get_cached_triplet();
+                match CACHE.remove(key) {
+                    //cache inside enclave
+                    Some(val) => {
+                        println!("get cached data inside enclave");
+                        CACHE.remove_subpid(key.0, key.1, key.2);
+                        let result = *unsafe {
+                            Box::from_raw(val as *mut u8 as *mut Vec<Self::Item>)
+                        };
+                        let result_enc = self.batch_encrypt(result);
+                        let res_ptr = res_enc_to_ptr(result_enc);
+                        res_ptr
+                    },
+                    //cache outside enclave
+                    None => {
+                        println!("get cached data outside enclave");
+                        let data_enc = self.cache_from_outside(key).unwrap();
+                        let mut acc = create_enc();
+                        for block in data_enc {
+                            merge_enc(&mut acc, block)
+                        }
+                        to_ptr(acc)
+                    },
+                }
+            } else {
+                let data_enc = input.get_enc_data::<Vec<Self::ItemE>>();
+                let lower = input.get_lower();
+                let upper = input.get_upper();
+                let mut acc = create_enc();
+                for block in &data_enc[lower[0]..upper[0]] {
+                    merge_enc(&mut acc, block)
+                }
+                to_ptr(acc)
+            }
+        } else {
+            println!("regular narrow");
+            let (result_iter, handle) = self.compute(call_seq, input);
+            /*
+            println!("In narrow(before join), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
+            if let Some(handle) = handle {
+                handle.join();
+            }
+            */
+            
+            let result = result_iter.collect::<Vec<Self::Item>>();
+            //println!("In narrow(before encryption), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
+            let result_ptr = match dep_info.need_encryption() {
+                true => {
+                    let now = Instant::now();
+                    let result_enc = self.batch_encrypt(result); 
+                    //println!("In narrow(after encryption), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
+                    let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+                    println!("tid: {:?}, cur mem before copy out: {:?}, encrypt {:?} s", call_seq.tid, crate::ALLOCATOR.get_memory_usage(), dur); 
+                    let res_ptr = res_enc_to_ptr(result_enc);
+                    //println!("cur mem after copy out: {:?}", crate::ALLOCATOR.get_memory_usage()); 
+                    res_ptr
+                },
+                false => {
+                    let result_ptr = Box::into_raw(Box::new(result)) as *mut u8;
+                    result_ptr
+                },
+            };
+            if let Some(handle) = handle {
+                handle.join();
+            }   
+            result_ptr
         }
-        */
-        
-        let result = result_iter.collect::<Vec<Self::Item>>();
-        //println!("In narrow(before encryption), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
-        let result_ptr = match dep_info.need_encryption() {
-            true => {
-                let now = Instant::now();
-                let result_enc = self.batch_encrypt(result); 
-                //println!("In narrow(after encryption), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
-                let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-                println!("tid: {:?}, cur mem before copy out: {:?}, encrypt {:?} s", call_seq.tid, crate::ALLOCATOR.get_memory_usage(), dur); 
-                let res_ptr = res_enc_to_ptr(result_enc);
-                //println!("cur mem after copy out: {:?}", crate::ALLOCATOR.get_memory_usage()); 
-                res_ptr
-            },
-            false => {
-                let result_ptr = Box::into_raw(Box::new(result)) as *mut u8;
-                result_ptr
-            },
-        };
-        
-        if let Some(handle) = handle {
-            handle.join();
-        }
-        
-        result_ptr
     } 
 
     fn shuffle(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
         let now = Instant::now();
-        let (data_iter, handle) = self.compute(call_seq, input);
-        let data = data_iter.collect::<Vec<Self::Item>>();
+        let data_enc = input.get_enc_data::<Vec<Self::ItemE>>();
+        let lower = input.get_lower();
+        let upper = input.get_upper();
+        assert!(lower.len() == 1 && upper.len() == 1);
+        let data = self.batch_decrypt(data_enc[lower[0]..upper[0]].to_vec());
+
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("tid: {:?}, compute: {:?}s, cur mem: {:?}B", call_seq.tid, dur, crate::ALLOCATOR.get_memory_usage());
         //let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
         let iter = Box::new(data) as Box<dyn Any>;
+        //TODO change spec
         let result_ptr = shuf_dep.do_shuffle_task(call_seq.tid, iter, call_seq.is_spec);
-        if let Some(handle) = handle {
-            handle.join();
-        }
         result_ptr
     }
 
