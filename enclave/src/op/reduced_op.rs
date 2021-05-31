@@ -166,7 +166,7 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
   
-    fn compute_start (&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         //3 is only for reduce & fold
         if dep_info.dep_type() == 3 {
             let data_enc = input.get_enc_data::<Vec<TE>>();
@@ -181,35 +181,24 @@ where
             if call_seq.need_cache() {
                 self.prev.compute_start(call_seq, input, dep_info)
             } else {
-                let (result_iter, handle) = self.compute(call_seq, input);
-                let result = result_iter.collect::<Vec<Self::Item>>();
-                //println!("In narrow(before encryption), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
-                let result_ptr = match dep_info.need_encryption() {
-                    true => {
-                        let now = Instant::now();
-                        let result_enc = self.prev.batch_encrypt(result); 
-                        //println!("In narrow(after encryption), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
-                        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-                        println!("in enclave encrypt {:?} s", dur); 
-                        res_enc_to_ptr(result_enc) 
-                    },
-                    false => {
-                        let result_ptr = Box::into_raw(Box::new(result)) as *mut u8;
-                        result_ptr
-                    },
-                };
-                if let Some(handle) = handle {
-                    handle.join();
-                }   
-                result_ptr
+                let result_iter = self.compute(call_seq, input);
+                let mut acc = create_enc();
+                for result in result_iter {
+                    for block in self.prev.batch_encrypt(result.collect::<Vec<_>>()) {
+                        merge_enc(&mut acc, &block)
+                    }
+                }
+                to_ptr(acc)
             }
         }
     }
 
-    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
         //move some parts in compute start to this part, this part is originally used to reduce ahead to shrink size
-        let (res_iter, handle) = self.prev.compute(call_seq, input);
-        (Box::new((self.f)(res_iter).into_iter()), handle)        
+        let res_iter = self.prev.compute(call_seq, input);
+        let f = self.f.clone();
+        Box::new(res_iter.map(move |res_iter|
+            Box::new((f)(res_iter).into_iter()) as Box<dyn Iterator<Item = _>>))
     }
 
 }

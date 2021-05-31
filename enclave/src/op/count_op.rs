@@ -138,15 +138,13 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
   
-    fn compute_start (&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8{
+    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8{
         //3 is only for reduce & fold
         if dep_info.dep_type() == 3 {
             //self.narrow(call_seq, input, dep_info)
-            let (result_iter, handle) = self.compute(call_seq, input);
-            let result = result_iter.collect::<Vec<Self::Item>>()[0];
-            if let Some(handle) = handle {
-                handle.join();
-            }
+            let result_iter = self.compute(call_seq, input);
+            let result = result_iter.flat_map(|x| x.collect::<Vec<_>>())
+                .collect::<Vec<Self::Item>>()[0];
             result as *mut u8
         }
         else {
@@ -154,7 +152,7 @@ where
         }
     }
 
-    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
         let data_enc = input.get_enc_data::<Vec<TE>>();
         let len = data_enc.len();
         let mut count = 0;
@@ -163,7 +161,9 @@ where
             count += block.len(); 
         }
 
-        (Box::new(vec![count as u64].into_iter()), None)
+        Box::new(vec![Box::new(vec![count as u64].into_iter())]
+            .into_iter()
+            .map(|x| x as Box<dyn Iterator<Item = _>>))
     }
 
 }

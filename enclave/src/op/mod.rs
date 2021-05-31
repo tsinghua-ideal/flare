@@ -62,6 +62,7 @@ pub use union_op::*;
 
 type PT<T, TE> = Text<T, TE>;
 pub type OText<T> = Text<T, T>; 
+type ResIter<T> = Box<dyn Iterator<Item = Box<dyn Iterator<Item = T>>>>;
 
 pub const MAX_ENC_BL: usize = 1024;
 pub type Result<T> = std::result::Result<T, &'static str>;
@@ -70,14 +71,12 @@ extern "C" {
     pub fn ocall_cache_to_outside(ret_val: *mut u8,   //write successfully or not
         rdd_id: usize,
         part_id: usize,
-        sub_part_id: usize,
         data_ptr: usize,
     ) -> sgx_status_t;
 
     pub fn ocall_cache_from_outside(ret_val: *mut usize,  //ptr outside enclave
         rdd_id: usize,
         part_id: usize,
-        sub_part_id: usize,
     ) -> sgx_status_t;
 }
 
@@ -237,49 +236,46 @@ fn get_text_loc_id() -> u64 {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct CacheMeta {
     caching_rdd_id: usize,
     caching_op_id: OpId,
+    caching_part_id: usize,
     cached_rdd_id: usize,
     cached_op_id: OpId,
-    part_id: usize,
-    sub_part_id: usize,
-    is_survivor: u8,
+    cached_part_id: usize,
+    can_spec: u8,
 }
 
 impl CacheMeta {
     pub fn new(
         caching_rdd_id: usize,
         caching_op_id: OpId,
+        caching_part_id: usize,
         cached_rdd_id: usize,
         cached_op_id: OpId,
-        part_id: usize,
+        cached_part_id: usize,
     ) -> Self {
         CacheMeta {
             caching_rdd_id,
             caching_op_id,
+            caching_part_id,
             cached_rdd_id,
             cached_op_id,
-            part_id,
-            sub_part_id: 0,
-            is_survivor: 0,
+            cached_part_id,
+            can_spec: 0,
         }
-    }
-
-    fn set_sub_part_id(&mut self, sub_part_id: usize) {
-        self.sub_part_id = sub_part_id;
     }
 
     pub fn transform(self) -> Self {
         CacheMeta {
             caching_rdd_id: 0,
             caching_op_id: Default::default(),
+            caching_part_id: Default::default(),
             cached_rdd_id: self.caching_rdd_id,
             cached_op_id: self.caching_op_id,
-            part_id: self.part_id,
-            sub_part_id: self.sub_part_id,
-            is_survivor: self.is_survivor,
+            cached_part_id: self.caching_part_id,
+            can_spec: self.can_spec,
         }
     }
 
@@ -304,7 +300,6 @@ impl DepInfo {
         parent_op_id: OpId,
         child_op_id: OpId,
     ) -> Self {
-        // The last three items is useful only when is_shuffle == 1x, x == 0 or x == 1
         DepInfo {
             is_shuffle,
             identifier,
@@ -326,15 +321,9 @@ impl DepInfo {
         self.identifier
     }
 
+    /// 0 for narrow, 1 for shuffle write, 2 for shuffle read, 3 for action
     pub fn dep_type(&self) -> u8 {
         self.is_shuffle
-    }
-
-    fn need_encryption(&self) -> bool {
-        match self.is_shuffle {
-            0 => false,
-            _ => true,
-        }
     }
 
 }
@@ -583,86 +572,56 @@ impl TailCompInfo {
 
 #[derive(Clone)]
 pub struct OpCache {
-    //<(cached_rdd_id, part_id, sub_part_id), data>, data can not be Any object, required by lazy_static
-    map: Arc<RwLock<HashMap<(usize, usize, usize), usize>>>,
-    //<(cached_rdd_id, part_id), HashSet<cached_sub_part_id>>
-    //contains all sub_part_ids whose corresponding value is cached
-    subpid_map: Arc<RwLock<HashMap<(usize, usize), HashSet<usize>>>>,
+    //<(cached_rdd_id, part_id), data>, data can not be Any object, required by lazy_static
+    map: Arc<RwLock<HashMap<(usize, usize), usize>>>,
+    //<(cached_rdd_id, part_id), (start_block_id, end_block_id)>
+    //contains all blocks whose corresponding values are cached inside enclave
+    block_map: Arc<RwLock<HashMap<(usize, usize), (usize, usize)>>>,
 }
 
 impl OpCache{
     pub fn new() -> Self {
         OpCache {
             map: Arc::new(RwLock::new(HashMap::new())),
-            subpid_map: Arc::new(RwLock::new(HashMap::new())), 
+            block_map: Arc::new(RwLock::new(HashMap::new())), 
         }
     }
 
-    pub fn get(&self, key: (usize, usize, usize)) -> Option<usize> {
+    pub fn get(&self, key: (usize, usize)) -> Option<usize> {
         self.map.read().unwrap().get(&key).map(|x| *x)
     }
 
-    pub fn insert(&self, key: (usize, usize, usize), value: usize) -> Option<usize> {
+    pub fn insert(&self, key: (usize, usize), value: usize) -> Option<usize> {
         self.map.write().unwrap().insert(key, value)
     }
 
     //free the value?
-    pub fn remove(&self, key: (usize, usize, usize)) -> Option<usize> {
+    pub fn remove(&self, key: (usize, usize)) -> Option<usize> {
         self.map.write().unwrap().remove(&key)
     }
 
-    pub fn insert_subpid(&self, rdd_id: usize, part_id: usize, sub_part_id: usize) {
-        let mut res =  self.subpid_map.write().unwrap();
+    pub fn insert_bid(&self, rdd_id: usize, part_id: usize, start_bid: usize, end_bid: usize) {
+        let mut res =  self.block_map.write().unwrap();
         if let Some(set) = res.get_mut(&(rdd_id, part_id)) {
-            set.insert(sub_part_id);
+            *set = (std::cmp::min(start_bid, set.0), std::cmp::max(end_bid, set.1));
             return;
         }
-        let mut hs = HashSet::new();
-        hs.insert(sub_part_id);
-        res.insert((rdd_id, part_id), hs);
+        res.insert((rdd_id, part_id), (start_bid, end_bid));
     }
 
-    pub fn remove_subpid(&self, rdd_id: usize, part_id: usize, sub_part_id: usize) {
-        let mut subpid_map = self.subpid_map.write()
+    pub fn remove_bid(&self, rdd_id: usize, part_id: usize) -> Option<(usize, usize)> {
+        let mut block_map = self.block_map.write()
             .unwrap();
-        let subpids = subpid_map.get_mut(&(rdd_id, part_id))
-            .unwrap();
-        subpids.remove(&sub_part_id);
-        let is_empty = subpids.is_empty();
-        if is_empty {
-            subpid_map.remove(&(rdd_id, part_id));
-        } 
+        block_map.remove(&(rdd_id, part_id))
     }
 
-    pub fn get_subpid(&self, rdd_id: usize, part_id: usize) -> Vec<usize> {
-        match self.subpid_map.read()
+    pub fn get_bid(&self, rdd_id: usize, part_id: usize) -> Option<(usize, usize)> {
+        self.block_map.read()
             .unwrap()
-            .get(&(rdd_id, part_id)) 
-        {
-            Some(v) => v.iter().cloned().collect(),
-            None => Vec::new(),
-        }
+            .get(&(rdd_id, part_id))
+            .map(|v| *v)
     }
 
-    pub fn clear_by_rid_pid(&self, rdd_id: usize, part_id: usize) {
-        let sub_part_ids = match self.subpid_map.write().unwrap().remove(&(rdd_id, part_id)) {
-            Some(ids) => ids,
-            None => return,
-        };
-        let mut map = self.map.write().unwrap();
-        for sub_part_id in sub_part_ids {
-            map.remove(&(rdd_id, part_id, sub_part_id));
-        }
-    }
-
-    pub fn clear_by_rid_pid_spid(&self, rdd_id: usize, part_id: usize, sub_part_id: usize) {
-        self.map.write().unwrap().remove(&(rdd_id, part_id, sub_part_id));
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.map.read().unwrap().is_empty() && 
-        self.subpid_map.read().unwrap().is_empty()
-    }
 }
 #[repr(C)]
 #[derive(Copy, Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -683,6 +642,7 @@ pub struct NextOpId<'a> {
     tid: u64,
     rdd_ids: &'a Vec<usize>,
     op_ids: &'a Vec<OpId>,
+    part_ids: &'a Vec<usize>,
     cur_idx: usize,
     cache_meta: CacheMeta,
     captured_vars: HashMap<usize, Vec<Vec<u8>>>,
@@ -691,12 +651,13 @@ pub struct NextOpId<'a> {
 }
 
 impl<'a> NextOpId<'a> {
-    pub fn new(tid: u64, rdd_ids: &'a Vec<usize>, op_ids: &'a Vec<OpId>, cache_meta: CacheMeta, captured_vars: HashMap<usize, Vec<Vec<u8>>>, is_spec: bool, dep_info: &DepInfo) -> Self {
+    pub fn new(tid: u64, rdd_ids: &'a Vec<usize>, op_ids: &'a Vec<OpId>, part_ids: &'a Vec<usize>, cache_meta: CacheMeta, captured_vars: HashMap<usize, Vec<Vec<u8>>>, is_spec: bool, dep_info: &DepInfo) -> Self {
         let is_shuffle = dep_info.is_shuffle == 1;
         NextOpId {
             tid,
             rdd_ids,
             op_ids,
+            part_ids,
             cur_idx: 0,
             cache_meta,
             captured_vars,
@@ -714,7 +675,7 @@ impl<'a> NextOpId<'a> {
     }
     
     fn get_part_id(&self) -> usize {
-        self.cache_meta.part_id
+        self.part_ids[self.cur_idx]
     }
 
     pub fn get_cur_op(&self) -> &'static Arc<dyn OpBase> {
@@ -733,19 +694,17 @@ impl<'a> NextOpId<'a> {
         self.captured_vars.get(&cur_rdd_id)
     }
 
-    pub fn get_caching_triplet(&self) -> (usize, usize, usize) {
+    pub fn get_caching_doublet(&self) -> (usize, usize) {
         (
             self.cache_meta.caching_rdd_id,
-            self.cache_meta.part_id,
-            self.cache_meta.sub_part_id,
+            self.cache_meta.caching_part_id,
         )
     }
 
-    pub fn get_cached_triplet(&self) -> (usize, usize, usize) {
+    pub fn get_cached_doublet(&self) -> (usize, usize) {
         (
             self.cache_meta.cached_rdd_id,
-            self.cache_meta.part_id,
-            self.cache_meta.sub_part_id,
+            self.cache_meta.cached_part_id,
         )
     }
 
@@ -769,11 +728,11 @@ impl<'a> NextOpId<'a> {
         self.cur_idx == self.rdd_ids.len() - 1
     }
 
-    pub fn is_survivor(&self) -> bool {
-        match self.cache_meta.is_survivor {
+    pub fn can_spec(&self) -> bool {
+        match self.cache_meta.can_spec {
             0 => false,
             1 => true,
-            _ => panic!("invalid is_survivor"),
+            _ => panic!("invalid can_spec"),
         }
     }
 }
@@ -1258,7 +1217,7 @@ impl<I: OpE + ?Sized> Op for SerArc<I> {
     fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         (**self).compute_start(call_seq, input, dep_info)
     }
-    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
         (**self).compute(call_seq, input)
     }
     fn cache(&self, data: Vec<Self::Item>) {
@@ -1287,7 +1246,7 @@ pub trait Op: OpBase + 'static {
     fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>>;
     fn get_op_base(&self) -> Arc<dyn OpBase>;
     fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8;
-    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>);
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item>;
     fn cache(&self, data: Vec<Self::Item>) {
         ()
     }
@@ -1301,10 +1260,10 @@ pub trait OpE: Op {
 
     fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>>;
     
-    fn cache_from_outside(&self, key: (usize, usize, usize)) -> Option<&Vec<Self::ItemE>> {
+    fn cache_from_outside(&self, key: (usize, usize)) -> Option<&'static Vec<Self::ItemE>> {
         let mut ptr: usize = 0;
         let sgx_status = unsafe { 
-            ocall_cache_from_outside(&mut ptr, key.0, key.1, key.2)
+            ocall_cache_from_outside(&mut ptr, key.0, key.1)
         };
         match sgx_status {
             sgx_status_t::SGX_SUCCESS => {},
@@ -1328,7 +1287,7 @@ pub trait OpE: Op {
         }.unwrap())
     }
 
-    fn cache_to_outside(&self, key: (usize, usize, usize), value: Vec<Self::Item>) -> Option<PThread> {
+    fn cache_to_outside(&self, key: (usize, usize), value: Vec<Self::Item>) -> Option<PThread> {
         let op = self.get_ope();
         //let handle = unsafe {
         //    PThread::new(Box::new(move || {
@@ -1339,7 +1298,7 @@ pub trait OpE: Op {
         crate::ALLOCATOR.set_switch(false);
         //println!("finish copy out, memory usage {:?} B", crate::ALLOCATOR.get_memory_usage());
         let mut res = 0;
-        unsafe { ocall_cache_to_outside(&mut res, key.0, key.1, key.2, ct_ptr); }
+        unsafe { ocall_cache_to_outside(&mut res, key.0, key.1, ct_ptr); }
         //        //TODO: Handle the case res != 0
         //    }))
         //}.unwrap();
@@ -1347,61 +1306,72 @@ pub trait OpE: Op {
         None
     }
 
-    fn get_and_remove_cached_data(&self, key: (usize, usize, usize)) -> Vec<Self::Item> {
-        let val = match CACHE.remove(key) {
-            //cache inside enclave
-            Some(val) => {
-                println!("get cached data inside enclave");
-                CACHE.remove_subpid(key.0, key.1, key.2);
-                *unsafe {
-                    Box::from_raw(val as *mut u8 as *mut Vec<Self::Item>)
-                }
-            },
-            //cache outside enclave
-            None => {
-                println!("get cached data outside enclave");
-                let ct = self.cache_from_outside(key).unwrap();
-                self.batch_decrypt(ct.clone())
-            },
+    fn get_and_remove_cached_data(&self, key: (usize, usize)) -> ResIter<Self::Item> {
+        let fd = self.get_fd();
+        let bid_range = CACHE.remove_bid(key.0, key.1);
+        let ct = self.cache_from_outside(key).unwrap();
+        let len = ct.len();
+        let seperator = bid_range.unwrap_or((len, len));
+
+        //cache outside enclave
+        let mut res_iter = Box::new((0..seperator.0).chain(seperator.1..len).map(move |i| {
+            //println!("get cached data outside enclave");
+            Box::new((fd)(ct[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
+        })) as ResIter<_>;
+
+        //cache inside enclave
+        if let Some(val) = CACHE.remove(key) {
+            //println!("get cached data inside enclave");
+            res_iter = Box::new(vec![unsafe {
+                    let v = Box::from_raw(val as *mut u8 as *mut Vec<Self::Item>);
+                    Box::new(v.into_iter())
+                    as Box<dyn Iterator<Item = _>>
+                }].into_iter().chain(res_iter));
         };
-        val
+        Box::new(res_iter)
     }
 
-    fn set_cached_data(&self, is_survivor: bool, is_final: bool, key: (usize, usize, usize), iter: Box<dyn Iterator<Item = Self::Item>>) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {              
-        let res = iter.collect::<Vec<_>>();
-        if is_survivor {
+    fn set_cached_data(&self, call_seq: &NextOpId, res_iter: ResIter<Self::Item>) -> ResIter<Self::Item> {
+        let ope = self.get_ope();
+        let can_spec = call_seq.can_spec();
+        let key = call_seq.get_caching_doublet();
+        let is_caching_final_rdd = call_seq.is_caching_final_rdd();
+        let (lower_bound, upper_bound) = res_iter.size_hint();
+        let esti_bound = upper_bound.unwrap_or(lower_bound);
+        //TODO: set number of blocks that are cached inside enclave
+        let num_inside = 1;
+
+        Box::new(res_iter.enumerate().map(move |(idx, iter)| {
+            let res = iter.collect::<Vec<_>>();
             //cache inside enclave
-            CACHE.insert(key, Box::into_raw(Box::new(res.clone())) as *mut u8 as usize);
+            if can_spec {
+                CACHE.insert(key, Box::into_raw(Box::new(res.clone())) as *mut u8 as usize);
+                CACHE.insert_bid(key.0, key.1, 0, idx+1);
+            } else if idx >= esti_bound - num_inside {
+                CACHE.insert(key, Box::into_raw(Box::new(res.clone())) as *mut u8 as usize);
+                CACHE.insert_bid(key.0, key.1, idx, idx+1);
+            }
             //println!("After cache inside enclave, memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
-            CACHE.insert_subpid(key.0, key.1, key.2);
-        }
-        //cache outside enclave
-        if is_final {
-            (Box::new(res.into_iter()), None)
-        } else {
-            let handle = self.cache_to_outside(key, res.clone());
-            //println!("After launch encryption thread, memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
-            (Box::new(res.into_iter()), handle)
-        }
+
+            //cache outside enclave
+            if is_caching_final_rdd {
+                Box::new(res.into_iter()) as Box<dyn Iterator<Item = _>>
+            } else {
+                let _handle = ope.cache_to_outside(key, res.clone());
+                //println!("After launch encryption thread, memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
+                Box::new(res.into_iter()) as Box<dyn Iterator<Item = _>>
+            }
+        }))
     }
 
     fn step0_of_clone(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         let mut buf = unsafe{ Box::from_raw(p_buf as *mut SizeBuf) };
         match dep_info.dep_type() {
-            0 | 2  => {
-                let encrypted = dep_info.need_encryption();
-                if encrypted {
-                    let mut idx = Idx::new();
-                    let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::ItemE>) };
-                    data_enc.send(&mut buf, &mut idx);
-                    forget(data_enc);
-                } else {
-                    let mut idx = Idx::new();
-                    let data = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::Item>) };
-                    let data_enc = self.batch_encrypt(*data.clone());
-                    data_enc.send(&mut buf, &mut idx);
-                    forget(data);
-                }
+            0 | 2 => {
+                let mut idx = Idx::new();
+                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::ItemE>) };
+                data_enc.send(&mut buf, &mut idx);
+                forget(data_enc);
             }, 
             1 => {
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
@@ -1422,16 +1392,8 @@ pub trait OpE: Op {
         match dep_info.dep_type() {
             0 | 2 => {
                 let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<Self::ItemE>) };
-                let encrypted = dep_info.need_encryption();
-                if encrypted {
-                    let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::ItemE>) };
-                    v_out.clone_in_place(&data_enc);
-                } else {
-                    let data = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::Item>) };
-                    let data_enc = Box::new(self.batch_encrypt(*data.clone()));
-                    v_out.clone_in_place(&data_enc);
-                    forget(data); //data may be used later
-                }
+                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::ItemE>) };
+                v_out.clone_in_place(&data_enc);
                 forget(v_out);
             }, 
             1 => {
@@ -1493,34 +1455,36 @@ pub trait OpE: Op {
     }
 
     fn narrow(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
-        if call_seq.is_head() && dep_info.dep_type() == 2 {
+        if call_seq.is_head() && dep_info.dep_type() == 0 {
             println!("optimized narrow");
             if call_seq.have_cache() {
                 assert_eq!(input.data as usize, 0 as usize);
-                let key = call_seq.get_cached_triplet();
-                match CACHE.remove(key) {
-                    //cache inside enclave
-                    Some(val) => {
-                        println!("get cached data inside enclave");
-                        CACHE.remove_subpid(key.0, key.1, key.2);
-                        let result = *unsafe {
-                            Box::from_raw(val as *mut u8 as *mut Vec<Self::Item>)
-                        };
-                        let result_enc = self.batch_encrypt(result);
-                        let res_ptr = res_enc_to_ptr(result_enc);
-                        res_ptr
-                    },
-                    //cache outside enclave
-                    None => {
-                        println!("get cached data outside enclave");
-                        let data_enc = self.cache_from_outside(key).unwrap();
-                        let mut acc = create_enc();
+                let key = call_seq.get_cached_doublet();
+                let bid_range = CACHE.remove_bid(key.0, key.1);
+                let ct = self.cache_from_outside(key).unwrap();
+                let len = ct.len();
+                let seperator = bid_range.unwrap_or((len, len));
+                let mut acc = create_enc();
+
+                //cache inside enclave
+                if let Some(val) = CACHE.remove(key) {
+                    println!("get cached data inside enclave");
+                    unsafe {
+                        let data = Box::from_raw(val as *mut u8 as *mut Vec<Self::Item>);
+                        let data_enc = self.batch_encrypt(*data);
                         for block in data_enc {
-                            merge_enc(&mut acc, block)
+                            merge_enc(&mut acc, &block)
                         }
-                        to_ptr(acc)
-                    },
+                    }
                 }
+
+                //cache outside enclave
+                (0..seperator.0).chain(seperator.1..len).map(|i| {
+                    println!("get cached data outside enclave");
+                    merge_enc(&mut acc, &ct[i]);
+                }).count();
+
+                to_ptr(acc)
             } else {
                 let data_enc = input.get_enc_data::<Vec<Self::ItemE>>();
                 let lower = input.get_lower();
@@ -1533,36 +1497,14 @@ pub trait OpE: Op {
             }
         } else {
             println!("regular narrow");
-            let (result_iter, handle) = self.compute(call_seq, input);
-            /*
-            println!("In narrow(before join), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
-            if let Some(handle) = handle {
-                handle.join();
+            let result_iter = self.compute(call_seq, input);
+            let mut acc = create_enc();
+            for result in result_iter {
+                for block in self.batch_encrypt(result.collect::<Vec<_>>()) {
+                    merge_enc(&mut acc, &block)
+                }
             }
-            */
-            
-            let result = result_iter.collect::<Vec<Self::Item>>();
-            //println!("In narrow(before encryption), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
-            let result_ptr = match dep_info.need_encryption() {
-                true => {
-                    let now = Instant::now();
-                    let result_enc = self.batch_encrypt(result); 
-                    //println!("In narrow(after encryption), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
-                    let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-                    println!("tid: {:?}, cur mem before copy out: {:?}, encrypt {:?} s", call_seq.tid, crate::ALLOCATOR.get_memory_usage(), dur); 
-                    let res_ptr = res_enc_to_ptr(result_enc);
-                    //println!("cur mem after copy out: {:?}", crate::ALLOCATOR.get_memory_usage()); 
-                    res_ptr
-                },
-                false => {
-                    let result_ptr = Box::into_raw(Box::new(result)) as *mut u8;
-                    result_ptr
-                },
-            };
-            if let Some(handle) = handle {
-                handle.join();
-            }   
-            result_ptr
+            to_ptr(acc)
         }
     } 
 

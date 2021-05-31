@@ -400,21 +400,21 @@ where
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 1 | 2 | 3 => self.step0_of_clone(p_buf, p_data_enc, dep_info),
+            0 | 1 | 2 => self.step0_of_clone(p_buf, p_data_enc, dep_info),
             _ => panic!("invalid is_shuffle"),
         }
     }
 
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 1 | 2 | 3 => self.step1_of_clone(p_out, p_data_enc, dep_info),
+            0 | 1 | 2 => self.step1_of_clone(p_out, p_data_enc, dep_info),
             _ => panic!("invalid is_shuffle"),
         }   
     }
 
     fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 2 | 3 => self.free_res_enc(res_ptr),
+            0 | 2 => self.free_res_enc(res_ptr),
             1 => {
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
                 shuf_dep.free_res_enc(res_ptr);
@@ -516,13 +516,13 @@ where
 
     fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
-            0 | 2 => {       //union/ shuffle read/ narrow
+            0 => {       //narrow
                 self.narrow(call_seq, input, dep_info)
             },
-            1 => {      //Shuffle write
+            1 => {       //shuffle write
                 self.shuffle(call_seq, input, dep_info)
             },
-            3 => {
+            2 => {       //shuffle read
                 let results = self.compute_inner(call_seq.tid, input);
                 let now = Instant::now();
                 let mut result_enc = Vec::with_capacity(results.len());
@@ -539,37 +539,32 @@ where
         }
     }
 
-    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
         let data_ptr = input.data;
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
+        let fd = self.get_fd();
+
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
-            let key = call_seq.get_cached_triplet();
-            let val = self.get_and_remove_cached_data(key);
-            return (Box::new(val.into_iter()), None); 
+            let key = call_seq.get_cached_doublet();
+            return self.get_and_remove_cached_data(key)
         }
         
-        let data_enc = input.get_enc_data::<Vec<(KE, (CE, DE))>>(); 
-        let lower = input.get_lower();
-        let upper = input.get_upper();
-        assert!(lower.len() == 1 && upper.len() == 1);
-        let data = self.batch_decrypt(data_enc[lower[0]..upper[0]].to_vec());
-        let res_iter = Box::new(data.into_iter());
+        let len = input.get_enc_data::<Vec<(KE, (CE, DE))>>().len();
+        let res_iter = Box::new((0..len).map(move|i| {
+            let data = input.get_enc_data::<Vec<(KE, (CE, DE))>>();
+            Box::new((fd)(data[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
+        }));
         
-        if need_cache {
-            let key = call_seq.get_caching_triplet();
-            if CACHE.get(key).is_none() { 
-                return self.set_cached_data(
-                    call_seq.is_survivor(),
-                    call_seq.is_caching_final_rdd(),
-                    key,
-                    res_iter
-                );
-            }
+        let key = call_seq.get_caching_doublet();
+        if need_cache && CACHE.get(key).is_none() {
+            return self.set_cached_data(
+                call_seq,
+                res_iter,
+            )
         }
-
-        (res_iter, None)
+        res_iter
     }
 }
 

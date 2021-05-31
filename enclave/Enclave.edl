@@ -29,11 +29,11 @@ enclave {
     struct cache_meta_t {
         size_t caching_rdd_id;
         struct op_id_t caching_op_id;
+        size_t caching_part_id;
         size_t cached_rdd_id;
         struct op_id_t cached_op_id;
-        size_t part_id;
-        size_t sub_part_id;
-        uint8_t is_survivor;
+        size_t cached_part_id;
+        uint8_t can_spec;
     };
 
     struct dep_info_t {
@@ -61,6 +61,7 @@ enclave {
         public size_t secure_execute(uint64_t tid,
             [user_check] uint8_t* rdd_ids,
             [user_check] uint8_t* op_ids,
+            [user_check] uint8_t* part_ids,
             struct cache_meta_t cache_meta,
             struct dep_info_t dep_info, 
 		    struct input_t input, 
@@ -111,23 +112,16 @@ enclave {
             [user_check] size_t* have_take);
         public size_t tail_compute([user_check] uint8_t* input);
         public void free_tail_info([user_check] uint8_t* input);
-        public size_t probe_caching(size_t rdd_id,
-            size_t part,
-            [user_check] uint8_t* cached_sub_parts,
-            [user_check] size_t* num_cached);
-        public void finish_probe_caching([user_check] uint8_t* cached_sub_parts);
         public size_t pre_touching(uint8_t zero);
     };
 
     untrusted {
         uint8_t ocall_cache_to_outside(size_t rdd_id,
             size_t part_id,
-            size_t sub_part_id,
             size_t data_ptr)
             allow(priv_free_res_enc); 
         size_t ocall_cache_from_outside(size_t rdd_id,
-            size_t part_id,
-            size_t sub_part_id);
+            size_t part_id);
         void* sbrk_o(size_t size);  
     };
 

@@ -110,21 +110,21 @@ impl<T: Data, TE: Data> OpBase for Union<T, TE>
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 1 | 2 => self.step0_of_clone(p_buf, p_data_enc, dep_info),
+            0 | 1 => self.step0_of_clone(p_buf, p_data_enc, dep_info),
             _ => panic!("invalid is_shuffle"),
         }
     }
 
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 1 | 2 => self.step1_of_clone(p_out, p_data_enc, dep_info), 
+            0 | 1 => self.step1_of_clone(p_out, p_data_enc, dep_info), 
             _ => panic!("invalid is_shuffle"),
         }   
     }
 
     fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 2 => self.free_res_enc(res_ptr),
+            0 => self.free_res_enc(res_ptr),
             1 => {
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
                 shuf_dep.free_res_enc(res_ptr);
@@ -210,9 +210,9 @@ impl<T: Data, TE: Data> Op for Union<T, TE>
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start (&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
-            0 | 2 => {    
+            0 => {    
                 self.narrow(call_seq, input, dep_info)
             },
             1 => { 
@@ -222,33 +222,29 @@ impl<T: Data, TE: Data> Op for Union<T, TE>
         }
     }
 
-    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
         let data_ptr = input.data;
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
+
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
-            let key = call_seq.get_cached_triplet();
-            let val = self.get_and_remove_cached_data(key);
-            return (Box::new(val.into_iter()), None); 
+            let key = call_seq.get_cached_doublet();
+            return self.get_and_remove_cached_data(key)
         }
         
-        let data = unsafe{ Box::from_raw(data_ptr as *mut Vec<Self::Item>) };
-        let res_iter = Box::new(data.into_iter());
+        let opb = call_seq.get_next_op().clone();
+        let op = opb.to_arc_op::<dyn Op<Item = T>>().unwrap();
+        let res_iter = op.compute(call_seq, input);
 
-        if need_cache {
-            let key = call_seq.get_caching_triplet();
-            if CACHE.get(key).is_none() { 
-                return self.set_cached_data(
-                    call_seq.is_survivor(),
-                    call_seq.is_caching_final_rdd(),
-                    key,
-                    res_iter
-                );
-            }
+        let key = call_seq.get_caching_doublet();
+        if need_cache && CACHE.get(key).is_none() {
+            return self.set_cached_data(
+                call_seq,
+                res_iter,
+            )
         }
-
-        (res_iter, None)
+        res_iter
     }
 
 }

@@ -73,21 +73,21 @@ where
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 1 | 2 => self.step0_of_clone(p_buf, p_data_enc, dep_info),
+            0 | 1 => self.step0_of_clone(p_buf, p_data_enc, dep_info),
             _ => panic!("invalid is_shuffle"),
         }
     }
 
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 1 | 2 => self.step1_of_clone(p_out, p_data_enc, dep_info),
+            0 | 1 => self.step1_of_clone(p_out, p_data_enc, dep_info),
             _ => panic!("invalid is_shuffle"),
         } 
     }
 
     fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 2 => self.free_res_enc(res_ptr),
+            0 => self.free_res_enc(res_ptr),
             1 => {
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
                 shuf_dep.free_res_enc(res_ptr);
@@ -175,9 +175,9 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start (&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
-            0 | 2 => { 
+            0 => { 
                 self.narrow(call_seq, input, dep_info)
             },
             1 => {
@@ -187,15 +187,15 @@ where
         }
     }
 
-    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
         let data_ptr = input.data;
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
+
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
-            let key = call_seq.get_cached_triplet();
-            let val = self.get_and_remove_cached_data(key);
-            return (Box::new(val.into_iter()), None); 
+            let key = call_seq.get_cached_doublet();
+            return self.get_and_remove_cached_data(key)
         }
         
         let mut f = self.f.clone();
@@ -208,38 +208,24 @@ where
             },
         }
         let opb = call_seq.get_next_op().clone();
-        let (res_iter, handle) = if opb.get_op_id() == self.prev.get_op_id() {
+        let res_iter = if opb.get_op_id() == self.prev.get_op_id() {
             self.prev.compute(call_seq, input)
         } else {
             let op = opb.to_arc_op::<dyn Op<Item = T>>().unwrap();
             op.compute(call_seq, input)
         };
-        let res_iter = Box::new(res_iter.map(f));
-        
-        //println!("In mapper_op, memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
-        if need_cache {
-            assert!(handle.is_none());
-            let key = call_seq.get_caching_triplet();
-            if CACHE.get(key).is_none() { 
-                return self.set_cached_data(
-                    call_seq.is_survivor(),
-                    call_seq.is_caching_final_rdd(),
-                    key,
-                    res_iter
-                );
-                
-                /*
-                let (res_iter, handle) = self.set_cached_data(key, res_iter);
-                println!("In mapper_op (before join), memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
-                if let Some(handle) = handle {
-                    handle.join();
-                }
-                return (res_iter, None);
-                */
-            }
-        }
+        let res_iter = Box::new(res_iter.map(move |res_iter| {
+            Box::new(res_iter.map(f.clone())) as Box<dyn Iterator<Item = _>>
+        }));
 
-        (res_iter, handle)
+        let key = call_seq.get_caching_doublet();
+        if need_cache && CACHE.get(key).is_none() {
+            return self.set_cached_data(
+                call_seq,
+                res_iter,
+            )
+        }
+        res_iter
     }
 
 }

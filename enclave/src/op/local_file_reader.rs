@@ -128,21 +128,21 @@ where
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 1 | 2 => self.step0_of_clone(p_buf, p_data_enc, dep_info),
+            0 | 1 => self.step0_of_clone(p_buf, p_data_enc, dep_info),
             _ => panic!("invalid is_shuffle"),
         } 
     }
 
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 1 | 2 => self.step1_of_clone(p_out, p_data_enc, dep_info),
+            0 | 1 => self.step1_of_clone(p_out, p_data_enc, dep_info),
             _ => panic!("invalid is_shuffle"),
         } 
     }
 
     fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 2 => self.free_res_enc(res_ptr),
+            0 => self.free_res_enc(res_ptr),
             1 => {
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
                 shuf_dep.free_res_enc(res_ptr);
@@ -235,13 +235,15 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
-        let data_enc  = input.get_enc_data::<Vec<UE>>();
-        let lower = input.get_lower();
-        let upper = input.get_upper();
-        assert!(lower.len() == 1 && upper.len() == 1);
-        let data = self.batch_decrypt(data_enc[lower[0]..upper[0]].to_vec());
-        (Box::new(data.into_iter()), None)
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
+        let fd = self.get_fd();
+
+        let len = input.get_enc_data::<Vec<UE>>().len();
+        let res_iter = Box::new((0..len).map(move|i| {
+            let data = input.get_enc_data::<Vec<UE>>();
+            Box::new((fd)(data[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
+        }));
+        res_iter
     }
 
     fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {

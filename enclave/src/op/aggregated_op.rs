@@ -189,7 +189,7 @@ where
         }
     }
 
-    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> (Box<dyn Iterator<Item = Self::Item>>, Option<PThread>) {
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
         let data_enc = input.get_enc_data::<Vec<TE>>();
         let len = data_enc.len();
         let mut reduced = Vec::new();
@@ -197,7 +197,10 @@ where
             let block = self.prev.get_fd()(data_enc[i].clone());
             reduced.push((self.sf)(Box::new(block.into_iter())));  
         }
-        (Box::new((self.cf)(Box::new(reduced.into_iter())).into_iter()), None)
+        Box::new(vec![Box::new((self.cf)(Box::new(reduced.into_iter())).into_iter())]
+            .into_iter()
+            .map(|x| x as Box<dyn Iterator<Item = _>>)
+        )
     }
 
 }

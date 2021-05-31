@@ -22,6 +22,7 @@
 #![feature(drain_filter)]
 #![feature(fn_traits)]
 #![feature(map_first_last)]
+#![feature(once_cell)]
 #![feature(raw)]
 #![feature(specialization)]
 #![feature(type_ascription)]
@@ -163,6 +164,7 @@ lazy_static! {
 pub extern "C" fn secure_execute(tid: u64, 
     rdd_ids: *const u8,
     op_ids: *const u8,
+    part_ids: *const u8,
     cache_meta: CacheMeta,
     dep_info: DepInfo, 
     input: Input, 
@@ -173,11 +175,12 @@ pub extern "C" fn secure_execute(tid: u64,
     println!("tid: {:?}, Cur mem: {:?}, at the begining of secure execution", tid, ALLOCATOR.get_memory_usage());
     let rdd_ids = unsafe { (rdd_ids as *const Vec<usize>).as_ref() }.unwrap();
     let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();
+    let part_ids = unsafe { (part_ids as *const Vec<usize>).as_ref() }.unwrap();
     let captured_vars = unsafe { (captured_vars as *const HashMap<usize, Vec<Vec<u8>>>).as_ref() }.unwrap();
     println!("tid: {:?}, rdd ids = {:?}, op ids = {:?}, dep_info = {:?}, cache_meta = {:?}", tid, rdd_ids, op_ids, dep_info, cache_meta);
     
     let now = Instant::now();
-    let mut call_seq = NextOpId::new(tid, rdd_ids, op_ids, cache_meta.clone(), captured_vars.clone(), false, &dep_info);
+    let mut call_seq = NextOpId::new(tid, rdd_ids, op_ids, part_ids, cache_meta.clone(), captured_vars.clone(), false, &dep_info);
     let final_op = call_seq.get_cur_op();
     let result_ptr = final_op.iterator_start(&mut call_seq, input, &dep_info); //shuffle need dep_info
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
@@ -291,7 +294,8 @@ pub extern "C" fn spec_execute(tid: u64,
     //identifier is not used, so set it 0 
     let dep_info = DepInfo::new(1, 0, 0, 0, parent_op_id, child_op_id);
     let cache_meta = cache_meta.transform();
-    let mut call_seq = NextOpId::new(tid, &spec_call_seq.0, &spec_call_seq.1, cache_meta, HashMap::new(), true, &dep_info);
+    //part ids are not neccessary
+    let mut call_seq = NextOpId::new(tid, &spec_call_seq.0, &spec_call_seq.1, &spec_call_seq.0, cache_meta, HashMap::new(), true, &dep_info);
     let final_op = call_seq.get_cur_op();
     let input = Input::padding();
     let result_ptr = final_op.iterator_start(&mut call_seq, input, &dep_info);
@@ -456,28 +460,5 @@ pub extern "C" fn pre_touching(zero: u8) -> usize
     }
     println!("finish pre_touching");
     return 0;
-}
-
-#[no_mangle]
-pub extern "C" fn probe_caching(rdd_id: usize,
-    part: usize,
-) -> usize {
-    let cached = CACHE.get_subpid(rdd_id, part);
-    ALLOCATOR.set_switch(true);
-    let ptr = Box::into_raw(Box::new(cached.clone()));
-    ALLOCATOR.set_switch(false);
-    ptr as *mut u8 as usize
-}
-
-#[no_mangle]
-pub extern "C" fn finish_probe_caching(
-    cached_sub_parts: *mut u8,
-) {
-    let cached_sub_parts = unsafe {
-        Box::from_raw(cached_sub_parts as *mut Vec<usize>)
-    };
-    ALLOCATOR.set_switch(true);
-    drop(cached_sub_parts);
-    ALLOCATOR.set_switch(false);
 }
 
