@@ -103,7 +103,7 @@ fn main() -> Result<()> {
     //lr_unsec()?;
 
     /* page rank */
-    //pagerank_sec_0()?;
+    pagerank_sec_0()?;
     //pagerank_unsec_0()?;
 
     /* transitive_closure */
@@ -114,7 +114,7 @@ fn main() -> Result<()> {
     //transitive_closure_unsec_1()?;
 
     /* triangle counting */
-    triangle_counting_sec_0()?;
+    //triangle_counting_sec_0()?;
     //triangle_counting_unsec_0()?;
 
     // test the speculative execution in loop
