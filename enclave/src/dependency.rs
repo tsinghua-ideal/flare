@@ -111,8 +111,8 @@ impl NarrowDependencyTrait for RangeDependency {
 pub trait ShuffleDependencyTrait: DowncastSync + Send + Sync  { 
     fn change_partitioner(&self, reduce_num: usize);
     fn has_spec_oppty(&self) -> bool;
-    //fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>, is_spec: bool) -> *mut u8;
-    fn do_shuffle_task(&self, tid: u64, iter: Box<dyn Any>, is_spec: bool) -> *mut u8;
+    //fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>) -> *mut u8;
+    fn do_shuffle_task(&self, tid: u64, iter: Box<dyn Any>) -> *mut u8;
     fn pre_merge(&self, tid: u64, input: Input) -> usize;
     fn send_sketch(&self, buf: &mut SizeBuf, p_data_enc: *mut u8);
     fn send_enc_data(&self, p_out: usize, p_data_enc: *mut u8);
@@ -211,36 +211,6 @@ where
         }
         data
     }
-
-    pub fn encrypt_buckets_spec(&self, buckets: Vec<Vec<(K, C)>>) -> Vec<Vec<u8>> {
-        let result = buckets.into_iter()
-            .map(|mut bucket| {
-                //batch encrypt
-                let mut len = bucket.len();
-                let mut data_enc = Vec::with_capacity(len/MAX_ENC_BL+1);
-                //TODO: need to adjust the block size
-                if len >= 1 {    
-                    len -= 1;
-                    let input = vec![bucket.remove(0)];
-                    data_enc.push((self.fe)(input));
-                }
-                while len >= MAX_ENC_BL {    
-                    len -= MAX_ENC_BL;
-                    let remain = bucket.split_off(MAX_ENC_BL);
-                    let input = bucket;
-                    bucket = remain;
-                    data_enc.push((self.fe)(input));
-                }
-                if len != 0 {
-                    data_enc.push((self.fe)(bucket));
-                }
-                bincode::serialize(&data_enc).unwrap()
-            })
-            .collect::<Vec<_>>();  //BTreeMap to Vec
-        result
-    }
-
-
 }
 
 impl<K, V, C, KE, CE> ShuffleDependencyTrait for ShuffleDependency<K, V, C, KE, CE>
@@ -263,8 +233,8 @@ where
         self.split_num_unchanged.load(atomic::Ordering::SeqCst)
     }
 
-    //fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>, is_spec: bool) -> *mut u8 {
-    fn do_shuffle_task(&self, tid: u64, iter: Box<dyn Any>, is_spec: bool) -> *mut u8 {
+    //fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>) -> *mut u8 {
+    fn do_shuffle_task(&self, tid: u64, iter: Box<dyn Any>) -> *mut u8 {
         let aggregator = self.aggregator.clone();
         let partitioner = self.partitioner.read().unwrap().clone();
         let num_output_splits = partitioner.get_num_of_partitions();
@@ -326,23 +296,14 @@ where
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("tid: {:?}, cur mem after shuffle write: {:?}, shuffle write {:?} s", tid, crate::ALLOCATOR.get_memory_usage(), dur);
         let buckets = buckets.into_iter().map(|bucket| bucket.into_iter().collect::<Vec<_>>()).collect::<Vec<_>>();
-        if is_spec {
-            let now = Instant::now();
-            let result = self.encrypt_buckets_spec(buckets);
-            let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-            println!("tid: {:?}, cur mem before copy out: {:?}, encrypt {:?} s", tid, crate::ALLOCATOR.get_memory_usage(), dur); 
-            let res_ptr = res_enc_to_ptr(result);
-            //println!("cur mem after copy out: {:?}", crate::ALLOCATOR.get_memory_usage()); 
-            res_ptr
-        } else {
-            let now = Instant::now();
-            let result = self.encrypt_buckets(buckets);
-            let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-            //println!("cur mem before copy out: {:?}, encrypt {:?} s", crate::ALLOCATOR.get_memory_usage(), dur); 
-            let res_ptr = res_enc_to_ptr(result);
-            //println!("cur mem after copy out: {:?}", crate::ALLOCATOR.get_memory_usage()); 
-            res_ptr
-        }
+
+        let now = Instant::now();
+        let result = self.encrypt_buckets(buckets);
+        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+        //println!("cur mem before copy out: {:?}, encrypt {:?} s", crate::ALLOCATOR.get_memory_usage(), dur); 
+        let res_ptr = res_enc_to_ptr(result);
+        //println!("cur mem after copy out: {:?}", crate::ALLOCATOR.get_memory_usage()); 
+        res_ptr
     }
     
     /*

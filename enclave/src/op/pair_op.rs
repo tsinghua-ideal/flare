@@ -480,7 +480,8 @@ where
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
             let key = call_seq.get_cached_doublet();
-            return self.get_and_remove_cached_data(key)
+            let is_spec = call_seq.is_spec;
+            return self.get_and_remove_cached_data(key, is_spec);
         }
         
         let opb = call_seq.get_next_op().clone();
@@ -749,7 +750,8 @@ where
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
             let key = call_seq.get_cached_doublet();
-            return self.get_and_remove_cached_data(key)
+            let is_spec = call_seq.is_spec;
+            return self.get_and_remove_cached_data(key, is_spec);
         }
         
         let mut f = self.f.clone();
@@ -1024,7 +1026,8 @@ where
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
             let key = call_seq.get_cached_doublet();
-            return self.get_and_remove_cached_data(key)
+            let is_spec = call_seq.is_spec;
+            return self.get_and_remove_cached_data(key, is_spec);
         }
 
         let mut f = self.f.clone();

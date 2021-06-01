@@ -65,7 +65,9 @@ enclave {
             struct cache_meta_t cache_meta,
             struct dep_info_t dep_info, 
 		    struct input_t input, 
-		    [user_check] uint8_t* captured_vars);
+		    [user_check] uint8_t* captured_vars,
+            [user_check] uint8_t* spec_call_seq,
+            [user_check] size_t* spec_res);
         public size_t pre_merge(uint64_t tid,
             struct op_id_t op_id,
             struct dep_info_t dep_info, 
@@ -75,29 +77,23 @@ enclave {
             [user_check] uint8_t* part_nums,
             struct cache_meta_t cache_meta,
             struct dep_info_t dep_info,
-            [user_check] size_t* spec_identifier);
-        public void free_spec_seq([user_check] uint8_t* input);
-        public size_t spec_execute(uint64_t tid,
-            size_t spec_call_seq,
-            struct cache_meta_t cache_meta, 
+            [user_check] size_t* spec_identifier,
             [user_check] uint64_t* hash_ops);
+        public void free_spec_seq([user_check] uint8_t* input);
         public void free_res_enc(struct op_id_t op_id,
             struct dep_info_t dep_info,
-		    [user_check] uint8_t* input,
-            uint8_t is_spec);
+		    [user_check] uint8_t* input);
         void priv_free_res_enc(struct op_id_t op_id,
             struct dep_info_t dep_info,
 		    [user_check] uint8_t* input);
         public void get_sketch(struct op_id_t op_id,
             struct dep_info_t dep_info,
             [user_check] uint8_t* p_buf,
-            [user_check] uint8_t* p_data_enc,
-            uint8_t is_spec);
+            [user_check] uint8_t* p_data_enc);
         public void clone_out(struct op_id_t op_id,
             struct dep_info_t dep_info,
             size_t p_out,
-            [user_check] uint8_t* p_data_enc,
-            uint8_t is_spec);
+            [user_check] uint8_t* p_data_enc);
         public size_t randomize_in_place(struct op_id_t op_id,
             [user_check] uint8_t* input,
             uint64_t seed,

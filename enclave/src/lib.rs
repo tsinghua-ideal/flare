@@ -142,7 +142,7 @@ lazy_static! {
         //lr_sec()
 
         /* page rank */
-        pagerank_sec_0()
+        //pagerank_sec_0()
 
         /* transitive_closure */
         //transitive_closure_sec_0()
@@ -150,7 +150,7 @@ lazy_static! {
         //transitive_closure_sec_2()
 
         /* triangle counting */
-        //triangle_counting_sec_0()
+        triangle_counting_sec_0()
 
         // test the speculative execution in loop
         //test0_sec_0()
@@ -168,7 +168,9 @@ pub extern "C" fn secure_execute(tid: u64,
     cache_meta: CacheMeta,
     dep_info: DepInfo, 
     input: Input, 
-    captured_vars: *const u8
+    captured_vars: *const u8,
+    spec_call_seq: *const u8,
+    spec_res: *mut usize,
 ) -> usize {
     let _init = *init; //this is necessary to let it accually execute
     input.set_init_mem_usage();
@@ -177,12 +179,15 @@ pub extern "C" fn secure_execute(tid: u64,
     let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();
     let part_ids = unsafe { (part_ids as *const Vec<usize>).as_ref() }.unwrap();
     let captured_vars = unsafe { (captured_vars as *const HashMap<usize, Vec<Vec<u8>>>).as_ref() }.unwrap();
+    let spec_call_seq = unsafe { (spec_call_seq as *const Vec<OpId>).as_ref() }.unwrap().clone();
+    let spec_res = unsafe { spec_res.as_mut() }.unwrap();
     println!("tid: {:?}, rdd ids = {:?}, op ids = {:?}, dep_info = {:?}, cache_meta = {:?}", tid, rdd_ids, op_ids, dep_info, cache_meta);
     
     let now = Instant::now();
-    let mut call_seq = NextOpId::new(tid, rdd_ids, op_ids, part_ids, cache_meta.clone(), captured_vars.clone(), false, &dep_info);
+    let mut call_seq = NextOpId::new(tid, rdd_ids, op_ids, part_ids, cache_meta.clone(), captured_vars.clone(), spec_call_seq, &dep_info, false);
     let final_op = call_seq.get_cur_op();
     let result_ptr = final_op.iterator_start(&mut call_seq, input, &dep_info); //shuffle need dep_info
+    *spec_res = call_seq.get_spec_res();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     input.set_last_mem_usage();
     input.set_max_mem_usage();
@@ -212,7 +217,8 @@ pub extern "C" fn exploit_spec_oppty(tid: u64,
     part_nums: *const u8,
     cache_meta: CacheMeta,
     dep_info: DepInfo,
-    spec_identifier: *mut usize
+    spec_identifier: *mut usize,
+    hash_ops: *mut u64,
 ) -> usize {  //return where has an opportunity, if so, return spec_call_seq
     let _init = *init; //this is necessary to let it accually execute
     let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();
@@ -242,17 +248,22 @@ pub extern "C" fn exploit_spec_oppty(tid: u64,
         }
     }
 
-    let mut spec_op_id = SpecOpId::new(cache_meta.clone(), &op_ids);
-    
-    if spec_op_id.is_end() {
+    let spec = Spec::new(cache_meta.clone(), &op_ids, &dep_info);
+    if spec.cut_op_ids.is_empty() {
         return 0;
     }
-    while !spec_op_id.advance(&dep_info, identifier) {}
+    let cur_op_id = spec.cut_op_ids[0];
+    let mut spec_op_ids =  spec.advance(vec![cur_op_id], 0, identifier);
 
     //The last one is the child of shuffle dependency
-    let spec_call_seq = spec_op_id.get_spec_call_seq(&dep_info);
+    spec_op_ids.reverse();
+    let spec_call_seq = spec_op_ids;
+    //should return the hash of op_ids
+    let hash_ops = unsafe { hash_ops.as_mut() }.unwrap();
+    *hash_ops = default_hash(&spec_call_seq);
+
     let ptr;
-    if spec_call_seq.0.is_empty() && spec_call_seq.1.is_empty() {
+    if spec_call_seq.is_empty(){
         ptr = 0;
     } else {
         crate::ALLOCATOR.set_switch(true);
@@ -265,7 +276,7 @@ pub extern "C" fn exploit_spec_oppty(tid: u64,
 #[no_mangle]
 pub extern "C" fn free_spec_seq(input: *mut u8) {
     let spec_call_seq = unsafe {
-        Box::from_raw(input as *mut (Vec<usize>, Vec<OpId>))
+        Box::from_raw(input as *mut Vec<OpId>)
     };
     ALLOCATOR.set_switch(true);
     drop(spec_call_seq);
@@ -273,54 +284,9 @@ pub extern "C" fn free_spec_seq(input: *mut u8) {
 }
 
 #[no_mangle]
-pub extern "C" fn spec_execute(tid: u64, 
-    spec_call_seq: usize,
-    cache_meta: CacheMeta, 
-    hash_ops: *mut u64,
-) -> usize {
-    println!("Cur mem: {:?}, at the begining of speculative execution", ALLOCATOR.get_memory_usage());
-    let now = Instant::now();
-    let mut spec_call_seq = unsafe { (spec_call_seq as *mut (Vec<usize>, Vec<OpId>)).as_ref() }.unwrap().clone();
-    //should return the hash of op_ids
-    let hash_ops = unsafe { hash_ops.as_mut() }.unwrap();
-    *hash_ops = default_hash(&spec_call_seq.1);
-
-    //the child rdd id of shuffle dependency
-    let child_op_id = {
-        spec_call_seq.0.remove(0);
-        spec_call_seq.1.remove(0)
-    };
-    let parent_op_id = spec_call_seq.1[0];
-    //identifier is not used, so set it 0 
-    let dep_info = DepInfo::new(1, 0, 0, 0, parent_op_id, child_op_id);
-    let cache_meta = cache_meta.transform();
-    //part ids are not neccessary
-    let mut call_seq = NextOpId::new(tid, &spec_call_seq.0, &spec_call_seq.1, &spec_call_seq.0, cache_meta, HashMap::new(), true, &dep_info);
-    let final_op = call_seq.get_cur_op();
-    let input = Input::padding();
-    let result_ptr = final_op.iterator_start(&mut call_seq, input, &dep_info);
-    let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    println!("Cur mem: {:?}, spec_execute {:?} s", ALLOCATOR.get_memory_usage(), dur);
-    return result_ptr as usize
-}
-
-#[no_mangle]
-pub extern "C" fn free_res_enc(op_id: OpId, dep_info: DepInfo, input: *mut u8, is_spec: u8) {
-    match is_spec {
-        0 => {
-            let op = load_opmap().get(&op_id).unwrap();
-            op.call_free_res_enc(input, &dep_info);
-        },
-        1 => {
-            let buckets = unsafe {
-                Box::from_raw(input as *mut Vec<Vec<u8>>)
-            };
-            ALLOCATOR.set_switch(true);
-            drop(buckets);
-            ALLOCATOR.set_switch(false);
-        },
-        _ => panic!("invalid is_spec"),
-    }
+pub extern "C" fn free_res_enc(op_id: OpId, dep_info: DepInfo, input: *mut u8) {
+    let op = load_opmap().get(&op_id).unwrap();
+    op.call_free_res_enc(input, &dep_info);
 }
 
 #[no_mangle]
@@ -333,47 +299,20 @@ pub extern "C" fn priv_free_res_enc(op_id: OpId, dep_info: DepInfo, input: *mut 
 pub extern "C" fn get_sketch(op_id: OpId, 
     dep_info: DepInfo, 
     p_buf: *mut u8, 
-    p_data_enc: *mut u8,
-    is_spec: u8)
+    p_data_enc: *mut u8)
 {
-    match is_spec {
-        0 => {
-            let op = load_opmap().get(&op_id).unwrap();
-            op.build_enc_data_sketch(p_buf, p_data_enc, &dep_info);
-        },
-        1 => {
-            let mut buf = unsafe{ Box::from_raw(p_buf as *mut SizeBuf) };
-            let mut idx = Idx::new();
-            let buckets_enc = unsafe { Box::from_raw(p_data_enc as *mut Vec<Vec<u8>>) };
-            buckets_enc.send(&mut buf, &mut idx);
-            forget(buckets_enc);
-            forget(buf);
-        },
-        _ => panic!("invalid is_spec"),
-    }
-
+    let op = load_opmap().get(&op_id).unwrap();
+    op.build_enc_data_sketch(p_buf, p_data_enc, &dep_info);
 }
 
 #[no_mangle]
 pub extern "C" fn clone_out(op_id: OpId, 
     dep_info: DepInfo,
     p_out: usize, 
-    p_data_enc: *mut u8,
-    is_spec: u8)
+    p_data_enc: *mut u8)
 {
-    match is_spec {
-        0 => {
-            let op = load_opmap().get(&op_id).unwrap();
-            op.clone_enc_data_out(p_out, p_data_enc, &dep_info);
-        },
-        1 => {
-            let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<Vec<u8>>) };
-            let buckets_enc = unsafe { Box::from_raw(p_data_enc as *mut Vec<Vec<u8>>) };
-            v_out.clone_in_place(&buckets_enc);
-            forget(v_out);
-        },
-        _ => panic!("invalid is_spec"),
-    }
+    let op = load_opmap().get(&op_id).unwrap();
+    op.clone_enc_data_out(p_out, p_data_enc, &dep_info);
 }
 
 #[no_mangle]
