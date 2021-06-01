@@ -96,7 +96,7 @@ pub fn dijkstra_sec_0() -> Result<()> {
     }));
 
     let dir = PathBuf::from("/opt/data/ct_dij_1");
-    let mut nodes = sc.read_source(LocalFsReaderConfig::new(dir), None, Some(deserializer), fe, fd)
+    let mut nodes = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(1), None, Some(deserializer), fe, fd)
         .map(Fn!(|node| custom_split_nodes_text_file(node)), fe_mp.clone(), fd_mp.clone());
     let mut old = nodes.secure_aggregate(
             0,
@@ -108,7 +108,7 @@ pub fn dijkstra_sec_0() -> Result<()> {
     let mut new = old.clone();
     let mut iterations = 0;
     //let mut result = Text::<_, _>::new(Vec::new(), None, None);
-    while iterations == 0 || old[0] != new[0] {
+    while (iterations == 0 || old != new) && iterations < 5 {
         iterations += 1;
         old = new;
         let mapper = nodes.flat_map(Fn!(|node: (usize, (usize, Option<Vec<String>>, String))| {
@@ -183,14 +183,14 @@ pub fn dijkstra_sec_1() -> Result<()> {
     }));
 
     let dir = PathBuf::from("/opt/data/ct_dij_1");
-    let mut nodes = sc.read_source(LocalFsReaderConfig::new(dir), None, Some(deserializer), fe, fd)
+    let mut nodes = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(1), None, Some(deserializer), fe, fd)
         .map(Fn!(|node| custom_split_nodes_text_file(node)), fe_mp.clone(), fd_mp.clone());
     let mut old = vec![0];
     let mut new = vec![0];
 
     let mut iterations = 0;
-    let mut result = nodes.secure_collect().unwrap();
-    while iterations == 0 || old[0] != new[0] {
+    //let mut result = nodes.secure_collect().unwrap();
+    while (iterations == 0 || old != new) && iterations < 5 {
         iterations += 1;
         old = new;
         //nodes = sc.parallelize(vec![], (*result).clone(), fe_mp.clone(), fd_mp.clone(), 1);
@@ -220,7 +220,7 @@ pub fn dijkstra_sec_1() -> Result<()> {
     }
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Finished after {:?} iterations, time {:?}s", iterations, dur);
-    println!("res = {:?}", result.to_plain());
+    //println!("len(res) = {:?}", result.to_plain().len());
     Ok(())
 }
     
@@ -262,8 +262,8 @@ pub fn dijkstra_unsec_0() -> Result<()> {
         bincode::deserialize::<Vec<(usize, usize, Option<String>)>>(&file).unwrap()  //Item = (u32, u32)
     }));
 
-    let dir = PathBuf::from("/opt/data/pt_dij");
-    let mut nodes = sc.read_source(LocalFsReaderConfig::new(dir), Some(deserializer), None, lfe, lfd)
+    let dir = PathBuf::from("/opt/data/pt_dij_1");
+    let mut nodes = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(1), Some(deserializer), None, lfe, lfd)
         .flat_map(Fn!(|nodes: Vec<(usize, usize, Option<String>)>| Box::new(nodes.into_iter().map(|node| custom_split_nodes_text_file(node))) as Box<dyn Iterator<Item = _>>), fe_mp.clone(), fd_mp.clone());
     let mut old = nodes.aggregate(
         0,
@@ -273,7 +273,7 @@ pub fn dijkstra_unsec_0() -> Result<()> {
     let mut new = old.clone();
     let mut iterations = 0;
     let mut result = Vec::new();
-    while iterations == 0 || old != new {
+    while (iterations == 0 || old != new) && iterations < 5 {
         iterations += 1;
         old = new;
         let mapper = nodes.flat_map(Fn!(|node: (usize, (usize, Option<Vec<String>>, String))| {
@@ -301,7 +301,7 @@ pub fn dijkstra_unsec_0() -> Result<()> {
     }
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Finished after {:?} iterations, time {:?}s", iterations, dur);
-    println!("res = {:?}", result);
+    println!("len(res) = {:?}", result.len());
     Ok(())
 }
 
