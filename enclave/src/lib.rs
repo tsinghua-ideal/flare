@@ -286,13 +286,13 @@ pub extern "C" fn free_spec_seq(input: *mut u8) {
 #[no_mangle]
 pub extern "C" fn free_res_enc(op_id: OpId, dep_info: DepInfo, input: *mut u8) {
     let op = load_opmap().get(&op_id).unwrap();
-    op.call_free_res_enc(input, &dep_info);
+    op.call_free_res_enc(input, true, &dep_info);
 }
 
 #[no_mangle]
 pub extern "C" fn priv_free_res_enc(op_id: OpId, dep_info: DepInfo, input: *mut u8) {
     let op = load_opmap().get(&op_id).unwrap();
-    op.call_free_res_enc(input, &dep_info);
+    op.call_free_res_enc(input, true, &dep_info);
 }
 
 #[no_mangle]
@@ -381,6 +381,11 @@ pub extern "C" fn free_tail_info(input: *mut u8) {
     ALLOCATOR.set_switch(true);
     drop(tail_info);
     ALLOCATOR.set_switch(false);
+}
+
+#[no_mangle]
+pub extern "C" fn clear_cache() {
+    CACHE.clear();
 }
 
 #[no_mangle]

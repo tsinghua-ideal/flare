@@ -83,10 +83,10 @@ where
         } 
     }
 
-    fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo) {
+    fn call_free_res_enc(&self, res_ptr: *mut u8, is_enc: bool, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            3 => self.free_res_enc(res_ptr),
-            _ => self.prev.call_free_res_enc(res_ptr, dep_info),
+            3 => self.free_res_enc(res_ptr, is_enc),
+            _ => self.prev.call_free_res_enc(res_ptr, is_enc, dep_info),
         };
     }
 

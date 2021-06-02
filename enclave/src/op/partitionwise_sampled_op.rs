@@ -101,12 +101,12 @@ where
         } 
     }
 
-    fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo) {
+    fn call_free_res_enc(&self, res_ptr: *mut u8, is_enc: bool, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 => self.free_res_enc(res_ptr),
+            0 => self.free_res_enc(res_ptr, is_enc),
             1 => {
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
-                shuf_dep.free_res_enc(res_ptr);
+                shuf_dep.free_res_enc(res_ptr, is_enc);
             },
             _ => panic!("invalid is_shuffle"),
         }

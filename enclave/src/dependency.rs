@@ -116,7 +116,7 @@ pub trait ShuffleDependencyTrait: DowncastSync + Send + Sync  {
     fn pre_merge(&self, tid: u64, input: Input) -> usize;
     fn send_sketch(&self, buf: &mut SizeBuf, p_data_enc: *mut u8);
     fn send_enc_data(&self, p_out: usize, p_data_enc: *mut u8);
-    fn free_res_enc(&self, res_ptr: *mut u8);
+    fn free_res_enc(&self, res_ptr: *mut u8, is_enc: bool);
     fn get_parent(&self) -> OpId;
     fn get_child(&self) -> OpId;
     fn get_identifier(&self) -> usize;
@@ -491,7 +491,8 @@ where
         //and free encrypted buckets
     }
 
-    fn free_res_enc(&self, res_ptr: *mut u8) {
+    fn free_res_enc(&self, res_ptr: *mut u8, is_enc: bool) {
+        assert!(is_enc);
         crate::ALLOCATOR.set_switch(true);
         let res = unsafe { Box::from_raw(res_ptr as *mut Vec<Vec<(KE, CE)>>) };
         drop(res);

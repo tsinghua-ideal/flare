@@ -108,6 +108,7 @@ enclave {
             [user_check] size_t* have_take);
         public size_t tail_compute([user_check] uint8_t* input);
         public void free_tail_info([user_check] uint8_t* input);
+        public void clear_cache();
         public size_t pre_touching(uint8_t zero);
     };
 

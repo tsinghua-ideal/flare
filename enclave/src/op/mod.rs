@@ -603,7 +603,7 @@ impl TailCompInfo {
 #[derive(Clone)]
 pub struct OpCache {
     //<(cached_rdd_id, part_id), data>, data can not be Any object, required by lazy_static
-    map: Arc<RwLock<HashMap<(usize, usize), usize>>>,
+    map: Arc<RwLock<HashMap<(usize, usize), (usize, OpId)>>>,
     //<(cached_rdd_id, part_id), (start_block_id, end_block_id)>
     //contains all blocks whose corresponding values are cached inside enclave
     block_map: Arc<RwLock<HashMap<(usize, usize), (usize, usize)>>>,
@@ -617,16 +617,16 @@ impl OpCache{
         }
     }
 
-    pub fn get(&self, key: (usize, usize)) -> Option<usize> {
+    pub fn get(&self, key: (usize, usize)) -> Option<(usize, OpId)> {
         self.map.read().unwrap().get(&key).map(|x| *x)
     }
 
-    pub fn insert(&self, key: (usize, usize), value: usize) -> Option<usize> {
-        self.map.write().unwrap().insert(key, value)
+    pub fn insert(&self, key: (usize, usize), data: usize, op_id: OpId) -> Option<(usize, OpId)> {
+        self.map.write().unwrap().insert(key, (data, op_id))
     }
 
     //free the value?
-    pub fn remove(&self, key: (usize, usize)) -> Option<usize> {
+    pub fn remove(&self, key: (usize, usize)) -> Option<(usize, OpId)> {
         self.map.write().unwrap().remove(&key)
     }
 
@@ -650,6 +650,17 @@ impl OpCache{
             .unwrap()
             .get(&(rdd_id, part_id))
             .map(|v| *v)
+    }
+
+    pub fn clear(&self) {
+        let keys = self.map.read().unwrap().keys().map(|x| *x).collect::<Vec<_>>();
+        let mut map = self.map.write().unwrap();
+        for key in keys {
+            if let Some((data_ptr, op_id)) = map.remove(&key) {
+                let op = load_opmap().get(&op_id).unwrap();
+                op.call_free_res_enc(data_ptr as *mut u8, false, &DepInfo::padding_new(0));
+            }
+        }
     }
 
 }
@@ -1027,7 +1038,7 @@ impl OpVals {
 pub trait OpBase: Send + Sync {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo);
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo);
-    fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo);
+    fn call_free_res_enc(&self, res_ptr: *mut u8, is_enc: bool, dep_info: &DepInfo);
     fn fix_split_num(&self, split_num: usize);
     fn get_op_id(&self) -> OpId;
     fn get_context(&self) -> Arc<Context>;
@@ -1158,8 +1169,8 @@ impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo) {
         (**self).clone_enc_data_out(p_out, p_data_enc, dep_info);
     }
-    fn call_free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo) {
-        (**self).call_free_res_enc(res_ptr, dep_info);
+    fn call_free_res_enc(&self, res_ptr: *mut u8, is_enc: bool, dep_info: &DepInfo) {
+        (**self).call_free_res_enc(res_ptr, is_enc, dep_info);
     }
     fn fix_split_num(&self, split_num: usize) {
         (**self).fix_split_num(split_num)
@@ -1327,7 +1338,7 @@ pub trait OpE: Op {
         if let Some(val) = CACHE.remove(key) {
             println!("get cached data inside enclave");
             res_iter = Box::new(vec![unsafe {
-                    let v = Box::from_raw(val as *mut u8 as *mut Vec<Self::Item>);
+                    let v = Box::from_raw(val.0 as *mut u8 as *mut Vec<Self::Item>);
                     Box::new(v.into_iter())
                     as Box<dyn Iterator<Item = _>>
                 }].into_iter().chain(res_iter));
@@ -1337,6 +1348,7 @@ pub trait OpE: Op {
 
     fn set_cached_data(&self, call_seq: &NextOpId, res_iter: ResIter<Self::Item>) -> ResIter<Self::Item> {
         let ope = self.get_ope();
+        let op_id = self.get_op_id();
         let can_spec = call_seq.can_spec();
         let key = call_seq.get_caching_doublet();
         let is_caching_final_rdd = call_seq.is_caching_final_rdd();
@@ -1349,10 +1361,12 @@ pub trait OpE: Op {
             let res = iter.collect::<Vec<_>>();
             //cache inside enclave
             if can_spec {
-                CACHE.insert(key, Box::into_raw(Box::new(res.clone())) as *mut u8 as usize);
+                CACHE.insert(key, Box::into_raw(Box::new(res.clone())) as *mut u8 as usize, op_id);
                 CACHE.insert_bid(key.0, key.1, 0, idx+1);  //0 is not necessary
             } else if idx >= esti_bound - num_inside {
-                CACHE.insert(key, Box::into_raw(Box::new(res.clone())) as *mut u8 as usize);
+                let mut data = CACHE.remove(key).map_or(vec![], |x| *unsafe{Box::from_raw(x.0 as *mut u8 as *mut Vec<Self::Item>)});
+                data.append(&mut res.clone());
+                CACHE.insert(key, Box::into_raw(Box::new(data)) as *mut u8 as usize, op_id);
                 CACHE.insert_bid(key.0, key.1, idx, idx+1);
             }
             //println!("After cache inside enclave, memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
@@ -1414,11 +1428,15 @@ pub trait OpE: Op {
         }  
     }
 
-    fn free_res_enc(&self, res_ptr: *mut u8) {
-        crate::ALLOCATOR.set_switch(true);
-        let res = unsafe { Box::from_raw(res_ptr as *mut Vec<Self::ItemE>) };
-        drop(res);
-        crate::ALLOCATOR.set_switch(false);
+    fn free_res_enc(&self, res_ptr: *mut u8, is_enc: bool) {
+        if is_enc {
+            crate::ALLOCATOR.set_switch(true);
+            let res = unsafe { Box::from_raw(res_ptr as *mut Vec<Self::ItemE>) };
+            drop(res);
+            crate::ALLOCATOR.set_switch(false);
+        } else {
+            let _res = unsafe { Box::from_raw(res_ptr as *mut Vec<Self::Item>) };
+        }
     }
 
     fn batch_encrypt(&self, mut data: Vec<Self::Item>) -> Vec<Self::ItemE> {
@@ -1476,18 +1494,6 @@ pub trait OpE: Op {
                     create_enc()
                 };
 
-                //cache inside enclave
-                if let Some(val) = CACHE.remove(key) {
-                    //println!("get cached data inside enclave");
-                    unsafe {
-                        let data = Box::from_raw(val as *mut u8 as *mut Vec<Self::Item>);
-                        let data_enc = self.batch_encrypt(*data);
-                        for block in data_enc {
-                            merge_enc(&mut acc, &block)
-                        }
-                    }
-                }
-
                 if !call_seq.is_spec {
                     let ct = self.cache_from_outside(key).unwrap();
                     let len = ct.len();
@@ -1497,6 +1503,18 @@ pub trait OpE: Op {
                         //println!("get cached data outside enclave");
                         merge_enc(&mut acc, &ct[i]);
                     }).count();
+                } else {
+                    //meaningless, cache inside enclave
+                    if let Some(val) = CACHE.remove(key) {
+                        //println!("get cached data inside enclave");
+                        unsafe {
+                            let data = Box::from_raw(val.0 as *mut u8 as *mut Vec<Self::Item>);
+                            let data_enc = self.batch_encrypt(*data);
+                            for block in data_enc {
+                                merge_enc(&mut acc, &block)
+                            }
+                        }
+                    }
                 }
 
                 to_ptr(acc)
