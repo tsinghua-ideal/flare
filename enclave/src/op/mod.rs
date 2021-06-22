@@ -1336,7 +1336,6 @@ pub trait OpE: Op {
 
         //cache inside enclave
         if let Some(val) = CACHE.remove(key) {
-            println!("get cached data inside enclave");
             res_iter = Box::new(vec![unsafe {
                     let v = Box::from_raw(val.0 as *mut u8 as *mut Vec<Self::Item>);
                     Box::new(v.into_iter())
@@ -1354,7 +1353,7 @@ pub trait OpE: Op {
         let is_caching_final_rdd = call_seq.is_caching_final_rdd();
         let (lower_bound, upper_bound) = res_iter.size_hint();
         let esti_bound = upper_bound.unwrap_or(lower_bound);
-        //TODO: set number of blocks that are cached inside enclave
+        //set number of blocks that are cached inside enclave
         let num_inside = 1;
 
         Box::new(res_iter.enumerate().map(move |(idx, iter)| {
@@ -1363,7 +1362,7 @@ pub trait OpE: Op {
             if can_spec {
                 CACHE.insert(key, Box::into_raw(Box::new(res.clone())) as *mut u8 as usize, op_id);
                 CACHE.insert_bid(key.0, key.1, 0, idx+1);  //0 is not necessary
-            } else if idx >= esti_bound - num_inside {
+            } else if idx >= esti_bound.saturating_sub(num_inside) {
                 let mut data = CACHE.remove(key).map_or(vec![], |x| *unsafe{Box::from_raw(x.0 as *mut u8 as *mut Vec<Self::Item>)});
                 data.append(&mut res.clone());
                 CACHE.insert(key, Box::into_raw(Box::new(data)) as *mut u8 as usize, op_id);
@@ -1477,6 +1476,7 @@ pub trait OpE: Op {
     }
 
     fn narrow(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+        /*
         if call_seq.is_head() && dep_info.dep_type() == 0 {
             //println!("optimized narrow");
             if call_seq.have_cache() {
@@ -1529,6 +1529,7 @@ pub trait OpE: Op {
                 to_ptr(acc)
             }
         } else {
+        */
             println!("regular narrow");
             let result_iter = self.compute(call_seq, input);
             //acc stays outside enclave
@@ -1577,7 +1578,9 @@ pub trait OpE: Op {
                 }
             }
             to_ptr(acc)
+        /* 
         }
+        */
     } 
 
     fn shuffle(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
