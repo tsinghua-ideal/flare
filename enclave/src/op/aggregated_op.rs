@@ -150,9 +150,13 @@ where
             self.narrow(call_seq, input, dep_info)
         }
         else {
-            let op = call_seq.get_next_op();
-            assert!(op.get_op_id() == self.prev.get_op_id());
-            self.prev.compute_start(call_seq, input, dep_info)
+            let opb = call_seq.get_next_op().clone();
+            if opb.get_op_id() == self.prev.get_op_id() {
+                self.prev.compute_start(call_seq, input, dep_info)
+            } else {
+                let op = opb.to_arc_op::<dyn Op<Item = T>>().unwrap();
+                op.compute_start(call_seq, input, dep_info)
+            }
         }
     }
 

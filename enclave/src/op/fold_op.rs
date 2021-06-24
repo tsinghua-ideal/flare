@@ -145,10 +145,14 @@ where
             res_enc_to_ptr(result_enc)  
         }
         else {
-            let op = call_seq.get_next_op();
-            assert!(op.get_op_id() == self.prev.get_op_id());
+            let opb = call_seq.get_next_op().clone();
             if call_seq.need_cache() {
-                self.prev.compute_start(call_seq, input, dep_info)
+                if opb.get_op_id() == self.prev.get_op_id() {
+                    self.prev.compute_start(call_seq, input, dep_info)
+                } else {
+                    let op = opb.to_arc_op::<dyn Op<Item = T>>().unwrap();
+                    op.compute_start(call_seq, input, dep_info)
+                }
             } else {
                 let result_iter = self.compute(call_seq, input);
                 let mut acc = create_enc();
