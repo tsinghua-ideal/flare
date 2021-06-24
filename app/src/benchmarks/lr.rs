@@ -36,13 +36,6 @@ pub fn lr_sec() -> Result<()> {
         pt0
     });
 
-    let fe_rd = Fn!(|vp: Vec<Vec<f32>>| {
-        vp
-    });
-    let fd_rd = Fn!(|ve: Vec<Vec<f32>>| {
-        ve
-    });
-
     let deserializer = Box::new(Fn!(|file: Vec<u8>| {
         bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap()  //ItemE = (Vec<u8>, Vec<u8>)
     }));
@@ -55,23 +48,23 @@ pub fn lr_sec() -> Result<()> {
     let now = Instant::now();
     for i in 0..3 {
         let w_c = w.clone();
-        let g = points_rdd.map(Fn!(move |p: Point| {
+        let g = (*points_rdd.map(Fn!(move |p: Point| {
                 let y = p.y;
                 p.x.iter().zip(w.iter())
                     .map(|(&x, &w): (&f32, &f32)| x * (1f32/(1f32+(-y * (w * x)).exp())-1f32) * y)
                     .collect::<Vec<_>>()
             }),
-            fe_mp, 
+            fe_mp,
             fd_mp
         ).secure_reduce(Fn!(|x: Vec<f32>, y: Vec<f32>| x.into_iter()
                 .zip(y.into_iter())
                 .map(|(x, y)| x + y)
                 .collect::<Vec<_>>()
             ), 
-            fe_rd, 
-            fd_rd).unwrap();
+            Fn!(|x| x), 
+            Fn!(|x| x)).unwrap()).clone();
         w = w_c.into_iter()
-            .zip(g.to_plain().remove(0).into_iter())
+            .zip(g.into_iter())
             .map(|(w, g)| w-g)
             .collect::<Vec<_>>();
         println!("{:?}: w = {:?}", i, w);

@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::{create_dir_all, File};
 use std::path::PathBuf;
 use std::io::prelude::*;
-use vega::{Data, Fn, ser_encrypt, ser_decrypt, MAX_ENC_BL};
+use vega::{Data, Fn, ser_encrypt, ser_decrypt, batch_encrypt, MAX_ENC_BL};
 use rand::Rng;
 use rand_distr::{Normal, Distribution};
 use serde_derive::{Deserialize, Serialize};
@@ -73,8 +73,13 @@ fn main() {
     */
 
     /* logistic regression */
+    /*
     generate_logistic_regression_data(20_000_000, 1, "lr_20");
+    */
 
+    /* matrix multiplication */
+    //generate_mm_data(500, "mm_a_500");
+    //generate_mm_data(500, "mm_b_500");
 
     //k_means
     /*
@@ -87,7 +92,6 @@ fn main() {
     /*
     generate_pagerank_data(1_000_000, true, "pr");
     generate_pagerank_data(10_000_000, false, "pr_1");
-
     generate_pagerank_data(4_000_000, false, "pr_2");
     */
     //adapt data of pagerank to opaque
@@ -95,6 +99,13 @@ fn main() {
     let data = convert_pagerank_data(PathBuf::from("/opt/data/pt_pr_2"), 16);
     set_up(vec![data], PathBuf::from("/opt/data/pr_opaque_2"));
     */
+
+    //pearson
+    //generate_pearson_data(10_000_000, "pe_a_107");
+    //generate_pearson_data(10_000_000, "pe_b_107");
+    generate_pearson_data(10, "pe_a_101");
+    generate_pearson_data(10, "pe_b_101");
+
     //tc
     /*
     let num_edges = 500;
@@ -195,18 +206,7 @@ fn generate_dijkstra_data(s: &str) {
         let data: Vec<(usize, usize, Option<String>)> = ser_decrypt::<>(ve);
         data
     });
-    let mut len = data.len();
-    let mut data_enc = Vec::with_capacity(len);
-    while len >= MAX_ENC_BL {
-        len -= MAX_ENC_BL;
-        let remain = data.split_off(MAX_ENC_BL);
-        let input = data;
-        data = remain;
-        data_enc.push(fe(input));
-    }
-    if len != 0 {
-        data_enc.push(fe(data));
-    }
+    let data_enc =batch_encrypt(data, fe);
     let mut ct_path = String::from("/opt/data/ct_");
     ct_path.push_str(s);
     set_up(into_file_parts(data_enc, 16), PathBuf::from(ct_path));
@@ -241,18 +241,47 @@ fn generate_logistic_regression_data(num_points: usize, dimension: usize, s: &st
     pt_path.push_str(s);
     set_up(into_file_parts(data.clone(), 16) , PathBuf::from(pt_path));
 
-    let mut len = data.len();
-    let mut data_enc = Vec::with_capacity(len);
-    while len >= MAX_ENC_BL {
-        len -= MAX_ENC_BL;
-        let remain = data.split_off(MAX_ENC_BL);
-        let input = data;
-        data = remain;
-        data_enc.push(fe(input));
+    let data_enc = batch_encrypt(data, fe);
+    let mut ct_path = String::from("/opt/data/ct_");
+    ct_path.push_str(s);
+    set_up(into_file_parts(data_enc, 16), PathBuf::from(ct_path));
+}
+
+fn generate_mm_data(n: u32, s: &str) {
+    let mut rng = rand::thread_rng();
+    
+    let mut data = Vec::with_capacity((n*n) as usize);
+    for i in 0..n {
+        data.append(&mut (0..n).map(|j| ((i, j), rng.gen::<f64>())).collect::<Vec<_>>());
     }
-    if len != 0 {
-        data_enc.push(fe(data));
-    }
+    let mut pt_path = String::from("/opt/data/pt_");
+    pt_path.push_str(s);
+    set_up(into_file_parts(data.clone(), 16), PathBuf::from(pt_path));
+
+    let fe = Fn!(|vp: Vec<((u32, u32), f64)> | -> (Vec<u8>, Vec<u8>) {
+        let len = vp.len();
+        let mut buf0 = Vec::with_capacity(len);
+        let mut buf1 = Vec::with_capacity(len);
+        for i in vp {
+            buf0.push(i.0);
+            buf1.push(i.1);
+        }
+        let buf0 = ser_encrypt::<>(buf0);
+        let buf1 = ser_encrypt::<>(buf1);
+        (buf0, buf1)
+    });
+
+    let fd = Fn!(|ve: (Vec<u8>, Vec<u8>)| -> Vec<((u32, u32), f64)> {
+        let (buf0, buf1) = ve;
+        let mut pt0: Vec<(u32, u32)> = ser_decrypt::<>(buf0); 
+        let mut pt1: Vec<f64> = ser_decrypt::<>(buf1);
+        let len = pt0.len() | pt1.len();
+        pt0.resize_with(len, Default::default);
+        pt1.resize_with(len, Default::default);
+        pt0.into_iter().zip(pt1.into_iter()).collect::<Vec<_>>() 
+    });
+
+    let data_enc = batch_encrypt(data, fe);
     let mut ct_path = String::from("/opt/data/ct_");
     ct_path.push_str(s);
     set_up(into_file_parts(data_enc, 16), PathBuf::from(ct_path));
@@ -262,18 +291,7 @@ fn generate_kmeans_data(num_points: usize, dimension: usize, s: &str) {
     let mut rng = rand::thread_rng();
     let mut data: Vec<Vec<f64>> = (0..num_points).map(|_| (0..dimension).map(|_| rng.gen_range(0 as f64, 20 as f64)).collect()).collect();
     let vals = data.clone();
-    let mut len = data.len();
-    let mut data_enc = Vec::with_capacity(len);
-    while len >= MAX_ENC_BL {
-        len -= MAX_ENC_BL;
-        let remain = data.split_off(MAX_ENC_BL);
-        let input = data;
-        data = remain;
-        data_enc.push(ser_encrypt(input));
-    }
-    if len != 0 {
-        data_enc.push(ser_encrypt(data));
-    }
+    let data_enc = batch_encrypt(data, Fn!(|x| ser_encrypt(x)));
     let mut ct_path = String::from("/opt/data/ct_");
     ct_path.push_str(s);
     set_up(into_file_parts(data_enc, 16), PathBuf::from(ct_path));
@@ -360,6 +378,30 @@ fn generate_pagerank_data(len: usize, is_random: bool, s: &str) {
     set_up(into_file_parts_str(strings, 16), PathBuf::from(pt_path));
 }
 
+fn generate_pearson_data(n: usize, s: &str) {
+    let mut rng = rand::thread_rng();
+
+    let data = (0..n).map(|_| rng.gen::<f64>()).collect::<Vec<_>>();
+    
+    let mut pt_path = String::from("/opt/data/pt_");
+    pt_path.push_str(s);
+    set_up(into_file_parts(data.clone(), 16), PathBuf::from(pt_path));
+
+    let fe = Fn!(|vp: Vec<f64> | -> Vec<u8> {
+        let buf0 = ser_encrypt::<>(vp);
+        buf0
+    });
+
+    let fd = Fn!(|ve: Vec<u8>| -> Vec<f64> {
+        ser_decrypt::<>(ve)
+    });
+
+    let data_enc = batch_encrypt(data, fe);
+    let mut ct_path = String::from("/opt/data/ct_");
+    ct_path.push_str(s);
+    set_up(into_file_parts(data_enc, 16), PathBuf::from(ct_path));
+}
+
 fn convert_pagerank_data(dir: PathBuf, file_num: i32) -> Vec<u8> {
     let mut lines = Vec::new();
     let mut m = HashSet::new();
@@ -439,18 +481,7 @@ fn generate_tc_data(num_edges: u32, num_vertices: u32, s: &str) {
         pt0.into_iter().zip(pt1.into_iter()).collect::<Vec<_>>() 
     });
 
-    let mut len = data.len();
-    let mut data_enc = Vec::with_capacity(len);
-    while len >= MAX_ENC_BL {
-        len -= MAX_ENC_BL;
-        let remain = data.split_off(MAX_ENC_BL);
-        let input = data;
-        data = remain;
-        data_enc.push(fe(input));
-    }
-    if len != 0 {
-        data_enc.push(fe(data));
-    }
+    let data_enc = batch_encrypt(data, fe);
     let mut ct_path = String::from("/opt/data/ct_");
     ct_path.push_str(s);
     set_up(into_file_parts(data_enc, 16), PathBuf::from(ct_path));
@@ -489,18 +520,7 @@ fn generate_topk_data(s: &str) {
     pt_path.push_str(s);
     set_up(into_file_parts(data.clone(), 16), PathBuf::from(pt_path));
 
-    let mut len = data.len();
-    let mut data_enc = Vec::with_capacity(len);
-    while len >= MAX_ENC_BL {
-        len -= MAX_ENC_BL;
-        let remain = data.split_off(MAX_ENC_BL);
-        let input = data;
-        data = remain;
-        data_enc.push(ser_encrypt(input));
-    }
-    if len != 0 {
-        data_enc.push(ser_encrypt(data));
-    }
+    let data_enc = batch_encrypt(data, Fn!(|x| ser_encrypt(x)));
 
     let mut ct_path = String::from("/opt/data/ct_");
     ct_path.push_str(s);

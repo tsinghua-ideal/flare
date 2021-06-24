@@ -15,13 +15,6 @@ pub fn reduce_sec_0() -> Result<()> {
         pt0
     });
 
-    let fe_rd = Fn!(|vp: Vec<i32>| {
-        vp
-    });
-    let fd_rd = Fn!(|ve: Vec<i32>| {
-        ve
-    });
-
     
     
     
@@ -37,7 +30,7 @@ pub fn reduce_sec_0() -> Result<()> {
     
     
     let rdd0 = sc.make_op(fe, fd, 1);
-    let _res = rdd0.reduce(Fn!(|x, y| x+y), fe_rd, fd_rd)?;
+    let _res = *rdd0.reduce(Fn!(|x, y| x+y), Fn!(|x| x), Fn!(|x| x))?;
     
     Ok(()) 
 }

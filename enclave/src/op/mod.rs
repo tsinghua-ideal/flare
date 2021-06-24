@@ -21,7 +21,7 @@ use aes_gcm::aead::{Aead, NewAead, generic_array::GenericArray};
 use sgx_types::*;
 use rand::{Rng, SeedableRng};
 
-use crate::{BRANCH_OP_HIS, CACHE, Fn, OP_MAP};
+use crate::{BRANCH_OP_HIS, CACHE, CAVE, Fn, OP_MAP};
 use crate::basic::{AnyData, Arc as SerArc, Data, Func, SerFunc};
 use crate::custom_thread::PThread;
 use crate::dependency::{Dependency, OneToOneDependency, ShuffleDependencyTrait};
@@ -59,6 +59,8 @@ mod shuffled_op;
 pub use shuffled_op::*;
 mod union_op;
 pub use union_op::*;
+mod zip_op;
+pub use zip_op::*;
 
 type PT<T, TE> = Text<T, TE>;
 pub type OText<T> = Text<T, T>; 
@@ -917,6 +919,11 @@ pub struct Context {
 
 impl Context {
     pub fn new() -> Result<Arc<Self>> {
+        BRANCH_OP_HIS.write().unwrap().clear();
+        CACHE.clear();
+        CAVE.lock().unwrap().clear();
+        load_opmap().clear();
+
         Ok(Arc::new(Context {
             last_loc_file: RwLock::new("null"),
             last_loc_line: AtomicU32::new(0), 
@@ -970,6 +977,7 @@ impl Context {
             line,
             num,
         );
+        //println!("op, file = {:?}, line = {:?}, num = {:?}, op_id = {:?}", file, line, num, op_id);
         op_id
     }
 
@@ -1039,11 +1047,17 @@ pub trait OpBase: Send + Sync {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo);
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo);
     fn call_free_res_enc(&self, res_ptr: *mut u8, is_enc: bool, dep_info: &DepInfo);
-    fn fix_split_num(&self, split_num: usize);
+    fn fix_split_num(&self, split_num: usize) {
+        unreachable!()
+    }
     fn get_op_id(&self) -> OpId;
     fn get_context(&self) -> Arc<Context>;
-    fn get_deps(&self) -> Vec<Dependency>;
-    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>;
+    fn get_deps(&self) -> Vec<Dependency> {
+        unreachable!()
+    }
+    fn get_next_deps(&self) -> Arc<RwLock<HashMap<(OpId, OpId), Dependency>>> {
+        unreachable!()
+    }
     fn get_next_shuf_dep(&self, dep_info: &DepInfo) -> Option<Arc<dyn ShuffleDependencyTrait>> {
         let cur_key = dep_info.get_op_key();
         let next_deps = self.get_next_deps();
@@ -1109,23 +1123,35 @@ pub trait OpBase: Send + Sync {
         }
     }
     //has speculative opportunity
-    fn has_spec_oppty(&self) -> bool;
-    fn is_in_loop(&self) -> bool;
-    fn number_of_splits(&self) -> usize;
+    fn has_spec_oppty(&self) -> bool {
+        unreachable!()
+    }
+    fn is_in_loop(&self) -> bool {
+        unreachable!()
+    }
+    fn number_of_splits(&self) -> usize {
+        unreachable!()
+    }
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
         None
     }
     fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8;
-    fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8;
+    fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
+        unreachable!()
+    }
     fn set_sampler(&self, with_replacement: bool, fraction: f64) {
         unreachable!()
     }
-    fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8;
+    fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
+        unreachable!()
+    }
     fn pre_merge(&self, dep_info: DepInfo, tid: u64, input: Input) -> usize {
         let shuf_dep = self.get_next_shuf_dep(&dep_info).unwrap();
         shuf_dep.pre_merge(tid, input)
     }
-    fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject>;
+    fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
+        unreachable!()
+    }
 }
 
 impl dyn OpBase {
@@ -1678,13 +1704,13 @@ pub trait OpE: Op {
     }
 
     #[track_caller]
-    fn reduce<F, UE, FE, FD>(&self, f: F, fe: FE, fd: FD) -> Result<PT<Vec<Self::Item>, Vec<UE>>>
+    fn reduce<F, UE, FE, FD>(&self, f: F, fe: FE, fd: FD) -> Result<PT<Self::Item, UE>>
     where
         Self: Sized,
         UE: Data,
         F: SerFunc(Self::Item, Self::Item) -> Self::Item,
-        FE: SerFunc(Vec<Self::Item>) -> UE,
-        FD: SerFunc(UE) -> Vec<Self::Item>,
+        FE: SerFunc(Self::Item) -> UE,
+        FD: SerFunc(UE) -> Self::Item,
     {
         // cloned cause we will use `f` later.
         let cf = f.clone();        
@@ -1696,32 +1722,22 @@ pub trait OpE: Op {
             }
         });         
         let new_op = SerArc::new(Reduced::new(self.get_ope(), reduce_partition, fe.clone(), fd.clone()));
-        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
-        let bfe = Box::new(move |data| {
-            batch_encrypt(data, fe.clone())
-        });
-        let bfd = Box::new(move |data_enc| {
-            batch_decrypt(data_enc, fd.clone())
-        });
-        Ok(Text::new(Default::default(), Some(bfe), Some(bfd)))
+        if !self.get_context().get_is_tail_comp() {
+            insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        }
+        Ok(Text::new(Default::default(), Some(Box::new(fe)), Some(Box::new(fd))))
     }
 
     #[track_caller]
-    fn secure_reduce<F, UE, FE, FD>(&self, f: F, fe: FE, fd: FD, tail_info: &TailCompInfo) -> Result<PT<Vec<Self::Item>, Vec<UE>>>
+    fn secure_reduce<F, UE, FE, FD>(&self, f: F, fe: FE, fd: FD, tail_info: &TailCompInfo) -> Result<PT<Self::Item, UE>>
     where
         Self: Sized,
         UE: Data,
         F: SerFunc(Self::Item, Self::Item) -> Self::Item,
-        FE: SerFunc(Vec<Self::Item>) -> UE,
-        FD: SerFunc(UE) -> Vec<Self::Item>,
+        FE: SerFunc(Self::Item) -> UE,
+        FD: SerFunc(UE) -> Self::Item,
     {
-        let bfe = Box::new(move |data| {
-            batch_encrypt(data, fe.clone())
-        });
-        let bfd = Box::new(move |data_enc| {
-            batch_decrypt(data_enc, fd.clone())
-        });
-        Ok(Text::rec(tail_info, Some(bfe), Some(bfd)))
+        Ok(Text::rec(tail_info, Some(Box::new(fe)), Some(Box::new(fd))))
     }
 
     #[track_caller]
@@ -1740,14 +1756,16 @@ pub trait OpE: Op {
                 vec![iter.fold(zero.clone(), &cf)]
         });
         let new_op = SerArc::new(Fold::new(self.get_ope(), reduce_partition, fe.clone(), fd.clone()));
-        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        if !self.get_context().get_is_tail_comp() {
+            insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        }
         let bfe = Box::new(move |data| {
             batch_encrypt(data, fe.clone())
         });
         let bfd = Box::new(move |data_enc| {
             batch_decrypt(data_enc, fd.clone())
         });
-        Ok(Text::new(Default::default(), Some(bfe), Some(bfd)))
+        Ok(Text::new(vec![Default::default()], Some(bfe), Some(bfd)))
     }
 
     #[track_caller]
@@ -1788,14 +1806,16 @@ pub trait OpE: Op {
             move |iter: Box<dyn Iterator<Item = U>>| vec![iter.fold(zero.clone(), &comb_fn)]
         );
         let new_op = SerArc::new(Aggregated::new(self.get_ope(), reduce_partition, combine, fe.clone(), fd.clone()));
-        insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        if !self.get_context().get_is_tail_comp() {
+            insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        }
         let bfe = Box::new(move |data| {
             batch_encrypt(data, fe.clone())
         });
         let bfd = Box::new(move |data_enc| {
             batch_decrypt(data_enc, fd.clone())
         });
-        Ok(Text::new(Default::default(), Some(bfe), Some(bfd)))
+        Ok(Text::new(vec![Default::default()], Some(bfe), Some(bfd)))
     }
 
     #[track_caller]
@@ -1841,7 +1861,8 @@ pub trait OpE: Op {
         let bfd = Box::new(move |data_enc| batch_decrypt(data_enc, fd.clone()));
         Ok(Text::rec(tail_info, Some(bfe), Some(bfd)))
     }
-
+    
+    #[track_caller]
     fn count(&self) -> Result<u64>
     where
         Self: Sized,
@@ -2006,6 +2027,32 @@ pub trait OpE: Op {
             Arc::new(self.clone()) as Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>,
             other,
         ]));
+        if !self.get_context().get_is_tail_comp() {
+            insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        }
+        new_op
+    }
+
+    #[track_caller]
+    fn zip<S, SE, FE, FD>(
+        &self,
+        second: Arc<dyn OpE<Item = S, ItemE = SE>>,
+        fe: FE,
+        fd: FD,
+    ) -> SerArc<dyn OpE<Item = (Self::Item, S), ItemE = (Self::ItemE, SE)>>
+    where
+        Self: Clone,
+        S: Data,
+        SE: Data,
+        FE: SerFunc(Vec<(Self::Item, S)>) -> (Self::ItemE, SE),
+        FD: SerFunc((Self::ItemE, SE)) -> Vec<(Self::Item, S)>,
+    {
+        let new_op = SerArc::new(Zipped::new(
+            Arc::new(self.clone()) as Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>,
+            second,
+            fe,
+            fd,
+        ));
         if !self.get_context().get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         }

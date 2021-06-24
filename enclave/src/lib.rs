@@ -93,70 +93,81 @@ lazy_static! {
     static ref OP_MAP: AtomicPtrWrapper<BTreeMap<OpId, Arc<dyn OpBase>>> = AtomicPtrWrapper::new(Box::into_raw(Box::new(BTreeMap::new()))); 
     static ref init: Result<()> = {
         /* dijkstra */
-        //dijkstra_sec_0()
-        //dijkstra_sec_1()
+        //dijkstra_sec_0()?;
+        //dijkstra_sec_1()?;
 
         /* map */
-        //map_sec_0()
-        //map_sec_1()
+        //map_sec_0()?;
+        //map_sec_1()?;
 
         /* filter */
-        //filter_sec_0()
+        //filter_sec_0()?;
         
         /* group_by */
-        //group_by_sec_0()
-        //group_by_sec_1()
+        //group_by_sec_0()?;
+        //group_by_sec_1()?;
 
         /* join */
-        //join_sec_0()
-        //join_sec_1()
-        //join_sec_2()
+        //join_sec_0()?;
+        //join_sec_1()?;
+        //join_sec_2()?;
         
         /* distinct */
-        //distinct_sec_0()
-        //distinct_unsec_0()
+        //distinct_sec_0()?;
+        //distinct_unsec_0()?;
 
         /* local file reader */
-        //file_read_sec_0()
+        //file_read_sec_0()?;
 
         /* partition_wise_sample */
-        //part_wise_sample_sec_0()
+        //part_wise_sample_sec_0()?;
 
         /* take */
-        //take_sec_0()
+        //take_sec_0()?;
 
         /* reduce */
-        //reduce_sec_0()
+        //reduce_sec_0()?;
 
         /* count */
-        //count_sec_0()
+        //count_sec_0()?;
 
         /* union */
-        //union_sec_0()
+        //union_sec_0()?;
+
+        /* zip */
+        //zip_sec_0()?;
 
         /* kmeans */
-        //kmeans_sec_0()
-        //kmeans_sec_1()
+        //kmeans_sec_0()?;
+        //kmeans_sec_1()?;
 
         /* linear regression */
-        //lr_sec()
+        //lr_sec()?;
+
+        /* matrix multipilication */
+        //mm_sec_0()?;
 
         /* page rank */
-        pagerank_sec_0()
+        //pagerank_sec_0()?;
+
+        /* pearson correlation algorithm */
+        pearson_sec_0()?;
 
         /* transitive_closure */
-        //transitive_closure_sec_0()
-        //transitive_closure_sec_1()
-        //transitive_closure_sec_2()
+        //transitive_closure_sec_0()?;
+        //transitive_closure_sec_1()?;
+        //transitive_closure_sec_2()?;
 
         /* triangle counting */
-        //triangle_counting_sec_0()
+        //triangle_counting_sec_0()?;
 
         // test the speculative execution in loop
-        //test0_sec_0()
+        //test0_sec_0()?;
 
         // topk
-        //topk_sec_0()
+        //topk_sec_0()?;
+
+        Ok(())
     };
 }
 
@@ -221,7 +232,7 @@ pub extern "C" fn exploit_spec_oppty(tid: u64,
     hash_ops: *mut u64,
 ) -> usize {  //return where has an opportunity, if so, return spec_call_seq
     let _init = *init; //this is necessary to let it accually execute
-    let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();
+    let mut op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap().clone();
     let mut part_nums = unsafe { (part_nums as *const Vec<usize>).as_ref() }.unwrap().clone();
     println!("in exploit_spec_oppty, part_nums = {:?}", part_nums);
     let identifier = unsafe { spec_identifier.as_mut() }.unwrap();
@@ -231,6 +242,11 @@ pub extern "C" fn exploit_spec_oppty(tid: u64,
         let (parent_id, _) = dep_info.get_op_key();
         let parent = load_opmap().get(&parent_id).unwrap();
         parent.sup_next_shuf_dep(&dep_info, reduce_num);  //set shuf dep if missing when in loop
+    }
+    //The header is action id
+    if part_nums[0] == usize::MAX {
+        op_ids.remove(0);
+        part_nums.remove(0);
     }
     let len = op_ids.len();
     let final_op = load_opmap().get(&op_ids[0]).unwrap();

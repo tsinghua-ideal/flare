@@ -92,6 +92,9 @@ fn main() -> Result<()> {
     //union_sec_0()?;
     //union_unsec_0()?;
 
+    /* zip */
+    //zip_sec_0()?;
+
     /* kmeans */
     //kmeans_sec_0()?;
     //kmeans_sec_1()?;
@@ -102,9 +105,17 @@ fn main() -> Result<()> {
     //lr_sec()?;
     //lr_unsec()?;
 
+    /* matrix multipilication */
+    //mm_sec_0()?;
+    //mm_unsec_0()?;
+
     /* page rank */
-    pagerank_sec_0()?;
+    //pagerank_sec_0()?;
     //pagerank_unsec_0()?;
+
+    /* pearson correlation algorithm */
+    pearson_sec_0()?;
+    //pearson_unsec_0()?;
 
     /* transitive_closure */
     //transitive_closure_sec_0()?;

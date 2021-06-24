@@ -15,13 +15,6 @@ pub fn reduce_sec_0() -> Result<()> {
         pt0
     });
 
-    let fe_rd = Fn!(|vp: Vec<i32>| {
-        vp
-    });
-    let fd_rd = Fn!(|ve: Vec<i32>| {
-        ve
-    });
-
     let mut data = (0..10).collect::<Vec<_>>();
     let mut len = data.len();
     let mut data_enc = Vec::with_capacity(len);
@@ -37,7 +30,7 @@ pub fn reduce_sec_0() -> Result<()> {
     }
 
     let rdd0 = sc.make_rdd(vec![], data_enc, fe, fd, 1);
-    let res = rdd0.secure_reduce(Fn!(|x: i32, y: i32| x + y), fe_rd, fd_rd)?;
-    println!("result: {:?}", res.to_plain());
+    let res = *rdd0.secure_reduce(Fn!(|x: i32, y: i32| x + y), Fn!(|x| x), Fn!(|x| x))?;
+    println!("result: {:?}", res);
     Ok(())
 }
