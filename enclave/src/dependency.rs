@@ -246,37 +246,13 @@ where
         let mut data = *iter.downcast::<Vec<(K, V)>>().unwrap();
         if aggregator.is_default {
             data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-            fn feed_bucket<K, V, C>(data: Vec<(K, V)>, buckets: &mut Vec<BTreeMap<K, C>>, partitioner: &Box<dyn Partitioner>, aggregator: &Arc<Aggregator<K, V, C>>) 
-            where
-                K: Data + Eq + Hash + Ord, 
-                V: Data, 
-                C: Data,
-            {
-                let (mut ks, vs): (Vec<K>, Vec<V>) = data.into_iter().unzip();
-                ks.dedup();
-                let bucket_id = partitioner.get_partition(&ks[0]);
+            for group in data.group_by(|x, y| x.0 == y.0) {
+                let key = group[0].0.clone();
+                let bucket_id = partitioner.get_partition(&key);
                 let bucket = &mut buckets[bucket_id];
-                let v = (Box::new(vs) as Box<dyn Any>).downcast::<C>().unwrap();
-                bucket.insert(ks[0].clone(), aggregator.merge_combiners.call(((Default::default(), *v),)));
-            }
-            let mut last_item = match data.first() {
-                Some(i) => i.clone(),
-                None => Default::default(),
-            };
-            while data.len() > 0 {
-                let mut idx = 0;
-                while idx < data.len() && data[idx].0 == last_item.0 {
-                    idx += 1;
-                }
-                if idx < data.len() {
-                    last_item = data[idx].clone();
-                    let r = data.split_off(idx);
-                    feed_bucket(data, &mut buckets, &partitioner, &aggregator);
-                    data = r;
-                } else {
-                    feed_bucket(data, &mut buckets, &partitioner, &aggregator);
-                    data = Vec::new();
-                }
+                let v = group.iter().map(|(k, v)| v.clone()).collect::<Vec<_>>();
+                let v = (Box::new(v) as Box<dyn Any>).downcast::<C>().unwrap();
+                bucket.insert(key, aggregator.merge_combiners.call(((Default::default(), *v),)));
             }
         } else {
             for (count, i) in data.into_iter().enumerate() {
@@ -300,7 +276,7 @@ where
         let now = Instant::now();
         let result = self.encrypt_buckets(buckets);
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        //println!("cur mem before copy out: {:?}, encrypt {:?} s", crate::ALLOCATOR.get_memory_usage(), dur); 
+        println!("cur mem before copy out: {:?}, encrypt {:?} s", crate::ALLOCATOR.get_memory_usage(), dur); 
         let res_ptr = res_enc_to_ptr(result);
         //println!("cur mem after copy out: {:?}", crate::ALLOCATOR.get_memory_usage()); 
         res_ptr
