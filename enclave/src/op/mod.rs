@@ -919,11 +919,6 @@ pub struct Context {
 
 impl Context {
     pub fn new() -> Result<Arc<Self>> {
-        BRANCH_OP_HIS.write().unwrap().clear();
-        CACHE.clear();
-        CAVE.lock().unwrap().clear();
-        load_opmap().clear();
-
         Ok(Arc::new(Context {
             last_loc_file: RwLock::new("null"),
             last_loc_line: AtomicU32::new(0), 

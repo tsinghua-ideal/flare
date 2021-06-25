@@ -116,14 +116,15 @@ pub fn kmeans_sec_0_(tail_info: &mut TailCompInfo) -> Result<()> {
     
     let mut temp_dist = OText::rec(tail_info, None, None);
     
-    let k_points_ct = k_points.get_ct();
+    //let k_points_ct = k_points.get_ct();
+    let k_points_ = k_points.get_pt();
     let closest = data_rdd.map(
         Fn!(move |p| {
             //need to manually write decryption function
-            let k_points = k_points_ct.clone().into_iter()
-                .flat_map(|ct| ser_decrypt::<Vec<f64>>(ct).into_iter())
-                .collect::<Vec<_>>();
-            (closest_point(&p, &k_points), (p, 1))
+            //let k_points = k_points_ct.clone().into_iter()
+            //    .flat_map(|ct| ser_decrypt::<Vec<f64>>(ct).into_iter())
+            //    .collect::<Vec<_>>();
+            (closest_point(&p, &k_points_), (p, 1))
         }), 
         fe_mp.clone(), 
         fd_mp.clone());

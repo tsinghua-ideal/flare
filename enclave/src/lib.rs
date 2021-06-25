@@ -234,7 +234,7 @@ pub extern "C" fn exploit_spec_oppty(tid: u64,
     let _init = *init; //this is necessary to let it accually execute
     let mut op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap().clone();
     let mut part_nums = unsafe { (part_nums as *const Vec<usize>).as_ref() }.unwrap().clone();
-    println!("in exploit_spec_oppty, part_nums = {:?}", part_nums);
+    println!("in exploit_spec_oppty, op_ids = {:?}, part_nums = {:?}", op_ids, part_nums);
     let identifier = unsafe { spec_identifier.as_mut() }.unwrap();
     if dep_info.dep_type() == 1 {
         assert!(part_nums.len() == op_ids.len()+1);
