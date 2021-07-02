@@ -212,6 +212,7 @@ pub extern "C" fn pre_merge(tid: u64,
     dep_info: DepInfo, 
     input: Input,
 ) -> usize {
+    let _init = *init;
     input.set_init_mem_usage();
     let now = Instant::now();
     let op = load_opmap().get(&op_id).unwrap();
@@ -301,12 +302,14 @@ pub extern "C" fn free_spec_seq(input: *mut u8) {
 
 #[no_mangle]
 pub extern "C" fn free_res_enc(op_id: OpId, dep_info: DepInfo, input: *mut u8) {
+    let _init = *init;
     let op = load_opmap().get(&op_id).unwrap();
     op.call_free_res_enc(input, true, &dep_info);
 }
 
 #[no_mangle]
 pub extern "C" fn priv_free_res_enc(op_id: OpId, dep_info: DepInfo, input: *mut u8) {
+    let _init = *init;
     let op = load_opmap().get(&op_id).unwrap();
     op.call_free_res_enc(input, true, &dep_info);
 }
@@ -317,6 +320,7 @@ pub extern "C" fn get_sketch(op_id: OpId,
     p_buf: *mut u8, 
     p_data_enc: *mut u8)
 {
+    let _init = *init;
     let op = load_opmap().get(&op_id).unwrap();
     op.build_enc_data_sketch(p_buf, p_data_enc, &dep_info);
 }
@@ -327,6 +331,7 @@ pub extern "C" fn clone_out(op_id: OpId,
     p_out: usize, 
     p_data_enc: *mut u8)
 {
+    let _init = *init;
     let op = load_opmap().get(&op_id).unwrap();
     op.clone_enc_data_out(p_out, p_data_enc, &dep_info);
 }
@@ -339,6 +344,7 @@ pub extern "C" fn randomize_in_place(
     is_some: u8,
     num: u64,
 ) -> usize {
+    let _init = *init;
     let sample_op = load_opmap().get(&op_id).unwrap();
     let seed = match is_some {
         0 => None,
@@ -356,6 +362,7 @@ pub extern "C" fn etake(
     should_take: usize,
     have_take: *mut usize,
 ) -> usize {
+    let _init = *init;
     let take_op = load_opmap().get(&op_id).unwrap();
     let have_take = unsafe { have_take.as_mut() }.unwrap();
     let ptr = take_op.etake(input, should_take, have_take);
@@ -368,6 +375,7 @@ pub extern "C" fn set_sampler(
     with_replacement: u8,
     fraction: f64,
 ) {
+    let _init = *init;
     let sample_op = load_opmap().get(&op_id).unwrap();
     let with_replacement = match with_replacement {
         0 => false,
