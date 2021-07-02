@@ -272,7 +272,7 @@ pub fn dijkstra_unsec_0() -> Result<()> {
     ).unwrap();
     let mut new = old.clone();
     let mut iterations = 0;
-    let mut result = Vec::new();
+    //let mut result = Vec::new();
     while (iterations == 0 || old != new) && iterations < 5 {
         iterations += 1;
         old = new;
@@ -289,8 +289,8 @@ pub fn dijkstra_unsec_0() -> Result<()> {
         }), fe_mp.clone(), fd_mp.clone());
         let reducer = mapper.reduce_by_key(Fn!(|(x, y)| min_distance(x, y)), 1, fe_mp.clone(), fd_mp.clone());
         nodes = reducer.map(Fn!(|node| custom_split_nodes_iterative(node)), fe_mp.clone(), fd_mp.clone());
-        result = nodes.collect().unwrap();
-        nodes = sc.parallelize(result.clone(), vec![], fe_mp.clone(), fd_mp.clone(), 1);
+        //result = nodes.collect().unwrap();
+        //nodes = sc.parallelize(result.clone(), vec![], fe_mp.clone(), fd_mp.clone(), 1);
         nodes.cache();
         new = nodes.aggregate(
             0,
@@ -301,7 +301,7 @@ pub fn dijkstra_unsec_0() -> Result<()> {
     }
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Finished after {:?} iterations, time {:?}s", iterations, dur);
-    println!("len(res) = {:?}", result.len());
+
     Ok(())
 }
 
