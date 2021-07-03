@@ -525,15 +525,14 @@ where
             2 => {       //shuffle read
                 let results = self.compute_inner(call_seq.tid, input);
                 let now = Instant::now();
-                let mut result_enc = Vec::with_capacity(results.len());
+                let mut acc = create_enc();
                 for result in results {
-                    result_enc.push((self.fe)(result));
+                    let block_enc = self.batch_encrypt(result);
+                    combine_enc(&mut acc, block_enc);
                 }
-                
                 let dur = now.elapsed().as_nanos() as f64 * 1e-9;
                 println!("In co_grouped_op, encryption, time {:?} s, memroy usage: {:?} B", dur, crate::ALLOCATOR.get_memory_usage());
-                let res_ptr = res_enc_to_ptr(result_enc);
-                res_ptr
+                to_ptr(acc)
             }
             _ => panic!("Invalid is_shuffle")
         }

@@ -188,6 +188,7 @@ where
     data
 }
 
+//The result_enc stays inside
 pub fn res_enc_to_ptr<T: Clone>(result_enc: T) -> *mut u8 {
     let result_ptr;
     if crate::immediate_cout {
@@ -205,6 +206,13 @@ pub fn merge_enc<T: Clone>(acc: &mut Vec<T>, v: &T) {
     crate::ALLOCATOR.set_switch(true);
     let v = v.clone();
     acc.push(v);
+    crate::ALLOCATOR.set_switch(false);
+}
+
+pub fn combine_enc<T: Clone>(acc: &mut Vec<T>, mut other: Vec<T>) {
+    crate::ALLOCATOR.set_switch(true);
+    acc.append(&mut other);
+    drop(other);
     crate::ALLOCATOR.set_switch(false);
 }
 
@@ -1319,10 +1327,9 @@ pub trait OpE: Op {
     }
 
     fn cache_to_outside(&self, key: (usize, usize), value: Vec<Self::Item>) -> Option<PThread> {
-        let op = self.get_ope();
         //let handle = unsafe {
         //    PThread::new(Box::new(move || {
-        let ct = op.batch_encrypt(value);
+        let ct = batch_encrypt(value, self.get_fe());
         //println!("finish encryption, memory usage {:?} B", crate::ALLOCATOR.get_memory_usage());
         crate::ALLOCATOR.set_switch(true);
         let ct_ptr = Box::into_raw(Box::new(ct.clone())) as *mut u8 as usize;
@@ -1460,40 +1467,23 @@ pub trait OpE: Op {
     }
 
     fn batch_encrypt(&self, mut data: Vec<Self::Item>) -> Vec<Self::ItemE> {
+        let mut acc = create_enc();
         let mut len = data.len();
-        let mut data_enc = Vec::with_capacity(len/MAX_ENC_BL+1);
         while len >= MAX_ENC_BL {
             len -= MAX_ENC_BL;
             let remain = data.split_off(MAX_ENC_BL);
             let input = data;
             data = remain;
-            data_enc.push(self.get_fe()(input));
+            merge_enc(&mut acc, &(self.get_fe())(input));
         }
         if len != 0 {
-            data_enc.push(self.get_fe()(data));
+            merge_enc(&mut acc, &(self.get_fe())(data));
         }
-        data_enc
-    }
-
-    fn batch_encrypt_ref(&self, data: &Vec<Self::Item>) -> Vec<Self::ItemE> {
-        let len = data.len();
-        let mut data_enc = Vec::with_capacity(len/MAX_ENC_BL+1);
-        let mut cur = 0;
-        while cur < len {
-            let next = min(len, cur + MAX_ENC_BL);
-            data_enc.push(self.get_fe()(data[cur..next].to_vec()));
-            cur = next;
-        }
-        data_enc
+        acc
     }
 
     fn batch_decrypt(&self, data_enc: Vec<Self::ItemE>) -> Vec<Self::Item> {
-        let mut data = Vec::new();
-        for block in data_enc {
-            let mut pt = self.get_fd()(block);
-            data.append(&mut pt); //need to check security
-        }
-        data
+        batch_decrypt(data_enc, self.get_fd())
     }
 
     fn narrow(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
@@ -1528,16 +1518,13 @@ pub trait OpE: Op {
                     //meaningless, cache inside enclave
                     if let Some(val) = CACHE.remove(key) {
                         //println!("get cached data inside enclave");
-                        unsafe {
-                            let data = Box::from_raw(val.0 as *mut u8 as *mut Vec<Self::Item>);
-                            let data_enc = self.batch_encrypt(*data);
-                            for block in data_enc {
-                                merge_enc(&mut acc, &block)
-                            }
-                        }
+                        let data = unsafe {
+                            Box::from_raw(val.0 as *mut u8 as *mut Vec<Self::Item>)
+                        };
+                        let data_enc = self.batch_encrypt(*data);
+                        combine_enc(&mut acc, data_enc)
                     }
                 }
-
                 to_ptr(acc)
             } else {
                 let data_enc = input.get_enc_data::<Vec<Self::ItemE>>();
@@ -1584,18 +1571,16 @@ pub trait OpE: Op {
                 let mut last_res_ptr = 0;
                 let mut idx = 0;
                 for result in result_iter {
-                    for block in self.batch_encrypt(result.collect::<Vec<_>>()) {
-                        merge_enc(&mut acc, &block)
-                    }
+                    let data_enc = self.batch_encrypt(result.collect::<Vec<_>>());
+                    combine_enc(&mut acc, data_enc);
                     last_res_ptr = spec_execute(call_seq.tid, &call_seq.spec_op_ids, &padding_ids, cache_meta, &dep_info, last_res_ptr);
                     idx += 1;
                 }
                 call_seq.spec_res = last_res_ptr;
             } else {
                 for result in result_iter {
-                    for block in self.batch_encrypt(result.collect::<Vec<_>>()) {
-                        merge_enc(&mut acc, &block)
-                    }
+                    let block_enc = self.batch_encrypt(result.collect::<Vec<_>>());
+                    combine_enc(&mut acc, block_enc);
                 }
             }
             to_ptr(acc)
@@ -1633,7 +1618,7 @@ pub trait OpE: Op {
         utils::randomize_in_place(&mut sample, &mut rng);
         sample = sample.into_iter().take(num as usize).collect();
         let sample_enc = self.batch_encrypt(sample);
-        res_enc_to_ptr(sample_enc)
+        to_ptr(sample_enc)
     }
 
     fn take_(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
@@ -1642,7 +1627,7 @@ pub trait OpE: Op {
         data = data.into_iter().take(should_take).collect();
         *have_take = data.len();
         let data_enc = self.batch_encrypt(data);
-        res_enc_to_ptr(data_enc)
+        to_ptr(data_enc)
     }
 
     /// Return a new RDD containing only the elements that satisfy a predicate.

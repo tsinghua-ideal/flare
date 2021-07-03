@@ -347,11 +347,10 @@ where
             2 => {
                 let result = self.compute_inner(call_seq.tid, input);
                 let now = Instant::now();
-                let result_enc = self.batch_encrypt(result); 
+                let result_enc = self.batch_encrypt(result);
                 let dur = now.elapsed().as_nanos() as f64 * 1e-9;
                 println!("In shuffled_op, encryption, time {:?} s, memroy usage: {:?} B", dur, crate::ALLOCATOR.get_memory_usage());
-                let res_ptr = res_enc_to_ptr(result_enc);
-                res_ptr
+                to_ptr(result_enc)
             }
             _ => panic!("Invalid is_shuffle"),
         }

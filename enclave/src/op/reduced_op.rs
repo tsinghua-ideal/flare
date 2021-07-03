@@ -157,9 +157,8 @@ where
                 let result_iter = self.compute(call_seq, input);
                 let mut acc = create_enc();
                 for result in result_iter {
-                    for block in self.prev.batch_encrypt(result.collect::<Vec<_>>()) {
-                        merge_enc(&mut acc, &block)
-                    }
+                    let block_enc = self.prev.batch_encrypt(result.collect::<Vec<_>>());
+                    combine_enc(&mut acc, block_enc);
                 }
                 to_ptr(acc)
             }
