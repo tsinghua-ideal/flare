@@ -332,8 +332,8 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
                 .filter(|(k, (v, w))| v.len() != 0 && w.len() != 0)
                 .collect::<Vec<_>>()
                 .split_inclusive(|(k, (v, w))| {
-                    len += v.len() * w.len();
-                    let res = len > MAX_ENC_BL;
+                    len += v.get_aprox_size() * w.get_aprox_size();
+                    let res = len > MAX_ENC_BL * MAX_ENC_BL;
                     len = (!res as usize) * len;
                     res
                 }).flat_map(|x| {
