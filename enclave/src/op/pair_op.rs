@@ -476,6 +476,8 @@ where
         let data_ptr = input.data;
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
+        let fe = self.get_fe();
+        let fd = self.get_fd();
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
@@ -491,9 +493,12 @@ where
             let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
             op.compute(call_seq, input)
         };
-        let res_iter = Box::new(res_iter.map(|res_iter| 
-            Box::new(res_iter.map(move |(k, v)| v)) as Box<dyn Iterator<Item = _>>
-        ));
+        let res_iter = Box::new(res_iter.map(move |res_iter| {
+            let block = res_iter.map(move |(k, v)| v);
+            let block_enc = fe(block.collect::<Vec<_>>().clone());
+            let block = fd(block_enc);
+            Box::new(block.into_iter()) as Box<dyn Iterator<Item = _>>
+        }));
 
         let key = call_seq.get_caching_doublet();
         if need_cache && CACHE.get(key).is_none() {
@@ -746,6 +751,8 @@ where
         let data_ptr = input.data;
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
+        let fe = self.get_fe();
+        let fd = self.get_fd();
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
@@ -768,7 +775,10 @@ where
         };
         let res_iter = Box::new(res_iter.map(move |res_iter| {
             let f = f.clone();
-            Box::new(res_iter.map(move |(k, v)| (k, f(v)))) as Box<dyn Iterator<Item = _>>
+            let block = res_iter.map(move |(k, v)| (k, f(v)));
+            let block_enc = fe(block.collect::<Vec<_>>().clone());
+            let block = fd(block_enc);
+            Box::new(block.into_iter()) as Box<dyn Iterator<Item = _>>
         }));
 
         let key = call_seq.get_caching_doublet();
@@ -1022,6 +1032,8 @@ where
         let data_ptr = input.data;
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
+        let fe = self.get_fe();
+        let fd = self.get_fd();
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
@@ -1045,7 +1057,10 @@ where
 
         let res_iter = Box::new(res_iter.map(move |res_iter| {
             let f = f.clone();
-            Box::new(res_iter.flat_map(move |(k, v)| f(v).map(move |x| (k.clone(), x)))) as Box<dyn Iterator<Item = _>>
+            let block = res_iter.flat_map(move |(k, v)| f(v).map(move |x| (k.clone(), x)));
+            let block_enc = fe(block.collect::<Vec<_>>().clone());
+            let block = fd(block_enc);
+            Box::new(block.into_iter()) as Box<dyn Iterator<Item = _>>
         }));
 
         let key = call_seq.get_caching_doublet();

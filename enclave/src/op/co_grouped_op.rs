@@ -543,7 +543,7 @@ where
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
         let fd = self.get_fd();
-
+        let fe = self.get_fe();
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
             let key = call_seq.get_cached_doublet();
@@ -554,7 +554,11 @@ where
         let len = input.get_enc_data::<Vec<(KE, (CE, DE))>>().len();
         let res_iter = Box::new((0..len).map(move|i| {
             let data = input.get_enc_data::<Vec<(KE, (CE, DE))>>();
-            Box::new((fd)(data[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
+            let block_enc = data[i].clone();
+            let block = fd(block_enc);
+            let block_enc = fe(block.clone());
+            let _block = fd(block_enc);
+            Box::new(block.into_iter()) as Box<dyn Iterator<Item = _>>
         }));
         
         let key = call_seq.get_caching_doublet();

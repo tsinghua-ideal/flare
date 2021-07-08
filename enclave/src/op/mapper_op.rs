@@ -191,6 +191,8 @@ where
         let data_ptr = input.data;
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
+        let fe = self.get_fe();
+        let fd = self.get_fd();
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
@@ -216,7 +218,10 @@ where
             op.compute(call_seq, input)
         };
         let res_iter = Box::new(res_iter.map(move |res_iter| {
-            Box::new(res_iter.map(f.clone())) as Box<dyn Iterator<Item = _>>
+            let block = res_iter.map(f.clone());
+            let block_enc = fe(block.collect::<Vec<_>>().clone());
+            let block = fd(block_enc);
+            Box::new(block.into_iter()) as Box<dyn Iterator<Item = _>>
         }));
 
         let key = call_seq.get_caching_doublet();

@@ -229,6 +229,8 @@ where
         let data_ptr = input.data;
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
+        let fe = self.get_fe();
+        let fd = self.get_fd();
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
@@ -248,7 +250,10 @@ where
         let sampler = self.sampler.read().unwrap().clone();
         let res_iter = Box::new(res_iter.map(move |res_iter| {
             let sampler_func = sampler.get_sampler(None);
-            Box::new(sampler_func(res_iter).into_iter()) as Box<dyn Iterator<Item = _>>
+            let block = sampler_func(res_iter).into_iter();
+            let block_enc = fe(block.collect::<Vec<_>>().clone());
+            let block = fd(block_enc);
+            Box::new(block.into_iter()) as Box<dyn Iterator<Item = _>>
         }));
         
         let key = call_seq.get_caching_doublet();

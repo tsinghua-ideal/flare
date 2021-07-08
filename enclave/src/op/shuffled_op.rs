@@ -360,6 +360,7 @@ where
         let data_ptr = input.data;
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
+        let fe = self.get_fe();
         let fd = self.get_fd();
 
         if have_cache {
@@ -372,7 +373,10 @@ where
         let len = input.get_enc_data::<Vec<(KE, CE)>>().len();
         let res_iter = Box::new((0..len).map(move|i| {
             let data = input.get_enc_data::<Vec<(KE, CE)>>();
-            Box::new((fd)(data[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
+            let block = fd(data[i].clone()).into_iter();
+            let block_enc = fe(block.collect::<Vec<_>>().clone());
+            let block = fd(block_enc);
+            Box::new(block.into_iter()) as Box<dyn Iterator<Item = _>>
         }));
 
         let key = call_seq.get_caching_doublet();
