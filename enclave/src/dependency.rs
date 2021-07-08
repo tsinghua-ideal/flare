@@ -245,14 +245,20 @@ where
         let now = Instant::now();
         let mut data = *iter.downcast::<Vec<(K, V)>>().unwrap();
         if aggregator.is_default {
-            data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            //data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
             for group in data.group_by(|x, y| x.0 == y.0) {
-                let key = group[0].0.clone();
-                let bucket_id = partitioner.get_partition(&key);
+                let k = group[0].0.clone();
+                let bucket_id = partitioner.get_partition(&k);
                 let bucket = &mut buckets[bucket_id];
                 let v = group.iter().map(|(k, v)| v.clone()).collect::<Vec<_>>();
                 let v = (Box::new(v) as Box<dyn Any>).downcast::<C>().unwrap();
-                bucket.insert(key, aggregator.merge_combiners.call(((Default::default(), *v),)));
+                if let Some(old_v) = bucket.get_mut(&k) {
+                    let input = ((old_v.clone(), *v),);
+                    let output = aggregator.merge_combiners.call(input);
+                    *old_v = output;
+                } else {
+                    bucket.insert(k, aggregator.merge_combiners.call(((Default::default(), *v),)));
+                }
             }
         } else {
             for (count, i) in data.into_iter().enumerate() {
