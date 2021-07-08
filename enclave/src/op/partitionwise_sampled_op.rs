@@ -250,9 +250,9 @@ where
         let sampler = self.sampler.read().unwrap().clone();
         let res_iter = Box::new(res_iter.map(move |res_iter| {
             let sampler_func = sampler.get_sampler(None);
-            let block = sampler_func(res_iter).into_iter();
-            let block_enc = fe(block.collect::<Vec<_>>().clone());
-            let block = fd(block_enc);
+            let mut block = sampler_func(res_iter).into_iter().collect::<Vec<_>>();
+            let ser_block = bincode::serialize(&block).unwrap();
+            block = bincode::deserialize(&ser_block).unwrap();
             Box::new(block.into_iter()) as Box<dyn Iterator<Item = _>>
         }));
         
