@@ -254,7 +254,9 @@ where
             let data = input.get_enc_data::<Vec<(TE, UE)>>();
             let block = fd(data[i].clone()).into_iter();
             let block_enc = fe(block.collect::<Vec<_>>().clone());
-            let block = fd(block_enc);
+            let mut block = fd(block_enc);
+            let ser_block = bincode::serialize(&block).unwrap();
+            block = bincode::deserialize(&ser_block).unwrap();
             Box::new(block.into_iter()) as Box<dyn Iterator<Item = _>>
         }));
         

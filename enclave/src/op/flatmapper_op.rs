@@ -214,7 +214,9 @@ where
         let res_iter = Box::new(res_iter.map(move |res_iter| {
             let block = res_iter.flat_map(f.clone()).collect::<Vec<_>>();
             let block_enc = fe(block.clone());
-            let block = fd(block_enc);
+            let mut block = fd(block_enc);
+            let ser_block = bincode::serialize(&block).unwrap();
+            block = bincode::deserialize(&ser_block).unwrap();
             Box::new(block.into_iter()) as Box<dyn Iterator<Item = _>>
         }));
 

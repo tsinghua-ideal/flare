@@ -496,7 +496,9 @@ where
         let res_iter = Box::new(res_iter.map(move |res_iter| {
             let block = res_iter.map(move |(k, v)| v);
             let block_enc = fe(block.collect::<Vec<_>>().clone());
-            let block = fd(block_enc);
+            let mut block = fd(block_enc);
+            let ser_block = bincode::serialize(&block).unwrap();
+            block = bincode::deserialize(&ser_block).unwrap();
             Box::new(block.into_iter()) as Box<dyn Iterator<Item = _>>
         }));
 
@@ -777,7 +779,9 @@ where
             let f = f.clone();
             let block = res_iter.map(move |(k, v)| (k, f(v)));
             let block_enc = fe(block.collect::<Vec<_>>().clone());
-            let block = fd(block_enc);
+            let mut block = fd(block_enc);
+            let ser_block = bincode::serialize(&block).unwrap();
+            block = bincode::deserialize(&ser_block).unwrap();
             Box::new(block.into_iter()) as Box<dyn Iterator<Item = _>>
         }));
 
@@ -1059,7 +1063,9 @@ where
             let f = f.clone();
             let block = res_iter.flat_map(move |(k, v)| f(v).map(move |x| (k.clone(), x)));
             let block_enc = fe(block.collect::<Vec<_>>().clone());
-            let block = fd(block_enc);
+            let mut block = fd(block_enc);
+            let ser_block = bincode::serialize(&block).unwrap();
+            block = bincode::deserialize(&ser_block).unwrap();
             Box::new(block.into_iter()) as Box<dyn Iterator<Item = _>>
         }));
 
