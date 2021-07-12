@@ -612,8 +612,11 @@ impl TailCompInfo {
 
 #[derive(Clone)]
 pub struct OpCache {
-    //<(cached_rdd_id, part_id), data>, data can not be Any object, required by lazy_static
-    map: Arc<RwLock<HashMap<(usize, usize), (usize, OpId)>>>,
+    //<(cached_rdd_id, part_id), data, op id>, data can not be Any object, required by lazy_static
+    in_map: Arc<RwLock<HashMap<(usize, usize), (usize, OpId)>>>,
+    //temperarily save the point of data, which is ready to sent out
+    // <(cached_rdd_id, part_id), data ptr>
+    out_map: Arc<RwLock<HashMap<(usize, usize), usize>>>,
     //<(cached_rdd_id, part_id), (start_block_id, end_block_id)>
     //contains all blocks whose corresponding values are cached inside enclave
     block_map: Arc<RwLock<HashMap<(usize, usize), (usize, usize)>>>,
@@ -622,22 +625,31 @@ pub struct OpCache {
 impl OpCache{
     pub fn new() -> Self {
         OpCache {
-            map: Arc::new(RwLock::new(HashMap::new())),
+            in_map: Arc::new(RwLock::new(HashMap::new())),
+            out_map: Arc::new(RwLock::new(HashMap::new())),
             block_map: Arc::new(RwLock::new(HashMap::new())), 
         }
     }
 
     pub fn get(&self, key: (usize, usize)) -> Option<(usize, OpId)> {
-        self.map.read().unwrap().get(&key).map(|x| *x)
+        self.in_map.read().unwrap().get(&key).map(|x| *x)
     }
 
     pub fn insert(&self, key: (usize, usize), data: usize, op_id: OpId) -> Option<(usize, OpId)> {
-        self.map.write().unwrap().insert(key, (data, op_id))
+        self.in_map.write().unwrap().insert(key, (data, op_id))
     }
 
     //free the value?
     pub fn remove(&self, key: (usize, usize)) -> Option<(usize, OpId)> {
-        self.map.write().unwrap().remove(&key)
+        self.in_map.write().unwrap().remove(&key)
+    }
+
+    pub fn insert_ptr(&self, key: (usize, usize), data_ptr: usize) {
+        self.out_map.write().unwrap().insert(key, data_ptr);
+    }
+
+    pub fn remove_ptr(&self, key: (usize, usize)) -> Option<usize> {
+        self.out_map.write().unwrap().remove(&key)
     }
 
     pub fn insert_bid(&self, rdd_id: usize, part_id: usize, start_bid: usize, end_bid: usize) {
@@ -663,8 +675,8 @@ impl OpCache{
     }
 
     pub fn clear(&self) {
-        let keys = self.map.read().unwrap().keys().map(|x| *x).collect::<Vec<_>>();
-        let mut map = self.map.write().unwrap();
+        let keys = self.in_map.read().unwrap().keys().map(|x| *x).collect::<Vec<_>>();
+        let mut map = self.in_map.write().unwrap();
         for key in keys {
             if let Some((data_ptr, op_id)) = map.remove(&key) {
                 let op = load_opmap().get(&op_id).unwrap();
@@ -1329,15 +1341,20 @@ pub trait OpE: Op {
     fn cache_to_outside(&self, key: (usize, usize), value: Vec<Self::Item>) -> Option<PThread> {
         //let handle = unsafe {
         //    PThread::new(Box::new(move || {
-        let ct = batch_encrypt(value, self.get_fe());
+        let ct = self.batch_encrypt(value);
         //println!("finish encryption, memory usage {:?} B", crate::ALLOCATOR.get_memory_usage());
-        crate::ALLOCATOR.set_switch(true);
-        let ct_ptr = Box::into_raw(Box::new(ct.clone())) as *mut u8 as usize;
-        crate::ALLOCATOR.set_switch(false);
+        let acc = match CACHE.remove_ptr(key) {
+            Some(ptr) => {
+                crate::ALLOCATOR.set_switch(true);
+                let mut acc = *unsafe { Box::from_raw(ptr as *mut Vec<Self::ItemE>) };
+                combine_enc(&mut acc, ct);
+                crate::ALLOCATOR.set_switch(false);
+                to_ptr(acc)
+            },
+            None => to_ptr(ct), 
+        } as usize;
+        CACHE.insert_ptr(key, acc);
         //println!("finish copy out, memory usage {:?} B", crate::ALLOCATOR.get_memory_usage());
-        let mut res = 0;
-        unsafe { ocall_cache_to_outside(&mut res, key.0, key.1, ct_ptr); }
-        //        //TODO: Handle the case res != 0
         //    }))
         //}.unwrap();
         //Some(handle)
@@ -1582,6 +1599,13 @@ pub trait OpE: Op {
                     let block_enc = self.batch_encrypt(result.collect::<Vec<_>>());
                     combine_enc(&mut acc, block_enc);
                 }
+            }
+            //cache to outside
+            let key = call_seq.get_caching_doublet();
+            if let Some(ct_ptr) = CACHE.remove_ptr(key) {
+                let mut res = 0;
+                unsafe { ocall_cache_to_outside(&mut res, key.0, key.1, ct_ptr); }
+                //        //TODO: Handle the case res != 0
             }
             to_ptr(acc)
         /* 
