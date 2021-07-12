@@ -102,7 +102,7 @@ pub fn kmeans_sec_0() -> Result<()> {
     });
 
     // TODO: need to change dir
-    let dir = PathBuf::from("/opt/data/ct_km");
+    let dir = PathBuf::from("/opt/data/ct_km_41065");
     let deserializer = Box::new(Fn!(|file: Vec<u8>| {
         bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap()  //ItemE = Vec<u8>  
     }));
@@ -236,7 +236,7 @@ pub fn kmeans_sec_1() -> Result<()> {
     });
 
     // TODO: need to change dir
-    let dir = PathBuf::from("/opt/data/ct_km");
+    let dir = PathBuf::from("/opt/data/ct_km_41065");
     let deserializer = Box::new(Fn!(|file: Vec<u8>| {
         bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap()  //ItemE = Vec<u8>  
     }));
@@ -381,7 +381,7 @@ pub fn kmeans_unsec_0() -> Result<()> {
     }));
 
     // TODO: need to change dir
-    let dir = PathBuf::from("/opt/data/pt_km");
+    let dir = PathBuf::from("/opt/data/pt_km_41065");
     let lines = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(1), Some(deserializer), None, fe, fd);
     let data_rdd = lines.flat_map(Fn!(|lines: Vec<String>| {
         Box::new(lines.into_iter().map(|line| {
@@ -507,7 +507,7 @@ pub fn kmeans_unsec_1() -> Result<()> {
     }));
 
     // TODO: need to change dir
-    let dir = PathBuf::from("/opt/data/pt_km");
+    let dir = PathBuf::from("/opt/data/pt_km_41065");
     let lines = sc.read_source(LocalFsReaderConfig::new(dir), Some(deserializer), None, fe, fd);
     let data_rdd = lines.flat_map(Fn!(|lines: Vec<String>| {
         Box::new(lines.into_iter().map(|line| {

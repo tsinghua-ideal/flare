@@ -42,7 +42,7 @@ pub fn lr_sec() -> Result<()> {
     
     
     let dim = 5;
-    let dir = PathBuf::from("/opt/data/ct_lr_3_5");
+    let dir = PathBuf::from("/opt/data/ct_lr_51072");
     let mut points_rdd = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(1), None, Some(deserializer), fe, fd);
     let mut w = Vec::new();
 
