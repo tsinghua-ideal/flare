@@ -89,11 +89,11 @@ fn main() {
     */
     
     //pagerank
-    /*
-    generate_pagerank_data(1_000_000, true, "pr");
-    generate_pagerank_data(10_000_000, false, "pr_1");
-    generate_pagerank_data(4_000_000, false, "pr_2");
-    */
+    
+    //generate_pagerank_data(None, 1_000_000, true, "pr");
+    //generate_pagerank_data(None, 10_000_000, false, "pr_1");
+    //generate_pagerank_data(None, 4_000_000, false, "pr_2");
+    //generate_pagerank_data(Some("cit-HepPh.txt"), 0, false, "cit-HepPh");
     //adapt data of pagerank to opaque
     /*
     let data = convert_pagerank_data(PathBuf::from("/opt/data/pt_pr_2"), 16);
@@ -103,19 +103,20 @@ fn main() {
     //pearson
     //generate_pearson_data(10_000_000, "pe_a_107");
     //generate_pearson_data(10_000_000, "pe_b_107");
-    generate_pearson_data(10, "pe_a_101");
-    generate_pearson_data(10, "pe_b_101");
+    //generate_pearson_data(10, "pe_a_101");
+    //generate_pearson_data(10, "pe_b_101");
 
     //tc
     /*
     let num_edges = 500;
     let num_vertices = 300;
-    generate_tc_data(num_edges, num_vertices, "tc");
+    generate_tc_data(None, num_edges, num_vertices, "tc");
     
     let num_edges = 10_000;
     let num_vertices = 1_000;
-    generate_tc_data(num_edges, num_vertices, "tc_1");
+    generate_tc_data(None, num_edges, num_vertices, "tc_1");
     */
+    generate_tc_data(Some("musae_facebook_edges.txt"), 0, 0, "musae_facebook_edges");
     //adapt data of tc to opaque
     /*
     let data = convert_tc_data(PathBuf::from("/opt/data/pt_tc"), 16);
@@ -328,21 +329,44 @@ fn convert_kmeans_data(dir: PathBuf, file_num: i32) -> Vec<u8> {
         .to_vec()
 }
 
-fn generate_pagerank_data(len: usize, is_random: bool, s: &str) {
-    let vals = match is_random {
-        true => {
-            let mut rng = rand::thread_rng();
-            (0..len).map(|_| (0..2).map(|_| rng.gen_range(0 as u32, 2_000_000 as u32)).collect()).collect()
+fn generate_pagerank_data(true_data: Option<&str>, len: usize, is_random: bool, s: &str) {
+    let vals = match true_data {
+        Some(path) => {
+            let mut pt_path = String::from("/opt/data/true_data/");
+            pt_path.push_str(path);
+            let file = fs::File::open(PathBuf::from(pt_path)).unwrap();
+            let mut reader = BufReader::new(file);
+            let mut content = vec![];
+            reader.read_to_end(&mut content).unwrap();
+            String::from_utf8(content)
+                .unwrap()
+                .lines()
+                .map(|s| s.to_string())
+                .map(|line| {
+                    let parts = line.split(" ")
+                        .collect::<Vec<_>>();
+                    let src = parts[0].parse::<u32>().unwrap();
+                    let dst = parts[1].parse::<u32>().unwrap();
+                    vec![src, dst]
+                }).collect::<Vec<_>>()
         },
-        false => {
-            let sq = (len as f64).sqrt().floor() as u32;
-            let mut vals = Vec::new();
-            for i in 0..sq {
-                let mut v = (0..sq).map(|v| vec![i, v]).collect::<Vec<_>>();
-                vals.append(&mut v);
+        None => {
+            match is_random {
+                true => {
+                    let mut rng = rand::thread_rng();
+                    (0..len).map(|_| (0..2).map(|_| rng.gen_range(0 as u32, 2_000_000 as u32)).collect()).collect()
+                },
+                false => {
+                    let sq = (len as f64).sqrt().floor() as u32;
+                    let mut vals = Vec::new();
+                    for i in 0..sq {
+                        let mut v = (0..sq).map(|v| vec![i, v]).collect::<Vec<_>>();
+                        vals.append(&mut v);
+                    }
+                    vals
+                }
             }
-            vals
-        }
+        },
     };
     let mut iter = vals.chunks(MAX_ENC_BL);
     let mut batch = iter.next();
@@ -440,20 +464,44 @@ fn convert_pagerank_data(dir: PathBuf, file_num: i32) -> Vec<u8> {
         .to_vec()
 }
 
-fn generate_tc_data(num_edges: u32, num_vertices: u32, s: &str) {
-    let mut rng = rand::thread_rng();
+fn generate_tc_data(true_data: Option<&str>, num_edges: u32, num_vertices: u32, s: &str) {
+    let mut data = match true_data {
+        Some(path) => {
+            let mut pt_path = String::from("/opt/data/true_data/");
+            pt_path.push_str(path);
+            let file = fs::File::open(PathBuf::from(pt_path)).unwrap();
+            let mut reader = BufReader::new(file);
+            let mut content = vec![];
+            reader.read_to_end(&mut content).unwrap();
+            String::from_utf8(content)
+                .unwrap()
+                .lines()
+                .map(|s| s.to_string())
+                .map(|line| {
+                    let parts = line.split(" ")
+                        .collect::<Vec<_>>();
+                    let src = parts[0].parse::<u32>().unwrap();
+                    let dst = parts[1].parse::<u32>().unwrap();
+                    (src, dst)
+                }).collect::<Vec<_>>()
+        },
+        None => {
+            let mut rng = rand::thread_rng();
     
-    let mut hset = HashSet::new();
-    let mut count_edges = 0;
-    while count_edges < num_edges {
-        let from = rng.gen_range::<_, u32, u32>(0, num_vertices);
-        let to = rng.gen_range::<_, u32, u32>(0, num_vertices);
-        if from != to {
-            count_edges += 1;
-            hset.insert((from, to));
-        }
-    }
-    let mut data = hset.into_iter().collect::<Vec<_>>();
+            let mut hset = HashSet::new();
+            let mut count_edges = 0;
+            while count_edges < num_edges {
+                let from = rng.gen_range::<_, u32, u32>(0, num_vertices);
+                let to = rng.gen_range::<_, u32, u32>(0, num_vertices);
+                if from != to {
+                    count_edges += 1;
+                    hset.insert((from, to));
+                }
+            }
+            hset.into_iter().collect::<Vec<_>>()
+        },
+    };
+
     let mut pt_path = String::from("/opt/data/pt_");
     pt_path.push_str(s);
     set_up(into_file_parts(data.clone(), 16), PathBuf::from(pt_path));
