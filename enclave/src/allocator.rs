@@ -63,7 +63,7 @@ impl Allocator {
         )
     }
 
-    pub fn reset_max_memory_usage(&self, init_usage: usize) -> (usize, usize) {
+    pub fn reset_memory_usage(&self, init_usage: usize) -> (usize, usize) {
         let total_usage = MEM_TOTAL_USAGE.load(Ordering::SeqCst);
         MAX_MEM_TOTAL_USAGE.store(total_usage, Ordering::SeqCst);
         MEM_USAGE.with(|f| {
@@ -74,6 +74,14 @@ impl Allocator {
         });
         (init_usage, total_usage)
     }
+
+    pub fn reset_max_memory_usage(&self) {
+        MAX_MEM_TOTAL_USAGE.store(0, Ordering::SeqCst);
+        MAX_MEM_USAGE.with(|f| {
+            f.set(0);
+        });
+    }
+
 }
 
 impl Allocator {

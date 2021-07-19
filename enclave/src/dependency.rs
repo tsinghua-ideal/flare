@@ -12,7 +12,7 @@ use std::vec::Vec;
 use crate::CAVE;
 use crate::aggregator::Aggregator;
 use crate::basic::{AnyData, Data, Func};
-use crate::op::{res_enc_to_ptr, MAX_ENC_BL, Input, OpId};
+use crate::op::{res_enc_to_ptr, to_ptr, MAX_ENC_BL, Input, OpId};
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use downcast_rs::DowncastSync;
@@ -111,8 +111,10 @@ impl NarrowDependencyTrait for RangeDependency {
 pub trait ShuffleDependencyTrait: DowncastSync + Send + Sync  { 
     fn change_partitioner(&self, reduce_num: usize);
     fn has_spec_oppty(&self) -> bool;
-    //fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>) -> *mut u8;
-    fn do_shuffle_task(&self, tid: u64, iter: Box<dyn Any>) -> *mut u8;
+    fn create_buckets(&self, tid: u64) -> *mut u8;
+    fn do_shuffle_task(&self, tid: u64, iter: Box<dyn Any>, buckets: *mut u8) -> *mut u8;
+    fn finish_buckets(&self, tid: u64, buckets: *mut u8, result_ptr: Option<*mut u8>) -> Option<*mut u8>;
+    fn free_buckets(&self, tid: u64, buckets: *mut u8);
     fn pre_merge(&self, tid: u64, input: Input) -> usize;
     fn send_sketch(&self, buf: &mut SizeBuf, p_data_enc: *mut u8);
     fn send_enc_data(&self, p_out: usize, p_data_enc: *mut u8);
@@ -233,16 +235,20 @@ where
         self.split_num_unchanged.load(atomic::Ordering::SeqCst)
     }
 
-    //fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>) -> *mut u8 {
-    fn do_shuffle_task(&self, tid: u64, iter: Box<dyn Any>) -> *mut u8 {
-        let aggregator = self.aggregator.clone();
+    fn create_buckets(&self, tid: u64) -> *mut u8 {
         let partitioner = self.partitioner.read().unwrap().clone();
         let num_output_splits = partitioner.get_num_of_partitions();
-        let mut buckets: Vec<BTreeMap<K, C>> = (0..num_output_splits)
+        let buckets: Vec<BTreeMap<K, C>> = (0..num_output_splits)
             .map(|_| BTreeMap::new())
             .collect::<Vec<_>>();
+        Box::into_raw(Box::new(buckets)) as *mut u8
+    }
 
-        let now = Instant::now();
+    //fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>) -> *mut u8 {
+    fn do_shuffle_task(&self, tid: u64, iter: Box<dyn Any>, buckets: *mut u8) -> *mut u8 {
+        let aggregator = self.aggregator.clone();
+        let partitioner = self.partitioner.read().unwrap().clone();
+        let mut buckets = unsafe{ Box::from_raw(buckets as *mut Vec<BTreeMap<K, C>>) };
         let mut data = *iter.downcast::<Vec<(K, V)>>().unwrap();
         if aggregator.is_default {
             //data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
@@ -275,19 +281,32 @@ where
             }
         }
 
-        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("tid: {:?}, cur mem after shuffle write: {:?}, shuffle write {:?} s", tid, crate::ALLOCATOR.get_memory_usage(), dur);
-        let buckets = buckets.into_iter().map(|bucket| bucket.into_iter().collect::<Vec<_>>()).collect::<Vec<_>>();
-
-        let now = Instant::now();
-        let result = self.encrypt_buckets(buckets);
-        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("cur mem before copy out: {:?}, encrypt {:?} s", crate::ALLOCATOR.get_memory_usage(), dur); 
-        let res_ptr = res_enc_to_ptr(result);
-        //println!("cur mem after copy out: {:?}", crate::ALLOCATOR.get_memory_usage()); 
-        res_ptr
+        Box::into_raw(buckets) as *mut u8
     }
-    
+
+    fn finish_buckets(&self, tid: u64, buckets: *mut u8, result_ptr: Option<*mut u8>) -> Option<*mut u8> {
+        let buckets = unsafe{ Box::from_raw(buckets as *mut Vec<BTreeMap<K, C>>) };
+        let buckets = buckets.into_iter().map(|bucket| bucket.into_iter().collect::<Vec<_>>()).collect::<Vec<_>>();
+        let result = self.encrypt_buckets(buckets);
+        let ptr = Some(match result_ptr {
+            Some(ptr) => {
+                crate::ALLOCATOR.set_switch(true);
+                let mut res = *unsafe { Box::from_raw(ptr as *mut Vec<Vec<Vec<(KE, CE)>>>) };
+                res.push(result.clone());
+                crate::ALLOCATOR.set_switch(false);
+                to_ptr(res)
+            },
+            None => {
+                res_enc_to_ptr(vec![result])
+            },
+        });
+        ptr
+    }
+
+    fn free_buckets(&self, tid: u64, buckets: *mut u8) {
+        let mut _buckets = unsafe{ Box::from_raw(buckets as *mut Vec<BTreeMap<K, C>>) };
+    }
+
     /*
     fn pre_merge(&self, tid: u64, input: Input) -> usize {
         let aggregator = self.aggregator.clone();
@@ -454,7 +473,7 @@ where
             );
         }
         let result = self.encrypt_buckets(vec![combiners]);
-        let res_ptr = res_enc_to_ptr(result);
+        let res_ptr = res_enc_to_ptr(vec![result]);
         res_ptr as usize
     }
 
@@ -476,7 +495,7 @@ where
     fn free_res_enc(&self, res_ptr: *mut u8, is_enc: bool) {
         assert!(is_enc);
         crate::ALLOCATOR.set_switch(true);
-        let res = unsafe { Box::from_raw(res_ptr as *mut Vec<Vec<(KE, CE)>>) };
+        let res = unsafe { Box::from_raw(res_ptr as *mut Vec<Vec<Vec<(KE, CE)>>>) };
         drop(res);
         crate::ALLOCATOR.set_switch(false);
     }
