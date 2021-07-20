@@ -445,7 +445,7 @@ impl Input {
 
     pub fn set_init_mem_usage(&self) -> &mut usize {
         let init_mem_usage = unsafe { (self.init_mem_usage as *mut usize).as_mut() }.unwrap();
-        *init_mem_usage = crate::ALLOCATOR.reset_max_memory_usage(*init_mem_usage).0;
+        *init_mem_usage = crate::ALLOCATOR.reset_memory_usage(*init_mem_usage).0;
         init_mem_usage
     }
 
@@ -1615,19 +1615,38 @@ pub trait OpE: Op {
 
     fn shuffle(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
+        let tid = call_seq.tid;
         let now = Instant::now();
-        let data_enc = input.get_enc_data::<Vec<Self::ItemE>>();
-        let lower = input.get_lower();
-        let upper = input.get_upper();
-        assert!(lower.len() == 1 && upper.len() == 1);
-        let data = self.batch_decrypt(data_enc[lower[0]..upper[0]].to_vec());
+
+        let result_iter = self.compute(call_seq, input);
+        let mut cur_memory = 0;
+        let mut buckets = shuf_dep.create_buckets(tid);
+
+        let mut still_in = true;
+        let mut result_ptr = None;
+        for result in result_iter {
+            still_in = true;
+            let iter = Box::new(result.collect::<Vec<_>>()) as Box<dyn Any>;
+            buckets = shuf_dep.do_shuffle_task(tid, iter, buckets);
+            cur_memory = crate::ALLOCATOR.get_max_memory_usage().0;
+            if cur_memory > 4_000_000 {
+                crate::ALLOCATOR.reset_max_memory_usage();
+                result_ptr = shuf_dep.finish_buckets(tid, buckets, result_ptr);
+                buckets = shuf_dep.create_buckets(tid);
+                still_in = false;
+            }
+        }
+        
+        if still_in {
+            result_ptr = shuf_dep.finish_buckets(tid, buckets, result_ptr);
+        } else {
+            shuf_dep.free_buckets(tid, buckets);
+        }
 
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("tid: {:?}, compute: {:?}s, cur mem: {:?}B", call_seq.tid, dur, crate::ALLOCATOR.get_memory_usage());
+        println!("tid: {:?}, shuffle write: {:?}s, cur mem: {:?}B", call_seq.tid, dur, crate::ALLOCATOR.get_memory_usage());
         //let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
-        let iter = Box::new(data) as Box<dyn Any>;
-        let result_ptr = shuf_dep.do_shuffle_task(call_seq.tid, iter);
-        result_ptr
+        result_ptr.unwrap()
     }
 
     fn randomize_in_place_(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
