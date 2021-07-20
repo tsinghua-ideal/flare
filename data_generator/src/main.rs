@@ -116,22 +116,22 @@ fn main() {
     let num_vertices = 1_000;
     generate_tc_data(None, num_edges, num_vertices, "tc_1");
     */
-    generate_tc_data(Some("musae_facebook_edges.txt"), 0, 0, "musae_facebook_edges");
+    //generate_tc_data(Some("musae_facebook_edges.txt"), 0, 0, "musae_facebook_edges");
     //adapt data of tc to opaque
     /*
     let data = convert_tc_data(PathBuf::from("/opt/data/pt_tc"), 16);
     set_up(vec![data], PathBuf::from("/opt/data/tc_opaque"));
     */    
-    /*
+
     //dijkstra 
-    generate_dijkstra_data("dij_1");
+    generate_dijkstra_data(Some("processed-PA.txt"), "dij_PA");
+    generate_dijkstra_data(Some("processed-CA.txt"), "dij_CA");
     
     //topk
-    generate_topk_data("topk");
-    */
+    //generate_topk_data("topk");
 }
 
-fn generate_dijkstra_data(s: &str) {
+fn generate_dijkstra_data(true_data: Option<&str>, s: &str) {
     /*
     let mut data: Vec<(usize, usize, Option<String>)> = vec![
         (1, 0, Some(String::from("2,10:3,5:"))),
@@ -150,52 +150,73 @@ fn generate_dijkstra_data(s: &str) {
             (s[0].parse::<usize>().unwrap(), s[1].parse::<usize>().unwrap(), Some(s[2].to_string()))
         }
     }
-    let f = match File::open("/opt/data/facebook/fb.dat") {
-        // `io::Error` 的 `description` 方法返回一个描述错误的字符串。
-        Err(why) => panic!("couldn't open for {}", why.to_string()),
-        Ok(file) => file,
+    let data = match true_data {
+        Some(path) => {
+            let mut pt_path = String::from("/opt/data/true_data/");
+            pt_path.push_str(path);
+            let file = fs::File::open(PathBuf::from(pt_path)).unwrap();
+            let mut reader = BufReader::new(file);
+            let mut content = vec![];
+            reader.read_to_end(&mut content).unwrap();
+            String::from_utf8(content)
+                .unwrap()
+                .lines()
+                .map(|s| s.to_string())
+                .map(|line| {
+                    custom_split_nodes_textfile(line)
+                }).collect::<Vec<_>>()
+        },
+        None => {
+            let f = match File::open("/opt/data/true_data/processed_facebook_combined.txt") {
+                // `io::Error` 的 `description` 方法返回一个描述错误的字符串。
+                Err(why) => panic!("couldn't open for {}", why.to_string()),
+                Ok(file) => file,
+            };
+            let lines = io::BufReader::new(f).lines();
+            let mut data = lines.into_iter().map(|line| {
+                let line = line.unwrap();
+                custom_split_nodes_textfile(line)
+            }).collect::<Vec<_>>();
+            //generate new data
+            let mut hs = HashSet::new();
+            let mut rng = rand::thread_rng();
+            for _ in 0..1_000_000 {
+                let pair = (rng.gen_range(4039 as usize, 100_000 as usize), rng.gen_range(4039 as usize, 100_000 as usize));
+                hs.insert(pair);
+            }
+            let mut hm = HashMap::new();
+            for pair in hs {
+                let e = hm.entry(pair.0).or_insert((3000 as usize, vec![]));
+                e.1.push((pair.1, rng.gen_range(1 as usize, 3000 as usize)));
+            }
+            for i in hm {
+                let (p0, (p1, p2)) = i;
+                let v = p2.into_iter().map(|(x, y)| {
+                    let mut s = x.to_string();
+                    s.push_str(",");
+                    s.push_str(&y.to_string());
+                    s
+                }).collect::<Vec<_>>();
+                let mut s = v.join(":");
+                s.push_str(":");
+                data.push((p0, p1, Some(s)));
+            }
+            let zero = &mut data[0];
+            let zero_s = zero.2.as_mut().unwrap();
+            let mut hs = HashSet::new();
+            for _ in 0..100 {
+                hs.insert(rng.gen_range(4039 as usize, 100_000 as usize));
+            } 
+            for i in hs {
+                zero_s.push_str(&i.to_string());
+                zero_s.push_str(",");
+                zero_s.push_str(&rng.gen_range(1 as usize, 3000 as usize).to_string());
+                zero_s.push_str(":");
+            }
+            data
+        }
     };
-    let lines = io::BufReader::new(f).lines();
-    let mut data = lines.into_iter().map(|line| {
-        let line = line.unwrap();
-        custom_split_nodes_textfile(line)
-    }).collect::<Vec<_>>();
-    //generate new data
-    let mut hs = HashSet::new();
-    let mut rng = rand::thread_rng();
-    for _ in 0..1_000_000 {
-        let pair = (rng.gen_range(4039 as usize, 100_000 as usize), rng.gen_range(4039 as usize, 100_000 as usize));
-        hs.insert(pair);
-    }
-    let mut hm = HashMap::new();
-    for pair in hs {
-        let e = hm.entry(pair.0).or_insert((3000 as usize, vec![]));
-        e.1.push((pair.1, rng.gen_range(1 as usize, 3000 as usize)));
-    }
-    for i in hm {
-        let (p0, (p1, p2)) = i;
-        let v = p2.into_iter().map(|(x, y)| {
-            let mut s = x.to_string();
-            s.push_str(",");
-            s.push_str(&y.to_string());
-            s
-        }).collect::<Vec<_>>();
-        let mut s = v.join(":");
-        s.push_str(":");
-        data.push((p0, p1, Some(s)));
-    }
-    let zero = &mut data[0];
-    let zero_s = zero.2.as_mut().unwrap();
-    let mut hs = HashSet::new();
-    for _ in 0..100 {
-        hs.insert(rng.gen_range(4039 as usize, 100_000 as usize));
-    } 
-    for i in hs {
-        zero_s.push_str(&i.to_string());
-        zero_s.push_str(",");
-        zero_s.push_str(&rng.gen_range(1 as usize, 3000 as usize).to_string());
-        zero_s.push_str(":");
-    }
+
 
     let mut pt_path = String::from("/opt/data/pt_");
     pt_path.push_str(s);
