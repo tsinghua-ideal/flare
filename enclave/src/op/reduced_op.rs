@@ -76,21 +76,21 @@ where
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            3 => self.step0_of_clone(p_buf, p_data_enc, dep_info), 
+            3 | 4 => self.step0_of_clone(p_buf, p_data_enc, dep_info), 
             _ => unreachable!(),
         }
     }
 
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            3 => self.step1_of_clone(p_out, p_data_enc, dep_info), 
+            3 | 4 => self.step1_of_clone(p_out, p_data_enc, dep_info), 
             _ => unreachable!(),
         }
     }
 
     fn call_free_res_enc(&self, res_ptr: *mut u8, is_enc: bool, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            3 => self.free_res_enc(res_ptr, is_enc),
+            3 | 4 => self.free_res_enc(res_ptr, is_enc),
             _ => unreachable!(),
         };
     }
@@ -133,17 +133,27 @@ where
     }
   
     fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
-        //3 is only for reduce & fold
+        //3 is only for global reduce & fold
+        //4 is only for local reduce & fold
         if dep_info.dep_type() == 3 {
-            let data_enc = input.get_enc_data::<Vec<TE>>();
-            let data = self.prev.batch_decrypt(data_enc.clone()); //need to check security
+            let data_enc = input.get_enc_data::<Vec<UE>>();
+            let data = data_enc.clone()
+                .into_iter()
+                .map(|x| (self.fd)(x))
+                .collect::<Vec<_>>();
             let result = (self.f)(Box::new(data.into_iter()));
-            let now = Instant::now();
             let result_enc = result.into_iter()
                 .map(|x| (self.fe)(x))
                 .collect::<Vec<_>>();
-            let dur = now.elapsed().as_nanos() as f64 * 1e-9;
             res_enc_to_ptr(result_enc) 
+        } else if dep_info.dep_type() == 4 {
+            let data_enc = input.get_enc_data::<Vec<TE>>();
+            let data = self.prev.batch_decrypt(data_enc.clone());
+            let result = (self.f)(Box::new(data.into_iter()));
+            let result_enc = result.into_iter()
+                .map(|x| (self.fe)(x))
+                .collect::<Vec<_>>();
+            res_enc_to_ptr(result_enc)
         } else {
             let opb = call_seq.get_next_op().clone();
             if call_seq.need_cache() {

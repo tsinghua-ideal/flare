@@ -476,6 +476,7 @@ where
         let data_ptr = input.data;
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
+        let is_caching_final_rdd = call_seq.is_caching_final_rdd();
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
@@ -500,6 +501,7 @@ where
             return self.set_cached_data(
                 call_seq,
                 res_iter,
+                is_caching_final_rdd,
             )
         }
         res_iter
@@ -746,6 +748,7 @@ where
         let data_ptr = input.data;
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
+        let is_caching_final_rdd = call_seq.is_caching_final_rdd();
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
@@ -776,6 +779,7 @@ where
             return self.set_cached_data(
                 call_seq,
                 res_iter,
+                is_caching_final_rdd,
             )
         }
         res_iter
@@ -1022,6 +1026,7 @@ where
         let data_ptr = input.data;
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
+        let is_caching_final_rdd = call_seq.is_caching_final_rdd();
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
@@ -1053,6 +1058,7 @@ where
             return self.set_cached_data(
                 call_seq,
                 res_iter,
+                is_caching_final_rdd,
             )
         }
         res_iter

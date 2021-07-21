@@ -542,6 +542,7 @@ where
         let data_ptr = input.data;
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
+        let is_caching_final_rdd = call_seq.is_caching_final_rdd();
         let fd = self.get_fd();
 
         if have_cache {
@@ -562,6 +563,7 @@ where
             return self.set_cached_data(
                 call_seq,
                 res_iter,
+                is_caching_final_rdd,
             )
         }
         res_iter

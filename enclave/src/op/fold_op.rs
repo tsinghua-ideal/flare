@@ -5,9 +5,9 @@ where
     T: Data, 
     TE: Data, 
     UE: Data,
-    F: Func(Box<dyn Iterator<Item = T>>) -> Vec<T> + Clone,
-    FE: Func(Vec<T>) -> UE + Clone,
-    FD: Func(UE) -> Vec<T> + Clone,
+    F: Func(Box<dyn Iterator<Item = T>>) -> T + Clone,
+    FE: Func(T) -> UE + Clone,
+    FD: Func(UE) -> T + Clone,
 {
     vals: Arc<OpVals>,
     prev: Arc<dyn OpE<Item = T, ItemE = TE>>,
@@ -21,9 +21,9 @@ where
     T: Data, 
     TE: Data, 
     UE: Data,
-    F: Func(Box<dyn Iterator<Item = T>>) -> Vec<T> + Clone,
-    FE: Func(Vec<T>) -> UE + Clone,
-    FD: Func(UE) -> Vec<T> + Clone,
+    F: Func(Box<dyn Iterator<Item = T>>) -> T + Clone,
+    FE: Func(T) -> UE + Clone,
+    FD: Func(UE) -> T + Clone,
 {
     fn clone(&self) -> Self {
         Fold {
@@ -41,9 +41,9 @@ where
     T: Data, 
     TE: Data, 
     UE: Data,
-    F: Func(Box<dyn Iterator<Item = T>>) -> Vec<T> + Clone,
-    FE: Func(Vec<T>) -> UE + Clone,
-    FD: Func(UE) -> Vec<T> + Clone,
+    F: Func(Box<dyn Iterator<Item = T>>) -> T + Clone,
+    FE: Func(T) -> UE + Clone,
+    FD: Func(UE) -> T + Clone,
 {
     #[track_caller]
     pub(crate) fn new(prev: Arc<dyn OpE<Item = T, ItemE = TE>>, f: F, fe: FE, fd: FD) -> Self {
@@ -70,27 +70,27 @@ where
     T: Data,
     TE: Data,
     UE: Data,
-    F: SerFunc(Box<dyn Iterator<Item = T>>) -> Vec<T>,
-    FE: SerFunc(Vec<T>) -> UE,
-    FD: SerFunc(UE) -> Vec<T>,
+    F: SerFunc(Box<dyn Iterator<Item = T>>) -> T,
+    FE: SerFunc(T) -> UE,
+    FD: SerFunc(UE) -> T,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            3 => self.step0_of_clone(p_buf, p_data_enc, dep_info), 
+            3 | 4 => self.step0_of_clone(p_buf, p_data_enc, dep_info), 
             _ => unreachable!(),
         }
     }
 
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            3 => self.step1_of_clone(p_out, p_data_enc, dep_info), 
+            3 | 4 => self.step1_of_clone(p_out, p_data_enc, dep_info), 
             _ => unreachable!(),
         }
     }
 
     fn call_free_res_enc(&self, res_ptr: *mut u8, is_enc: bool, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            3 => self.free_res_enc(res_ptr, is_enc),
+            3 | 4 => self.free_res_enc(res_ptr, is_enc),
             _ => unreachable!(),
         };
     }
@@ -118,9 +118,9 @@ where
     T: Data,
     TE: Data,
     UE: Data,
-    F: SerFunc(Box<dyn Iterator<Item = T>>) -> Vec<T>,
-    FE: SerFunc(Vec<T>) -> UE,
-    FD: SerFunc(UE) -> Vec<T>,
+    F: SerFunc(Box<dyn Iterator<Item = T>>) -> T,
+    FE: SerFunc(T) -> UE,
+    FD: SerFunc(UE) -> T,
 {
     type Item = T;
     
@@ -133,18 +133,25 @@ where
     }
   
     fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8{
-        //3 is only for reduce and fold
+        //3 is only for global reduce & fold (cf)
+        //4 is only for local reduce & fold (sf + cf)
         if dep_info.dep_type() == 3 {
+            let data_enc = input.get_enc_data::<Vec<UE>>();
+            let data = data_enc.clone();
+            let t = (self.f)(Box::new(data_enc.clone()
+                .into_iter()
+                .map(|x| (self.fd)(x))
+                .collect::<Vec<_>>()
+                .into_iter()));
+            let ue = vec![(self.fe)(t)];
+            res_enc_to_ptr(ue)
+        } else if dep_info.dep_type() == 4 {
             let data_enc = input.get_enc_data::<Vec<TE>>();
             let data = self.prev.batch_decrypt(data_enc.clone());
-            let result = (self.f)(Box::new(data.into_iter()));
-            let now = Instant::now();
-            let result_enc = self.batch_encrypt(result); 
-            let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-            println!("in enclave encrypt {:?} s", dur); 
-            to_ptr(result_enc)  
-        }
-        else {
+            let t = (self.f)(Box::new(data.into_iter()));
+            let ue = vec![(self.fe)(t)];
+            res_enc_to_ptr(ue)
+        } else {
             let opb = call_seq.get_next_op().clone();
             if call_seq.need_cache() {
                 if opb.get_op_id() == self.prev.get_op_id() {
@@ -170,7 +177,7 @@ where
         let res_iter = self.prev.compute(call_seq, input);
         let f = self.f.clone();
         Box::new(res_iter.map(move |res_iter|
-            Box::new((f)(res_iter).into_iter()) as Box<dyn Iterator<Item = _>>))
+            Box::new(vec![(f)(res_iter)].into_iter()) as Box<dyn Iterator<Item = _>>))
     }
 
 }
@@ -180,9 +187,9 @@ where
     T: Data,
     TE: Data,
     UE: Data,
-    F: SerFunc(Box<dyn Iterator<Item = T>>) -> Vec<T>,
-    FE: SerFunc(Vec<T>) -> UE,
-    FD: SerFunc(UE) -> Vec<T>,
+    F: SerFunc(Box<dyn Iterator<Item = T>>) -> T,
+    FE: SerFunc(T) -> UE,
+    FD: SerFunc(UE) -> T,
 {
     type ItemE = UE;
     fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
@@ -190,10 +197,10 @@ where
     }
 
     fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
-        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Self::ItemE>
+        unreachable!()
     }
 
     fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
-        Box::new(self.fd.clone()) as Box<dyn Func(Self::ItemE)->Vec<Self::Item>>
+        unreachable!()
     }
 }

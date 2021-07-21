@@ -51,21 +51,21 @@ where
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            3 => self.step0_of_clone(p_buf, p_data_enc, dep_info), 
+            4 => self.step0_of_clone(p_buf, p_data_enc, dep_info), 
             _ => unreachable!(),
         }
     }
 
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            3 => self.step1_of_clone(p_out, p_data_enc, dep_info), 
+            4 => self.step1_of_clone(p_out, p_data_enc, dep_info), 
             _ => unreachable!(),
         }
     }
 
     fn call_free_res_enc(&self, res_ptr: *mut u8, is_enc: bool, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            3 => self.free_res_enc(res_ptr, is_enc),
+            4 => self.free_res_enc(res_ptr, is_enc),
             _ => unreachable!(),
         };
     }
@@ -104,15 +104,22 @@ where
     }
   
     fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8{
-        //3 is only for reduce & fold
+        //3 is only for global reduce & fold (cf)
+        //4 is only for local reduce & fold (sf + cf)
         if dep_info.dep_type() == 3 {
-            //self.narrow(call_seq, input, dep_info)
-            let result_iter = self.compute(call_seq, input);
-            let result = result_iter.flat_map(|x| x.collect::<Vec<_>>())
-                .collect::<Vec<Self::Item>>()[0];
-            result as *mut u8
-        }
-        else {
+            //because it does not compute on ciphertext
+            unreachable!()
+        } else if dep_info.dep_type() == 4 {
+            let data_enc = input.get_enc_data::<Vec<TE>>();
+            let len = data_enc.len();
+            let mut count = 0;
+            for i in 0..len {
+                let block = self.prev.get_fd()(data_enc[i].clone());
+                count += block.len(); 
+            }
+            let res = vec![count as u64];
+            res_enc_to_ptr(res)
+        } else {
             let opb = call_seq.get_next_op().clone();
             if opb.get_op_id() == self.prev.get_op_id() {
                 self.prev.compute_start(call_seq, input, dep_info)
@@ -124,17 +131,7 @@ where
     }
 
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
-        let data_enc = input.get_enc_data::<Vec<TE>>();
-        let len = data_enc.len();
-        let mut count = 0;
-        for i in 0..len {
-            let block = self.prev.get_fd()(data_enc[i].clone());
-            count += block.len(); 
-        }
-
-        Box::new(vec![Box::new(vec![count as u64].into_iter())]
-            .into_iter()
-            .map(|x| x as Box<dyn Iterator<Item = _>>))
+        unreachable!()
     }
 
 }
@@ -150,10 +147,10 @@ where
     }
 
     fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
-        Box::new(|v: Vec<u64>| v)
+        unreachable!()
     }
 
     fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
-        Box::new(|v: Vec<u64>| v)
+        unreachable!()
     }
 }

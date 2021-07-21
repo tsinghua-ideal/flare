@@ -795,7 +795,7 @@ impl<'a> NextOpId<'a> {
     }
 
     pub fn is_caching_final_rdd(&self) -> bool {
-        self.rdd_ids[0] == self.cache_meta.caching_rdd_id
+        self.cur_idx == 0
         //It seems not useful unless a cached rdd in shuffle task is simultaniously relied on in another result task
         && !self.is_shuffle
     }
@@ -1390,12 +1390,11 @@ pub trait OpE: Op {
         Box::new(res_iter)
     }
 
-    fn set_cached_data(&self, call_seq: &NextOpId, res_iter: ResIter<Self::Item>) -> ResIter<Self::Item> {
+    fn set_cached_data(&self, call_seq: &NextOpId, res_iter: ResIter<Self::Item>, is_caching_final_rdd: bool) -> ResIter<Self::Item> {
         let ope = self.get_ope();
         let op_id = self.get_op_id();
         let can_spec = call_seq.can_spec();
         let key = call_seq.get_caching_doublet();
-        let is_caching_final_rdd = call_seq.is_caching_final_rdd();
         let (lower_bound, upper_bound) = res_iter.size_hint();
         let esti_bound = upper_bound.unwrap_or(lower_bound);
         //set number of blocks that are cached inside enclave
@@ -1439,7 +1438,7 @@ pub trait OpE: Op {
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
                 shuf_dep.send_sketch(&mut buf, p_data_enc);
             },
-            3 => {
+            3 | 4 => {
                 let mut idx = Idx::new();
                 let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::ItemE>) };
                 data_enc.send(&mut buf, &mut idx);
@@ -1462,7 +1461,7 @@ pub trait OpE: Op {
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
                 shuf_dep.send_enc_data(p_out, p_data_enc);
             },
-            3 => {
+            3 | 4 => {
                 let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<Self::ItemE>) };
                 let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::ItemE>) };
                 v_out.clone_in_place(&data_enc);
@@ -1764,61 +1763,49 @@ pub trait OpE: Op {
     }
 
     #[track_caller]
-    fn fold<F, UE, FE, FD>(&self, init: Self::Item, f: F, fe: FE, fd: FD) -> Result<PT<Vec<Self::Item>, Vec<UE>>>
+    fn fold<F, UE, FE, FD>(&self, init: Self::Item, f: F, fe: FE, fd: FD) -> Result<PT<Self::Item, UE>>
     where
         Self: Sized,
         UE: Data,
         F: SerFunc(Self::Item, Self::Item) -> Self::Item,
-        FE: SerFunc(Vec<Self::Item>) -> UE,
-        FD: SerFunc(UE) -> Vec<Self::Item>,
+        FE: SerFunc(Self::Item) -> UE,
+        FD: SerFunc(UE) -> Self::Item,
     {
         let cf = f.clone();
         let zero = init.clone();
         let reduce_partition = Fn!(
             move |iter: Box<dyn Iterator<Item = Self::Item>>| {
-                vec![iter.fold(zero.clone(), &cf)]
+                iter.fold(zero.clone(), &cf)
         });
         let new_op = SerArc::new(Fold::new(self.get_ope(), reduce_partition, fe.clone(), fd.clone()));
         if !self.get_context().get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         }
-        let bfe = Box::new(move |data| {
-            batch_encrypt(data, fe.clone())
-        });
-        let bfd = Box::new(move |data_enc| {
-            batch_decrypt(data_enc, fd.clone())
-        });
-        Ok(Text::new(vec![Default::default()], Some(bfe), Some(bfd)))
+        Ok(Text::new(Default::default(), Some(Box::new(fe)), Some(Box::new(fd))))
     }
 
     #[track_caller]
-    fn secure_fold<F, UE, FE, FD>(&self, init: Self::Item, f: F, fe: FE, fd: FD, tail_info: &TailCompInfo) -> Result<PT<Vec<Self::Item>, Vec<UE>>>
+    fn secure_fold<F, UE, FE, FD>(&self, init: Self::Item, f: F, fe: FE, fd: FD, tail_info: &TailCompInfo) -> Result<PT<Self::Item, UE>>
     where
         Self: Sized,
         UE: Data,
         F: SerFunc(Self::Item, Self::Item) -> Self::Item,
-        FE: SerFunc(Vec<Self::Item>) -> UE,
-        FD: SerFunc(UE) -> Vec<Self::Item>,
+        FE: SerFunc(Self::Item) -> UE,
+        FD: SerFunc(UE) -> Self::Item,
     {
-        let bfe = Box::new(move |data| {
-            batch_encrypt(data, fe.clone())
-        });
-        let bfd = Box::new(move |data_enc| {
-            batch_decrypt(data_enc, fd.clone())
-        });
-        Ok(Text::rec(tail_info, Some(bfe), Some(bfd)))
+        Ok(Text::rec(tail_info, Some(Box::new(fe)), Some(Box::new(fd))))
     }
 
     #[track_caller]
-    fn aggregate<U, UE, SF, CF, FE, FD>(&self, init: U, seq_fn: SF, comb_fn: CF, fe: FE, fd: FD) -> Result<PT<Vec<U>, Vec<UE>>>
+    fn aggregate<U, UE, SF, CF, FE, FD>(&self, init: U, seq_fn: SF, comb_fn: CF, fe: FE, fd: FD) -> Result<PT<U, UE>>
     where
         Self: Sized,
         U: Data,
         UE: Data,
         SF: SerFunc(U, Self::Item) -> U,
         CF: SerFunc(U, U) -> U,
-        FE: SerFunc(Vec<U>) -> UE,
-        FD: SerFunc(UE) -> Vec<U>,
+        FE: SerFunc(U) -> UE,
+        FD: SerFunc(UE) -> U,
     {
         let zero = init.clone();
         let reduce_partition = Fn!(
@@ -1826,39 +1813,27 @@ pub trait OpE: Op {
         );
         let zero = init.clone();
         let combine = Fn!(
-            move |iter: Box<dyn Iterator<Item = U>>| vec![iter.fold(zero.clone(), &comb_fn)]
+            move |iter: Box<dyn Iterator<Item = U>>| iter.fold(zero.clone(), &comb_fn)
         );
         let new_op = SerArc::new(Aggregated::new(self.get_ope(), reduce_partition, combine, fe.clone(), fd.clone()));
         if !self.get_context().get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         }
-        let bfe = Box::new(move |data| {
-            batch_encrypt(data, fe.clone())
-        });
-        let bfd = Box::new(move |data_enc| {
-            batch_decrypt(data_enc, fd.clone())
-        });
-        Ok(Text::new(vec![Default::default()], Some(bfe), Some(bfd)))
+        Ok(Text::new(Default::default(), Some(Box::new(fe)), Some(Box::new(fd))))
     }
 
     #[track_caller]
-    fn secure_aggregate<U, UE, SF, CF, FE, FD>(&self, init: U, seq_fn: SF, comb_fn: CF, fe: FE, fd: FD, tail_info: &TailCompInfo) -> Result<PT<Vec<U>, Vec<UE>>>
+    fn secure_aggregate<U, UE, SF, CF, FE, FD>(&self, init: U, seq_fn: SF, comb_fn: CF, fe: FE, fd: FD, tail_info: &TailCompInfo) -> Result<PT<U, UE>>
     where
         Self: Sized,
         U: Data,
         UE: Data,
         SF: SerFunc(U, Self::Item) -> U,
         CF: SerFunc(U, U) -> U,
-        FE: SerFunc(Vec<U>) -> UE,
-        FD: SerFunc(UE) -> Vec<U>,
+        FE: SerFunc(U) -> UE,
+        FD: SerFunc(UE) -> U,
     {
-        let bfe = Box::new(move |data| {
-            batch_encrypt(data, fe.clone())
-        });
-        let bfd = Box::new(move |data_enc| {
-            batch_decrypt(data_enc, fd.clone())
-        });
-        Ok(Text::rec(tail_info, Some(bfe), Some(bfd)))
+        Ok(Text::rec(tail_info, Some(Box::new(fe)), Some(Box::new(fd))))
     }
 
     #[track_caller]
