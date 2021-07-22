@@ -141,7 +141,7 @@ where
     T: Data, 
     TE: Data,
 {
-    type ItemE = Vec<u64>;
+    type ItemE = u64;
     fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
         Arc::new(self.clone())
     }
