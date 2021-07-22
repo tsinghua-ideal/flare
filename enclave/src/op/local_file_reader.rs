@@ -48,10 +48,9 @@ impl<I: Data> ReaderConfiguration<I> for LocalFsReaderConfig {
         if !reader.get_context().get_is_tail_comp() {
             insert_opmap(reader.get_op_id(), reader.get_op_base());
         }
-        let local_num_splits: usize = 1;
+        
         let read_files = 
-            Fn!(move |part: usize, readers: Box<dyn Iterator<Item = O>>| {
-                let _part = part % local_num_splits;
+            Fn!(move |_part: usize, readers: Box<dyn Iterator<Item = O>>| {
                 readers
             });
         reader.get_context().add_num(1);
