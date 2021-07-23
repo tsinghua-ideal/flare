@@ -241,7 +241,7 @@ pub fn kmeans_sec_1() -> Result<()> {
         bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap()  //ItemE = Vec<u8>  
     }));
 
-    let lines = sc.read_source(LocalFsReaderConfig::new(dir), None, Some(deserializer), fe, fd)
+    let lines = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(1), None, Some(deserializer), fe, fd)
         .map(Fn!(|file: Vec<u8>| {
             String::from_utf8(file)
             .unwrap()
