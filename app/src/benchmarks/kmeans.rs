@@ -113,9 +113,9 @@ pub fn kmeans_sec_0() -> Result<()> {
     let k = 10;
     let converge_dist = OText::<f64>::new(0.3, None, None);
     let mut k_points = data_rdd.secure_take(k).unwrap();
-    
+    let mut iter = 0;
     let mut temp_dist = OText::new(100.0, None, None);
-    while *temp_dist > *converge_dist {
+    while *temp_dist > *converge_dist && iter < 5 {
         //let k_points_ct = k_points.get_ct();
         let k_points_ = k_points.to_plain();
         let closest = data_rdd.map(
@@ -144,11 +144,11 @@ pub fn kmeans_sec_0() -> Result<()> {
         temp_dist.update_from_tail_info(&tail_info);
 
 
+        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+        println!("temp_dist = {:?}, time at iter {:?}: {:?}", *temp_dist, iter, dur);
 
-        println!("temp_dist = {:?}", *temp_dist);
 
-
-        
+        iter += 1;
     }
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("total time {:?} s, k_points = {:?}", dur, k_points.to_plain());
@@ -392,9 +392,10 @@ pub fn kmeans_unsec_0() -> Result<()> {
     println!("count = {:?}", data_rdd.count());
     let k = 10;
     let converge_dist = 0.3;
+    let mut iter = 0;
     let mut k_points = data_rdd.take(k).unwrap();
     let mut temp_dist = 100.0;
-    while temp_dist > converge_dist {
+    while temp_dist > converge_dist && iter < 5 {
         let k_points_c = k_points.clone();
         let closest = data_rdd.map(
             Fn!(move |p| {
@@ -418,9 +419,10 @@ pub fn kmeans_unsec_0() -> Result<()> {
         for (idx, point) in new_points {
             k_points[idx] = point;
         }
-        println!("temp_dist = {:?}", temp_dist);
+        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+        println!("temp_dist = {:?}, time at iter {:?}: {:?}", temp_dist, iter, dur);
 
-     
+        iter += 1;
     }
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("total time = {:?}s, k_points = {:?}", dur, k_points);
