@@ -95,7 +95,7 @@ pub fn dijkstra_sec_0() -> Result<()> {
         bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap()  //ItemE = Vec<u8>
     }));
 
-    let dir = PathBuf::from("/opt/data/ct_dij_107");
+    let dir = PathBuf::from("/opt/data/ct_dij_CA");
     let mut nodes = sc.read_source(LocalFsReaderConfig::new(dir), None, Some(deserializer), fe, fd)
         .map(Fn!(|node| custom_split_nodes_text_file(node)), fe_mp.clone(), fd_mp.clone());
     let mut old = nodes.aggregate(
@@ -182,7 +182,7 @@ pub fn dijkstra_sec_1() -> Result<()> {
         bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap()  //ItemE = Vec<u8>
     }));
 
-    let dir = PathBuf::from("/opt/data/ct_dij_107");
+    let dir = PathBuf::from("/opt/data/ct_dij_CA");
     let mut nodes = sc.read_source(LocalFsReaderConfig::new(dir), None, Some(deserializer), fe, fd)
         .map(Fn!(|node| custom_split_nodes_text_file(node)), fe_mp.clone(), fd_mp.clone());
     let mut old = 0;

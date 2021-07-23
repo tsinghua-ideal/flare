@@ -121,7 +121,7 @@ pub fn triangle_counting_sec_0() -> Result<()> {
         bincode::deserialize::<Vec<(Vec<u8>, Vec<u8>)>>(&file).unwrap()  //ItemE = (Vec<u8>, Vec<u8>)
     }));
 
-    let dir = PathBuf::from("/opt/data/ct_tc_6");
+    let dir = PathBuf::from("/opt/data/ct_soc-Slashdot0811");
     let graph = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(1), None, Some(deserializer), fe.clone(), fd.clone())
         .filter(Fn!(|edge: &(u32, u32)| edge.0 != edge.1))
         .map(Fn!(|edge: (u32, u32)| match edge.0 < edge.1 {

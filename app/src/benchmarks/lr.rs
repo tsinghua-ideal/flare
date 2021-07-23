@@ -70,7 +70,7 @@ pub fn lr_sec() -> Result<()> {
         println!("{:?}: w = {:?}", i, w);
     } 
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    println!("Total time {:?} s", dur);
+    println!("total time {:?} s", dur);
     println!("w = {:?}", w);
 
     Ok(())
@@ -143,7 +143,7 @@ pub fn lr_unsec() -> Result<()> {
         println!("{:?}: w = {:?}", i, w);
     } 
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    println!("Total time {:?} s", dur);
+    println!("total time {:?} s", dur);
     println!("w = {:?}", w);
 
     Ok(())

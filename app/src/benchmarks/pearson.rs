@@ -75,7 +75,7 @@ pub fn pearson_sec_0() -> Result<()> {
         .secure_reduce(Fn!(|a: (f64, f64, f64), b: (f64, f64, f64)| (a.0+b.0, a.1+b.1, a.2+b.2)), Fn!(|x| x), Fn!(|x| x)).unwrap();
     let r = upper / (f64::sqrt(lowerx) * f64::sqrt(lowery));
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    println!("Total time {:?} s, r = {:?}", dur, r);
+    println!("total time {:?} s, r = {:?}", dur, r);
     Ok(())
 }
 
@@ -158,6 +158,6 @@ pub fn pearson_unsec_0() -> Result<()> {
         .reduce(Fn!(|a: (f64, f64, f64), b: (f64, f64, f64)| (a.0+b.0, a.1+b.1, a.2+b.2))).unwrap().unwrap();
     let r = upper / (f64::sqrt(lowerx) * f64::sqrt(lowery));
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    println!("Total time {:?} s, r = {:?}", dur, r);
+    println!("total time {:?} s, r = {:?}", dur, r);
     Ok(())
 }

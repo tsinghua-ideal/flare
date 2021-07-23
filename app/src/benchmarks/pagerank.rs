@@ -157,7 +157,7 @@ pub fn pagerank_sec_0() -> Result<()> {
     }));
 
     let iters = 1;
-    let dir = PathBuf::from("/opt/data/ct_pr_107");
+    let dir = PathBuf::from("/opt/data/ct_cit-Patents");
     let lines = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(1), None, Some(deserializer), fe, fd)
         .map(Fn!(|file: Vec<u8>| {
             String::from_utf8(file)
@@ -190,16 +190,16 @@ pub fn pagerank_sec_0() -> Result<()> {
             .map_values(Fn!(|v| 0.15 + 0.85 * v), fe_mv.clone(), fd_mv.clone());
     }
 
-    let output = ranks.secure_collect().unwrap();
-    /*
-    for (url, rank) in output.to_plain() {
-        println!("url {:?} has rank {:?}", url, rank);
-    }
-    */
-    let output = output.to_plain().into_iter().map(|(k, v)| (ordered_float::OrderedFloat(v), k)).collect::<BTreeMap<_, _>>();
-    let (v, k) = output.last_key_value().unwrap();
+    let output = ranks.secure_reduce(Fn!(|x: (String, f64), y: (String, f64)| {
+        if x.1 > y.1 {
+            x
+        } else {
+            y
+        }
+    }), Fn!(|x| x), Fn!(|x| x)).unwrap();
+    let output = output.to_plain();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    println!("{:?} rank first with {:?}, total time = {:?}", k, v, dur);
+    println!("{:?} rank first with {:?}, total time = {:?}", output.0, output.1, dur);
     Ok(())
 }
     
@@ -352,7 +352,7 @@ pub fn pagerank_unsec_0() -> Result<()> {
     }));
 
     let iters = 1; //7 causes core dump, why? some hints: converge when 6
-    let dir = PathBuf::from("/opt/data/pt_pr_107");
+    let dir = PathBuf::from("/opt/data/pt_cit-Patents");
     let lines = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(1), Some(deserializer), None, fe, fd);
     let links = lines.flat_map(Fn!(|lines: Vec<String>| {
             Box::new(lines.into_iter().map(|line| {
@@ -360,7 +360,7 @@ pub fn pagerank_unsec_0() -> Result<()> {
                     .collect::<Vec<_>>();
                 (parts[0].to_string(), parts[1].to_string())
             })) as Box<dyn Iterator<Item = _>>
-        }), fe_fmp, fd_fmp).distinct()
+        }), fe_fmp, fd_fmp).distinct_with_num_partitions(1)
         .group_by_key(fe_gbk, fd_gbk, 1);
     links.cache();
     let mut ranks = links.map_values(Fn!(|_| 1.0), fe_mv.clone(), fd_mv.clone());
@@ -378,10 +378,16 @@ pub fn pagerank_unsec_0() -> Result<()> {
             .map_values(Fn!(|v| 0.15 + 0.85 * v), fe_mv.clone(), fd_mv.clone());
     }
 
-    let output = ranks.collect().unwrap().into_iter().map(|(k, v)| (ordered_float::OrderedFloat(v), k)).collect::<BTreeMap<_, _>>();
+    let output = ranks.reduce(Fn!(|x: (String, f64), y: (String, f64)| {
+        if x.1 > y.1 {
+            x
+        } else {
+            y
+        }
+    })).unwrap();
+    let output = output.unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    let (v, k) = output.last_key_value().unwrap();
-    println!("{:?} rank first with {:?}, total time = {:?}", k, v, dur);
+    println!("{:?} rank first with {:?}, total time = {:?}", output.0, output.1, dur);
 
     Ok(())
 }

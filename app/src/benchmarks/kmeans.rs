@@ -151,7 +151,7 @@ pub fn kmeans_sec_0() -> Result<()> {
         
     }
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    println!("Total time {:?} s, k_points = {:?}", dur, k_points.to_plain());
+    println!("total time {:?} s, k_points = {:?}", dur, k_points.to_plain());
     Ok(())
 }
 
@@ -296,7 +296,7 @@ pub fn kmeans_sec_1() -> Result<()> {
         
     }
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    println!("Total time {:?} s, k_points = {:?}", dur, k_points.to_plain());
+    println!("total time {:?} s, k_points = {:?}", dur, k_points.to_plain());
     Ok(())
 }
     

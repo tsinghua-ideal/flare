@@ -157,7 +157,7 @@ pub fn pagerank_sec_0() -> Result<()> {
     }));
 
     let iters = 1;
-    let dir = PathBuf::from("/opt/data/ct_pr_107");
+    let dir = PathBuf::from("/opt/data/ct_cit-Patents");
     let lines = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(1), None, Some(deserializer), fe, fd)
         .map(Fn!(|file: Vec<u8>| {
             String::from_utf8(file)
@@ -190,13 +190,13 @@ pub fn pagerank_sec_0() -> Result<()> {
         .map_values(Fn!(|v| 0.15 + 0.85 * v), fe_mv.clone(), fd_mv.clone());
     sc.leave_loop();
 
-    let _output = ranks.collect().unwrap();
-    
-    
-    
-
-    
-    
+    let _output = ranks.reduce(Fn!(|x: (String, f64), y: (String, f64)| {
+        if x.1 > y.1 {
+            x
+        } else {
+            y
+        }
+    }), Fn!(|x| x), Fn!(|x| x)).unwrap();
     
     
     
