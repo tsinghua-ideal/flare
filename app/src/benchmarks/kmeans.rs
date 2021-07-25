@@ -389,7 +389,7 @@ pub fn kmeans_unsec_0() -> Result<()> {
         })) as Box<dyn Iterator<Item = _>>
     }), fe_fmp, fd_fmp);
     data_rdd.cache();
-    println!("count = {:?}", data_rdd.count());
+    
     let k = 10;
     let converge_dist = 0.3;
     let mut iter = 0;
@@ -517,7 +517,7 @@ pub fn kmeans_unsec_1() -> Result<()> {
         })) as Box<dyn Iterator<Item = _>>
     }), fe_fmp, fd_fmp);
     data_rdd.cache();
-    println!("count = {:?}", data_rdd.count());
+    
     let k = 10;
     let converge_dist = 0.1;
     let mut k_points = data_rdd.take_sample(false, k, Some(42)).unwrap();
