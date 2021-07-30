@@ -78,8 +78,8 @@ fn main() {
     */
 
     /* matrix multiplication */
-    //generate_mm_data(500, "mm_a_500");
-    //generate_mm_data(500, "mm_b_500");
+    generate_mm_data(2000, 20, "mm_a_2000_20");
+    generate_mm_data(20, 2000, "mm_b_20_2000");
 
     //k_means
     /*
@@ -124,8 +124,8 @@ fn main() {
     */    
 
     //dijkstra 
-    generate_dijkstra_data(Some("processed-PA.txt"), "dij_PA");
-    generate_dijkstra_data(Some("processed-CA.txt"), "dij_CA");
+    //generate_dijkstra_data(Some("processed-PA.txt"), "dij_PA");
+    //generate_dijkstra_data(Some("processed-CA.txt"), "dij_CA");
     
     //topk
     //generate_topk_data("topk");
@@ -269,12 +269,12 @@ fn generate_logistic_regression_data(num_points: usize, dimension: usize, s: &st
     set_up(into_file_parts(data_enc, 16), PathBuf::from(ct_path));
 }
 
-fn generate_mm_data(n: u32, s: &str) {
+fn generate_mm_data(row: u32, col: u32, s: &str) {
     let mut rng = rand::thread_rng();
     
-    let mut data = Vec::with_capacity((n*n) as usize);
-    for i in 0..n {
-        data.append(&mut (0..n).map(|j| ((i, j), rng.gen::<f64>())).collect::<Vec<_>>());
+    let mut data = Vec::with_capacity((row*col) as usize);
+    for i in 0..row {
+        data.append(&mut (0..col).map(|j| ((i, j), rng.gen::<f64>())).collect::<Vec<_>>());
     }
     let mut pt_path = String::from("/opt/data/pt_");
     pt_path.push_str(s);

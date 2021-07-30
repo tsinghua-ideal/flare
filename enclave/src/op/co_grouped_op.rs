@@ -338,20 +338,20 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
                     res
                 }).flat_map(|x| {
                     let mut x = x.to_vec();
-                    let mut y = x.drain_filter(|(k, (v, w))| v.len()*w.len() > MAX_ENC_BL)
+                    let mut y = x.drain_filter(|(k, (v, w))| v.len() * w.len() > MAX_ENC_BL * 128)
                         .flat_map(|(k, (v, w))| {
                             let vlen = v.len();
                             let wlen = w.len();
                             {
                                 if vlen > wlen {
-                                    let chunk_size = (MAX_ENC_BL-1)/wlen+1;
+                                    let chunk_size = (MAX_ENC_BL*128-1)/wlen+1;
                                     let chunk_num =  (vlen-1)/chunk_size+1;
                                     let kk = vec![k; chunk_num].into_iter();
                                     let vv = v.chunks(chunk_size).map(|x| x.to_vec()).collect::<Vec<_>>().into_iter();
                                     let ww = vec![w; chunk_num].into_iter();
                                     kk.zip(vv.zip(ww))
                                 } else {
-                                    let chunk_size = (MAX_ENC_BL-1)/vlen+1;
+                                    let chunk_size = (MAX_ENC_BL*128-1)/vlen+1;
                                     let chunk_num =  (wlen-1)/chunk_size+1;
                                     let kk = vec![k; chunk_num].into_iter();
                                     let ww = w.chunks(chunk_size).map(|x| x.to_vec()).collect::<Vec<_>>().into_iter();

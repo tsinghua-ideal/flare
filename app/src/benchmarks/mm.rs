@@ -90,8 +90,8 @@ pub fn mm_sec_0() -> Result<()> {
         bincode::deserialize::<Vec<(Vec<u8>, Vec<u8>)>>(&file).unwrap()  //ItemE = Vec<u8>  
     }));
 
-    let dir_a = PathBuf::from("/opt/data/ct_mm_a_500");
-    let dir_b = PathBuf::from("/opt/data/ct_mm_b_500");
+    let dir_a = PathBuf::from("/opt/data/ct_mm_a_2000_20");
+    let dir_b = PathBuf::from("/opt/data/ct_mm_b_20_2000");
     let ma = sc.read_source(LocalFsReaderConfig::new(dir_a).num_partitions_per_executor(1), None, Some(deserializer.clone()), fe.clone(), fd.clone())
         .map(Fn!(|a: ((u32, u32), f64)| {
             (a.0.1, (a.0.0, a.1))
@@ -205,8 +205,8 @@ pub fn mm_unsec_0() -> Result<()> {
         bincode::deserialize::<Vec<((u32, u32), f64)>>(&file).unwrap()  //Item = ((u32, u32), f64)
     }));
 
-    let dir_a = PathBuf::from("/opt/data/pt_mm_a_500");
-    let dir_b = PathBuf::from("/opt/data/pt_mm_b_500");
+    let dir_a = PathBuf::from("/opt/data/pt_mm_a_2000_20");
+    let dir_b = PathBuf::from("/opt/data/pt_mm_b_20_2000");
     let ma = sc.read_source(LocalFsReaderConfig::new(dir_a).num_partitions_per_executor(1), Some(deserializer.clone()), None, lfe.clone(), lfd.clone())
         .flat_map(Fn!(|va: Vec<((u32, u32), f64)>| {
             Box::new(va.into_iter().map(|a| 
