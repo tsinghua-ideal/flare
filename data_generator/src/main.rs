@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::io::prelude::*;
 use vega::{Data, Fn, ser_encrypt, ser_decrypt, batch_encrypt, MAX_ENC_BL};
 use rand::Rng;
+use rand::seq::SliceRandom;
 use rand_distr::{Normal, Distribution};
 use serde_derive::{Deserialize, Serialize};
 
@@ -78,8 +79,12 @@ fn main() {
     */
 
     /* matrix multiplication */
-    generate_mm_data(2000, 20, "mm_a_2000_20");
-    generate_mm_data(20, 2000, "mm_b_20_2000");
+    //generate_mm_data(2000, 20, "mm_a_2000_20");
+    //generate_mm_data(20, 2000, "mm_b_20_2000");
+    //let data = convert_mm_data(PathBuf::from("/opt/data/pt_mm_b_20_2000"), 16);
+    //set_up(vec![data], PathBuf::from("/opt/data/mm_opaque_b_20_2000"));
+    shuffle_mm_data(PathBuf::from("/opt/data/pt_mm_a_2000_20"), 16, "mm_a_2000_20_shuf");
+    shuffle_mm_data(PathBuf::from("/opt/data/pt_mm_b_20_2000"), 16, "mm_b_20_2000_shuf");
 
     //k_means
     /*
@@ -99,6 +104,7 @@ fn main() {
     let data = convert_pagerank_data(PathBuf::from("/opt/data/pt_pr_2"), 16);
     set_up(vec![data], PathBuf::from("/opt/data/pr_opaque_2"));
     */
+    shuffle_pagerank_data(PathBuf::from("/opt/data/pt_cit-Patents"), 16, "cit-Patents_shuf");
 
     //pearson
     //generate_pearson_data(10_000_000, "pe_a_107");
@@ -121,11 +127,14 @@ fn main() {
     /*
     let data = convert_tc_data(PathBuf::from("/opt/data/pt_tc"), 16);
     set_up(vec![data], PathBuf::from("/opt/data/tc_opaque"));
-    */    
+    */   
+    shuffle_tc_data(PathBuf::from("/opt/data/pt_facebook_combined"), 16, "facebook_combined_shuf");
+    shuffle_tc_data(PathBuf::from("/opt/data/pt_soc-Slashdot0811"), 16, "soc-Slashdot0811_shuf");
 
     //dijkstra 
     //generate_dijkstra_data(Some("processed-PA.txt"), "dij_PA");
     //generate_dijkstra_data(Some("processed-CA.txt"), "dij_CA");
+    shuffle_dijkstra_data(PathBuf::from("/opt/data/pt_dij_CA"), 16, "dij_CA_shuf");
     
     //topk
     //generate_topk_data("topk");
@@ -234,6 +243,37 @@ fn generate_dijkstra_data(true_data: Option<&str>, s: &str) {
     set_up(into_file_parts(data_enc, 16), PathBuf::from(ct_path));
 }
 
+fn shuffle_dijkstra_data(dir: PathBuf, file_num: i32, s: &str) {
+    let mut data = Vec::new();
+    (0..file_num).for_each(|idx| {
+        let f_name = format!("test_file_{}", idx);
+        let path = dir.join(f_name.as_str());
+        let file = fs::File::open(path).unwrap();
+        let mut reader = BufReader::new(file);
+        let mut content = vec![];
+        reader.read_to_end(&mut content).unwrap();
+        let mut block: Vec<(usize, usize, Option<String>)> = bincode::deserialize(&content).unwrap();
+        data.append(&mut block);
+    });
+
+    data.shuffle(&mut rand::thread_rng());
+
+    let mut pt_path = String::from("/opt/data/pt_");
+    pt_path.push_str(s);
+    set_up(into_file_parts(data.clone(), 16) , PathBuf::from(pt_path));
+    let fe = Fn!(|vp: Vec<(usize, usize, Option<String>)>|{
+        ser_encrypt::<>(vp)    
+    });
+    let fd = Fn!(|ve: Vec<u8>|{  //ItemE = Vec<u8>
+        let data: Vec<(usize, usize, Option<String>)> = ser_decrypt::<>(ve);
+        data
+    });
+    let data_enc =batch_encrypt(data, fe);
+    let mut ct_path = String::from("/opt/data/ct_");
+    ct_path.push_str(s);
+    set_up(into_file_parts(data_enc, 16), PathBuf::from(ct_path));
+}
+
 fn generate_logistic_regression_data(num_points: usize, dimension: usize, s: &str) {
     let fe = Fn!(|vp: Vec<Point>| {
         let buf0 = ser_encrypt::<>(vp);
@@ -276,6 +316,75 @@ fn generate_mm_data(row: u32, col: u32, s: &str) {
     for i in 0..row {
         data.append(&mut (0..col).map(|j| ((i, j), rng.gen::<f64>())).collect::<Vec<_>>());
     }
+    let mut pt_path = String::from("/opt/data/pt_");
+    pt_path.push_str(s);
+    set_up(into_file_parts(data.clone(), 16), PathBuf::from(pt_path));
+
+    let fe = Fn!(|vp: Vec<((u32, u32), f64)> | -> (Vec<u8>, Vec<u8>) {
+        let len = vp.len();
+        let mut buf0 = Vec::with_capacity(len);
+        let mut buf1 = Vec::with_capacity(len);
+        for i in vp {
+            buf0.push(i.0);
+            buf1.push(i.1);
+        }
+        let buf0 = ser_encrypt::<>(buf0);
+        let buf1 = ser_encrypt::<>(buf1);
+        (buf0, buf1)
+    });
+
+    let fd = Fn!(|ve: (Vec<u8>, Vec<u8>)| -> Vec<((u32, u32), f64)> {
+        let (buf0, buf1) = ve;
+        let mut pt0: Vec<(u32, u32)> = ser_decrypt::<>(buf0); 
+        let mut pt1: Vec<f64> = ser_decrypt::<>(buf1);
+        let len = pt0.len() | pt1.len();
+        pt0.resize_with(len, Default::default);
+        pt1.resize_with(len, Default::default);
+        pt0.into_iter().zip(pt1.into_iter()).collect::<Vec<_>>() 
+    });
+
+    let data_enc = batch_encrypt(data, fe);
+    let mut ct_path = String::from("/opt/data/ct_");
+    ct_path.push_str(s);
+    set_up(into_file_parts(data_enc, 16), PathBuf::from(ct_path));
+}
+
+fn convert_mm_data(dir: PathBuf, file_num: i32) -> Vec<u8> {
+    let mut lines = Vec::new();
+    (0..file_num).for_each(|idx| {
+        let f_name = format!("test_file_{}", idx);
+        let path = dir.join(f_name.as_str());
+        let file = fs::File::open(path).unwrap();
+        let mut reader = BufReader::new(file);
+        let mut content = vec![];
+        reader.read_to_end(&mut content).unwrap();
+        let data: Vec<((u32, u32), f64)> = bincode::deserialize(&content).unwrap();
+        lines.append(&mut data.into_iter()
+            .map(|((i, j), v)| {
+                let v = vec![i.to_string(), j.to_string(), v.to_string()];
+                v.join(" ")
+            }).collect::<Vec<_>>());
+    });
+    lines.join("\n")
+        .as_bytes()
+        .to_vec()
+}
+
+fn shuffle_mm_data(dir: PathBuf, file_num: i32, s: &str) {
+    let mut data = Vec::new();
+    (0..file_num).for_each(|idx| {
+        let f_name = format!("test_file_{}", idx);
+        let path = dir.join(f_name.as_str());
+        let file = fs::File::open(path).unwrap();
+        let mut reader = BufReader::new(file);
+        let mut content = vec![];
+        reader.read_to_end(&mut content).unwrap();
+        let mut block: Vec<((u32, u32), f64)> = bincode::deserialize(&content).unwrap();
+        data.append(&mut block);
+    });
+
+    data.shuffle(&mut rand::thread_rng());
+
     let mut pt_path = String::from("/opt/data/pt_");
     pt_path.push_str(s);
     set_up(into_file_parts(data.clone(), 16), PathBuf::from(pt_path));
@@ -485,6 +594,48 @@ fn convert_pagerank_data(dir: PathBuf, file_num: i32) -> Vec<u8> {
         .to_vec()
 }
 
+fn shuffle_pagerank_data(dir: PathBuf, file_num: i32, s: &str) {
+    let mut lines = Vec::new();
+    (0..file_num).for_each(|idx| {
+        let f_name = format!("test_file_{}", idx);
+        let path = dir.join(f_name.as_str());
+        let file = fs::File::open(path).unwrap();
+        let mut reader = BufReader::new(file);
+        let mut content = vec![];
+        reader.read_to_end(&mut content).unwrap();
+        lines.append(&mut String::from_utf8(content)
+            .unwrap()
+            .lines()
+            .map(|x| x.to_owned())
+            .collect::<Vec<_>>());
+    });
+
+    lines.shuffle(&mut rand::thread_rng());
+
+    let mut iter = lines.chunks(MAX_ENC_BL);
+    let mut batch = iter.next();
+    let mut data_enc = Vec::new();
+    while batch.is_some() {
+        let part = batch.unwrap()
+            .iter()
+            .map(|x| x.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .as_bytes()
+            .to_vec();
+        data_enc.push(ser_encrypt(vec![part]));
+        batch = iter.next();
+    }
+
+    let mut ct_path = String::from("/opt/data/ct_");
+    ct_path.push_str(s);
+    set_up(into_file_parts(data_enc, 16), PathBuf::from(ct_path));
+
+    let mut pt_path = String::from("/opt/data/pt_");
+    pt_path.push_str(s);
+    set_up(into_file_parts_str(lines, 16), PathBuf::from(pt_path));
+}
+
 fn generate_tc_data(true_data: Option<&str>, num_edges: u32, num_vertices: u32, s: &str) {
     let mut data = match true_data {
         Some(path) => {
@@ -575,6 +726,54 @@ fn convert_tc_data(dir: PathBuf, file_num: i32) -> Vec<u8> {
     lines.join("\n")
         .as_bytes()
         .to_vec()
+}
+
+fn shuffle_tc_data(dir: PathBuf, file_num: i32, s: &str) {
+    let mut data = Vec::new();
+    (0..file_num).for_each(|idx| {
+        let f_name = format!("test_file_{}", idx);
+        let path = dir.join(f_name.as_str());
+        let file = fs::File::open(path).unwrap();
+        let mut reader = BufReader::new(file);
+        let mut content = vec![];
+        reader.read_to_end(&mut content).unwrap();
+        let mut block: Vec<(u32, u32)> = bincode::deserialize(&content).unwrap();
+        data.append(&mut block);
+    });
+
+    data.shuffle(&mut rand::thread_rng());
+
+    let mut pt_path = String::from("/opt/data/pt_");
+    pt_path.push_str(s);
+    set_up(into_file_parts(data.clone(), 16), PathBuf::from(pt_path));
+
+    let fe = Fn!(|vp: Vec<(u32, u32)> | -> (Vec<u8>, Vec<u8>) {
+        let len = vp.len();
+        let mut buf0 = Vec::with_capacity(len);
+        let mut buf1 = Vec::with_capacity(len);
+        for i in vp {
+            buf0.push(i.0);
+            buf1.push(i.1);
+        }
+        let buf0 = ser_encrypt::<>(buf0);
+        let buf1 = ser_encrypt::<>(buf1);
+        (buf0, buf1)
+    });
+
+    let fd = Fn!(|ve: (Vec<u8>, Vec<u8>)| -> Vec<(u32, u32)> {
+        let (buf0, buf1) = ve;
+        let mut pt0: Vec<u32> = ser_decrypt::<>(buf0); 
+        let mut pt1: Vec<u32> = ser_decrypt::<>(buf1);
+        let len = pt0.len() | pt1.len();
+        pt0.resize_with(len, Default::default);
+        pt1.resize_with(len, Default::default);
+        pt0.into_iter().zip(pt1.into_iter()).collect::<Vec<_>>() 
+    });
+
+    let data_enc = batch_encrypt(data, fe);
+    let mut ct_path = String::from("/opt/data/ct_");
+    ct_path.push_str(s);
+    set_up(into_file_parts(data_enc, 16), PathBuf::from(ct_path));
 }
 
 fn generate_topk_data(s: &str) {
