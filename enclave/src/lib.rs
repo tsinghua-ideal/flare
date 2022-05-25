@@ -87,9 +87,7 @@ static ALLOCATOR: Allocator = Allocator;
 static immediate_cout: bool = true;
 
 lazy_static! {
-    static ref BRANCH_OP_HIS: Arc<RwLock<HashMap<OpId, OpId>>> = Arc::new(RwLock::new(HashMap::new())); //(prev_op_id, cur_op_id)
     static ref CACHE: OpCache = OpCache::new();
-    static ref CAVE: Arc<Mutex<HashMap<u64, (usize, usize)>>> = Arc::new(Mutex::new(HashMap::new()));  //tid, (remaining_combiner, sorted_max_key)
     static ref OP_MAP: AtomicPtrWrapper<BTreeMap<OpId, Arc<dyn OpBase>>> = AtomicPtrWrapper::new(Box::into_raw(Box::new(BTreeMap::new()))); 
     static ref init: Result<()> = {
         /* dijkstra */
@@ -172,71 +170,15 @@ lazy_static! {
 }
 
 #[no_mangle]
-pub extern "C" fn secure_execute(tid: u64, 
-    rdd_ids: *const u8,
-    op_ids: *const u8,
-    part_ids: *const u8,
-    cache_meta: CacheMeta,
-    dep_info: DepInfo, 
-    input: Input, 
-    captured_vars: *const u8,
-    spec_call_seq: *const u8,
-    spec_res: *mut usize,
-) -> usize {
-    let _init = *init; //this is necessary to let it accually execute
-    input.set_init_mem_usage();
-    println!("tid: {:?}, Cur mem: {:?}, at the begining of secure execution", tid, ALLOCATOR.get_memory_usage());
-    let rdd_ids = unsafe { (rdd_ids as *const Vec<usize>).as_ref() }.unwrap();
-    let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();
-    let part_ids = unsafe { (part_ids as *const Vec<usize>).as_ref() }.unwrap();
-    let captured_vars = unsafe { (captured_vars as *const HashMap<usize, Vec<Vec<u8>>>).as_ref() }.unwrap();
-    let spec_call_seq = unsafe { (spec_call_seq as *const Vec<OpId>).as_ref() }.unwrap().clone();
-    let spec_res = unsafe { spec_res.as_mut() }.unwrap();
-    println!("tid: {:?}, rdd ids = {:?}, op ids = {:?}, dep_info = {:?}, cache_meta = {:?}", tid, rdd_ids, op_ids, dep_info, cache_meta);
-    
-    let now = Instant::now();
-    let mut call_seq = NextOpId::new(tid, rdd_ids, op_ids, part_ids, cache_meta.clone(), captured_vars.clone(), spec_call_seq, &dep_info, false);
-    let final_op = call_seq.get_cur_op();
-    let result_ptr = final_op.iterator_start(&mut call_seq, input, &dep_info); //shuffle need dep_info
-    *spec_res = call_seq.get_spec_res();
-    let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    input.set_last_mem_usage();
-    input.set_max_mem_usage();
-    println!("tid: {:?}, Cur mem: {:?}, Max mem: {:?}, secure_execute {:?} s", tid, ALLOCATOR.get_memory_usage(), ALLOCATOR.get_max_memory_usage(), dur);
-    return result_ptr as usize
-}
-
-#[no_mangle]
-pub extern "C" fn pre_merge(tid: u64,
-    op_id: OpId,
-    dep_info: DepInfo, 
-    input: Input,
-) -> usize {
-    let _init = *init;
-    input.set_init_mem_usage();
-    let now = Instant::now();
-    let op = load_opmap().get(&op_id).unwrap();
-    let res = op.pre_merge(dep_info, tid, input);
-    let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    input.set_last_mem_usage();
-    input.set_max_mem_usage();
-    res
-}
-
-#[no_mangle]
-pub extern "C" fn exploit_spec_oppty(tid: u64,
+pub extern "C" fn secure_execute_pre(tid: u64,
     op_ids: *const u8,
     part_nums: *const u8,
-    cache_meta: CacheMeta,
     dep_info: DepInfo,
-    spec_identifier: *mut usize,
-    hash_ops: *mut u64,
-) -> usize {  //return where has an opportunity, if so, return spec_call_seq
+) { 
     let _init = *init; //this is necessary to let it accually execute
     let mut op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap().clone();
     let mut part_nums = unsafe { (part_nums as *const Vec<usize>).as_ref() }.unwrap().clone();
-    println!("in exploit_spec_oppty, op_ids = {:?}, part_nums = {:?}", op_ids, part_nums);
-    let identifier = unsafe { spec_identifier.as_mut() }.unwrap();
+    println!("in secure_execute_pre, op_ids = {:?}, part_nums = {:?}", op_ids, part_nums);
     if dep_info.dep_type() == 1 {
         assert!(part_nums.len() == op_ids.len()+1);
         let reduce_num = part_nums.remove(0);
@@ -257,47 +199,52 @@ pub extern "C" fn exploit_spec_oppty(tid: u64,
         while idx < len - 1 {
             let parent_id = op_ids[idx + 1];
             let child_id = op_ids[idx];
-            BRANCH_OP_HIS.write().unwrap().insert(parent_id, child_id);
             let parent = load_opmap().get(&parent_id).unwrap();
             parent.fix_split_num(part_nums[idx + 1]);
-            parent.or_insert_nar_child(child_id);
+            parent.sup_next_nar_dep(child_id);
             idx += 1;
         }
     }
-
-    let spec = Spec::new(cache_meta.clone(), &op_ids, &dep_info);
-    if spec.cut_op_ids.is_empty() {
-        return 0;
-    }
-    let cur_op_id = spec.cut_op_ids[0];
-    let mut spec_op_ids =  spec.advance(vec![cur_op_id], 0, identifier);
-
-    //The last one is the child of shuffle dependency
-    spec_op_ids.reverse();
-    let spec_call_seq = spec_op_ids;
-    //should return the hash of op_ids
-    let hash_ops = unsafe { hash_ops.as_mut() }.unwrap();
-    *hash_ops = default_hash(&spec_call_seq);
-
-    let ptr;
-    if spec_call_seq.is_empty(){
-        ptr = 0;
-    } else {
-        crate::ALLOCATOR.set_switch(true);
-        ptr = Box::into_raw(Box::new(spec_call_seq.clone())) as *mut u8 as usize;
-        crate::ALLOCATOR.set_switch(false);
-    }
-    ptr
 }
 
 #[no_mangle]
-pub extern "C" fn free_spec_seq(input: *mut u8) {
-    let spec_call_seq = unsafe {
-        Box::from_raw(input as *mut Vec<OpId>)
-    };
-    ALLOCATOR.set_switch(true);
-    drop(spec_call_seq);
-    ALLOCATOR.set_switch(false);
+pub extern "C" fn secure_execute(tid: u64, 
+    rdd_ids: *const u8,
+    op_ids: *const u8,
+    part_ids: *const u8,
+    cache_meta: CacheMeta,
+    dep_info: DepInfo, 
+    input: Input, 
+    captured_vars: *const u8,
+) -> usize {
+    let _init = *init; //this is necessary to let it accually execute
+    println!("tid: {:?}, Cur mem: {:?}, at the begining of secure execution", tid, ALLOCATOR.get_memory_usage());
+    let rdd_ids = unsafe { (rdd_ids as *const Vec<usize>).as_ref() }.unwrap();
+    let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();
+    let part_ids = unsafe { (part_ids as *const Vec<usize>).as_ref() }.unwrap();
+    let captured_vars = unsafe { (captured_vars as *const HashMap<usize, Vec<Vec<u8>>>).as_ref() }.unwrap();
+    println!("tid: {:?}, rdd ids = {:?}, op ids = {:?}, dep_info = {:?}, cache_meta = {:?}", tid, rdd_ids, op_ids, dep_info, cache_meta);
+    
+    let now = Instant::now();
+    let mut call_seq = NextOpId::new(tid, rdd_ids, op_ids, part_ids, cache_meta.clone(), captured_vars.clone(), &dep_info);
+    let final_op = call_seq.get_cur_op();
+    let result_ptr = final_op.iterator_start(&mut call_seq, input, &dep_info); //shuffle need dep_info
+    let dur = now.elapsed().as_nanos() as f64 * 1e-9;
+    println!("tid: {:?}, Cur mem: {:?}, Max mem: {:?}, secure_execute {:?} s", tid, ALLOCATOR.get_memory_usage(), ALLOCATOR.get_max_memory_usage(), dur);
+    return result_ptr as usize
+}
+
+#[no_mangle]
+pub extern "C" fn pre_merge(tid: u64,
+    op_id: OpId,
+    dep_info: DepInfo, 
+    input: Input,
+) -> usize {
+    println!("pre_merge inside enclave");
+    let _init = *init;
+    let op = load_opmap().get(&op_id).unwrap();
+    let res = op.pre_merge(dep_info, tid, input);
+    res
 }
 
 #[no_mangle]

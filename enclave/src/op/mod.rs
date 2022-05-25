@@ -21,14 +21,13 @@ use aes_gcm::aead::{Aead, NewAead, generic_array::GenericArray};
 use sgx_types::*;
 use rand::{Rng, SeedableRng};
 
-use crate::{BRANCH_OP_HIS, CACHE, CAVE, Fn, OP_MAP};
+use crate::{CACHE, Fn, OP_MAP};
 use crate::basic::{AnyData, Arc as SerArc, Data, Func, SerFunc};
 use crate::custom_thread::PThread;
 use crate::dependency::{Dependency, OneToOneDependency, ShuffleDependencyTrait};
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use crate::utils;
-use crate::utils::bounded_priority_queue::BoundedPriorityQueue;
 use crate::utils::random::{BernoulliCellSampler, BernoulliSampler, PoissonSampler, RandomSampler};
 
 mod aggregated_op;
@@ -67,6 +66,8 @@ pub type OText<T> = Text<T, T>;
 type ResIter<T> = Box<dyn Iterator<Item = Box<dyn Iterator<Item = T>>>>;
 
 pub const MAX_ENC_BL: usize = 1024;
+pub const MERGE_FACTOR: usize = 64;
+pub const CACHE_LIMIT: usize = 4_000_000;
 pub type Result<T> = std::result::Result<T, &'static str>;
 
 extern "C" {
@@ -231,25 +232,6 @@ pub fn to_ptr<T: Clone>(result_enc: T) -> *mut u8 {
     result_ptr
 }
 
-fn spec_execute(tid: u64, 
-    spec_call_seq: &Vec<OpId>,
-    padding_ids: &Vec<usize>,
-    cache_meta: CacheMeta,
-    dep_info: &DepInfo,
-    last_res_ptr: usize,
-) -> usize {
-    //println!("Cur mem: {:?}, at the begining of speculative execution", crate::ALLOCATOR.get_memory_usage());
-    let now = Instant::now();
-    let mut call_seq = NextOpId::new(tid, padding_ids, spec_call_seq, padding_ids, cache_meta, HashMap::new(), Vec::new(), dep_info, true);
-    call_seq.spec_res = last_res_ptr;
-    let final_op = call_seq.get_cur_op();
-    let input = Input::padding();
-    let result_ptr = final_op.iterator_start(&mut call_seq, input, dep_info);
-    let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    //println!("Cur mem: {:?}, spec_execute {:?} s", crate::ALLOCATOR.get_memory_usage(), dur);
-    return result_ptr as usize
-}
-
 #[track_caller]
 fn get_text_loc_id() -> u64 {
     let loc = Location::caller();
@@ -273,7 +255,6 @@ pub struct CacheMeta {
     pub cached_rdd_id: usize,
     cached_op_id: OpId,
     cached_part_id: usize,
-    can_spec: u8,
 }
 
 impl CacheMeta {
@@ -292,7 +273,6 @@ impl CacheMeta {
             cached_rdd_id,
             cached_op_id,
             cached_part_id,
-            can_spec: 0,
         }
     }
 
@@ -304,7 +284,6 @@ impl CacheMeta {
             cached_rdd_id: self.caching_rdd_id,
             cached_op_id: self.caching_op_id,
             cached_part_id: self.caching_part_id,
-            can_spec: self.can_spec,
         }
     }
 
@@ -372,95 +351,23 @@ impl DepInfo {
 #[derive(Clone, Copy, Debug)]
 pub struct Input {
     data: usize,
-    lower: usize,
-    upper: usize,
-    upper_bound: usize,
-    block_len: usize,
-    init_mem_usage: usize,
-    last_mem_usage: usize,
-    max_mem_usage: usize,
+    parallel_num: usize,
 }
 
 impl Input {
     pub fn new<T: Data>(data: &T, 
-        lower: &mut Vec<usize>, 
-        upper: &mut Vec<usize>,
-        upper_bound: &Vec<usize>,
-        block_len: usize, 
-        init_mem_usage: &mut usize,
-        last_mem_usage: &mut usize,  
-        max_mem_usage: &mut usize,
+        parallel_num: usize,
     ) -> Self {
         let data = data as *const T as usize;
-        let lower = lower as *mut Vec<usize> as usize;
-        let upper = upper as *mut Vec<usize> as usize;
-        let upper_bound = upper_bound as *const Vec<usize> as usize;
-        let init_mem_usage = init_mem_usage as *mut usize as usize;
-        let last_mem_usage = last_mem_usage as *mut usize as usize;
-        let max_mem_usage = max_mem_usage as *mut usize as usize;
         Input {
             data,
-            lower,
-            upper,
-            upper_bound,
-            block_len,
-            init_mem_usage,
-            last_mem_usage,
-            max_mem_usage,
-        }
-    }
-
-    pub fn padding() -> Self {
-        Input {
-            data: 0,
-            lower: 0,
-            upper: 0,
-            upper_bound: 0,
-            block_len: 0,
-            init_mem_usage: 0,
-            last_mem_usage: 0,
-            max_mem_usage: 0,
+            parallel_num,
         }
     }
 
     pub fn get_enc_data<T>(&self) -> &T {
         unsafe { (self.data as *const T).as_ref() }.unwrap()
     }
-
-    pub fn get_lower(&self) -> &mut Vec<usize> {
-        unsafe { (self.lower as *mut Vec<usize>).as_mut() }.unwrap()
-    }
-
-    pub fn get_upper(&self) -> &mut Vec<usize> {
-        unsafe { (self.upper as *mut Vec<usize>).as_mut() }.unwrap()
-    }
-
-    pub fn get_upper_bound(&self) -> &Vec<usize> {
-        unsafe { (self.upper_bound as *mut Vec<usize>).as_ref() }.unwrap()
-    }
-
-    pub fn get_block_len(&self) -> usize {
-        self.block_len
-    }
-
-    pub fn set_init_mem_usage(&self) -> &mut usize {
-        let init_mem_usage = unsafe { (self.init_mem_usage as *mut usize).as_mut() }.unwrap();
-        *init_mem_usage = crate::ALLOCATOR.reset_memory_usage(*init_mem_usage).0;
-        init_mem_usage
-    }
-
-    pub fn set_last_mem_usage(&self) -> &mut usize {
-        let last_mem_usage = unsafe { (self.last_mem_usage as *mut usize).as_mut() }.unwrap();
-        *last_mem_usage = crate::ALLOCATOR.get_memory_usage().0;
-        last_mem_usage
-    }
-
-    pub fn set_max_mem_usage(&self) -> &mut usize {
-        let max_mem_usage = unsafe { (self.max_mem_usage as *mut usize).as_mut() }.unwrap();
-        *max_mem_usage = crate::ALLOCATOR.get_max_memory_usage().0;
-        max_mem_usage
-    }
-
 }
 
 #[derive(Default, Clone)]
@@ -709,10 +616,7 @@ pub struct NextOpId<'a> {
     cur_idx: usize,
     cache_meta: CacheMeta,
     captured_vars: HashMap<usize, Vec<Vec<u8>>>,
-    spec_op_ids: Vec<OpId>,
-    spec_res: usize,
     is_shuffle: bool,
-    is_spec: bool,
 }
 
 impl<'a> NextOpId<'a> {
@@ -722,9 +626,7 @@ impl<'a> NextOpId<'a> {
         part_ids: &'a Vec<usize>, 
         cache_meta: CacheMeta, 
         captured_vars: HashMap<usize, Vec<Vec<u8>>>, 
-        spec_op_ids: Vec<OpId>,
         dep_info: &DepInfo,
-        is_spec: bool,
     ) -> Self {
         let is_shuffle = dep_info.is_shuffle == 1;
         NextOpId {
@@ -735,10 +637,7 @@ impl<'a> NextOpId<'a> {
             cur_idx: 0,
             cache_meta,
             captured_vars,
-            spec_op_ids,
-            spec_res: 0,
             is_shuffle,
-            is_spec,
         }
     }
 
@@ -802,129 +701,6 @@ impl<'a> NextOpId<'a> {
 
     pub fn is_head(&self) -> bool {
         self.cur_idx == self.rdd_ids.len() - 1
-    }
-
-    pub fn can_spec(&self) -> bool {
-        match self.cache_meta.can_spec {
-            0 => false,
-            1 => true,
-            _ => panic!("invalid can_spec"),
-        }
-    }
-
-    pub fn get_spec_res(&self) -> usize {
-        self.spec_res
-    }
-
-}
-
-pub struct Spec {
-    pub cut_op_ids: Vec<OpId>,
-    parent_op_id: OpId,
-    child_op_id: OpId,
-    identifier: usize, 
-}
-
-impl Spec {
-    pub fn new(cache_meta: CacheMeta, op_ids: &Vec<OpId>, dep_info: &DepInfo) -> Self {
-        if cache_meta.caching_rdd_id != 0 {
-            let mut cut_op_ids = Vec::new();
-            let mut flag = false;
-            for id in op_ids.iter().rev() {
-                if id == &cache_meta.caching_op_id {
-                    flag = true;
-                }
-                if flag {
-                    cut_op_ids.push(*id);
-                }
-            }
-            assert!(cut_op_ids.len() != 0);
-            Spec {
-                cut_op_ids,
-                parent_op_id: dep_info.parent_op_id,
-                child_op_id: dep_info.child_op_id,
-                identifier: dep_info.identifier,
-            }
-        } else {
-            Spec {
-                cut_op_ids: Vec::new(),
-                parent_op_id: Default::default(),
-                child_op_id: Default::default(),
-                identifier: 0,
-            }
-        }
-    }
-
-    pub fn varify(&self, spec_op_ids: &Vec<OpId>, shuf_dep: &Arc<dyn ShuffleDependencyTrait>) -> bool {
-        !(self.cut_op_ids == *spec_op_ids &&
-        self.parent_op_id == shuf_dep.get_parent() &&
-        self.child_op_id == shuf_dep.get_child() && 
-        self.identifier == shuf_dep.get_identifier())
-    }
-
-    //DFS
-    pub fn advance(&self, spec_op_ids: Vec<OpId>, idx: usize, identifier: &mut usize) -> Vec<OpId> {
-        let parent_op_id = spec_op_ids[idx];
-        let parent_op = load_opmap().get(&parent_op_id).unwrap(); 
-        let may_child_op_id = BRANCH_OP_HIS.read()
-            .unwrap()
-            .get(&parent_op_id)
-            .map(|x| x.clone());
-
-        /* 
-        if ((may_child_op_id.is_some() && dep_info.dep_type() != 1) ||
-                may_child_op_id.filter(|x| match self.cut_op_ids.get(self.idx) {
-                    Some(op_id) => x != op_id,
-                    None => 
-                     false, //
-                }).is_some()
-            ) &&
-            (self.cur_op_id != self.spec_op_ids[0] || self.spec_op_ids.len() == 1) //loop 
-        {
-            let child_op_id = may_child_op_id.unwrap();
-            let child_op = load_opmap().get(&child_op_id).unwrap();
-            if child_op.has_spec_oppty() {
-                detect_child_op(child_op_id,
-                    parent_op_id,
-                    parent_op,
-                    &mut self.spec_rdd_ids,  
-                    &mut self.spec_op_ids,
-                    &mut self.end,
-                    &mut self.cur_op_id
-                );
-                return self.end
-            } else {
-                self.end = false;
-                return true;
-            }
-        } else */ 
-        if parent_op_id != spec_op_ids[0] || spec_op_ids.len() == 1 {
-            let alt_child_op_ids = parent_op.get_next_deps().read().unwrap().clone();
-            for ((_parent_op_id, child_op_id), dep) in alt_child_op_ids {
-                assert!(_parent_op_id == parent_op_id);
-                let child_op = load_opmap().get(&child_op_id).unwrap();
-                if parent_op.is_in_loop() != child_op.is_in_loop() || !child_op.has_spec_oppty() {
-                    continue;
-                }
-                let mut new_spec_op_ids = spec_op_ids.clone();
-                new_spec_op_ids.push(child_op_id);
-                match dep {
-                    Dependency::ShuffleDependency(shuf_dep) => {
-                        if self.varify(&spec_op_ids, &shuf_dep) {
-                            *identifier = shuf_dep.get_identifier();
-                            return new_spec_op_ids;
-                        }
-                    },
-                    Dependency::NarrowDependency(nar_dep) => {
-                        let res_spec_op_ids = self.advance(new_spec_op_ids, idx+1, identifier);
-                        if !res_spec_op_ids.is_empty() {
-                            return res_spec_op_ids;
-                        }
-                    },
-                };
-            }
-        }
-        Vec::new()
     }
 }
 
@@ -1088,7 +864,6 @@ pub trait OpBase: Send + Sync {
     //supplement
     fn sup_next_shuf_dep(&self, dep_info: &DepInfo, reduce_num: usize) {
         let cur_key = dep_info.get_op_key();
-        BRANCH_OP_HIS.write().unwrap().insert(cur_key.0, cur_key.1);
         let next_deps = self.get_next_deps().read().unwrap().clone();
         match next_deps.get(&cur_key) {
             None => {  //not exist, add the dependency
@@ -1118,7 +893,7 @@ pub trait OpBase: Send + Sync {
             },
         }
     }
-    fn or_insert_nar_child(&self, child: OpId) {
+    fn sup_next_nar_dep(&self, child: OpId) {
         let next_deps = self.get_next_deps().read().unwrap().clone();
         let parent = self.get_op_id();
         let next_dep = next_deps.get(&(parent, child));
@@ -1136,10 +911,6 @@ pub trait OpBase: Send + Sync {
                 Dependency::ShuffleDependency(_) => panic!("dependency conflict!"),
             },
         }
-    }
-    //has speculative opportunity
-    fn has_spec_oppty(&self) -> bool {
-        unreachable!()
     }
     fn is_in_loop(&self) -> bool {
         unreachable!()
@@ -1227,9 +998,6 @@ impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     }
     fn get_next_deps(&self) -> Arc<RwLock<HashMap<(OpId, OpId), Dependency>>> {
         (**self).get_op_base().get_next_deps()
-    }
-    fn has_spec_oppty(&self) -> bool {
-        (**self).get_op_base().has_spec_oppty()
     }
     fn is_in_loop(&self) -> bool {
         (**self).get_op_base().is_in_loop()
@@ -1361,13 +1129,11 @@ pub trait OpE: Op {
         None
     }
 
-    fn get_and_remove_cached_data(&self, key: (usize, usize), is_spec: bool) -> ResIter<Self::Item> {
+    fn get_and_remove_cached_data(&self, key: (usize, usize)) -> ResIter<Self::Item> {
         let fd = self.get_fd();
         let bid_range = CACHE.remove_bid(key.0, key.1);
         
-        let mut res_iter = if is_spec {
-            Box::new(vec![].into_iter())
-        } else {
+        let mut res_iter = {
             let ct = self.cache_from_outside(key).unwrap();
             let len = ct.len();
             let seperator = bid_range.unwrap_or((len, len));
@@ -1393,7 +1159,6 @@ pub trait OpE: Op {
     fn set_cached_data(&self, call_seq: &NextOpId, res_iter: ResIter<Self::Item>, is_caching_final_rdd: bool) -> ResIter<Self::Item> {
         let ope = self.get_ope();
         let op_id = self.get_op_id();
-        let can_spec = call_seq.can_spec();
         let key = call_seq.get_caching_doublet();
         let (lower_bound, upper_bound) = res_iter.size_hint();
         let esti_bound = upper_bound.unwrap_or(lower_bound);
@@ -1403,10 +1168,7 @@ pub trait OpE: Op {
         Box::new(res_iter.enumerate().map(move |(idx, iter)| {
             let res = iter.collect::<Vec<_>>();
             //cache inside enclave
-            if can_spec {
-                CACHE.insert(key, Box::into_raw(Box::new(res.clone())) as *mut u8 as usize, op_id);
-                CACHE.insert_bid(key.0, key.1, 0, idx+1);  //0 is not necessary
-            } else if idx >= esti_bound.saturating_sub(num_inside) {
+            if idx >= esti_bound.saturating_sub(num_inside) {
                 let mut data = CACHE.remove(key).map_or(vec![], |x| *unsafe{Box::from_raw(x.0 as *mut u8 as *mut Vec<Self::Item>)});
                 data.append(&mut res.clone());
                 CACHE.insert(key, Box::into_raw(Box::new(data)) as *mut u8 as usize, op_id);
@@ -1503,113 +1265,22 @@ pub trait OpE: Op {
     }
 
     fn narrow(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
-        /*
-        if call_seq.is_head() && dep_info.dep_type() == 0 {
-            //println!("optimized narrow");
-            if call_seq.have_cache() {
-                assert_eq!(input.data as usize, 0 as usize);
-                let key = call_seq.get_cached_doublet();
-                let bid_range = CACHE.remove_bid(key.0, key.1);
-                let mut acc = if call_seq.is_spec && call_seq.spec_res != 0 {
-                    assert!(call_seq.spec_op_ids.is_empty());
-                    //for merge spec res ptr
-                    crate::ALLOCATOR.set_switch(true);
-                    let acc = unsafe{ *Box::from_raw(call_seq.spec_res as *mut Vec<Self::ItemE>) };
-                    crate::ALLOCATOR.set_switch(false);
-                    acc
-                } else {
-                    create_enc()
-                };
-
-                if !call_seq.is_spec {
-                    let ct = self.cache_from_outside(key).unwrap();
-                    let len = ct.len();
-                    let seperator = bid_range.unwrap_or((len, len));
-                    //cache outside enclave
-                    (0..seperator.0).chain(seperator.1..len).map(|i| {
-                        //println!("get cached data outside enclave");
-                        merge_enc(&mut acc, &ct[i]);
-                    }).count();
-                } else {
-                    //meaningless, cache inside enclave
-                    if let Some(val) = CACHE.remove(key) {
-                        //println!("get cached data inside enclave");
-                        let data = unsafe {
-                            Box::from_raw(val.0 as *mut u8 as *mut Vec<Self::Item>)
-                        };
-                        let data_enc = self.batch_encrypt(*data);
-                        combine_enc(&mut acc, data_enc)
-                    }
-                }
-                to_ptr(acc)
-            } else {
-                let data_enc = input.get_enc_data::<Vec<Self::ItemE>>();
-                let lower = input.get_lower();
-                let upper = input.get_upper();
-                let mut acc = create_enc();
-                for block in &data_enc[lower[0]..upper[0]] {
-                    merge_enc(&mut acc, block)
-                }
-                to_ptr(acc)
-            }
-        } else {
-        */
-            println!("regular narrow");
-            let result_iter = self.compute(call_seq, input);
-            //acc stays outside enclave
-            let mut acc = if call_seq.is_spec && call_seq.spec_res != 0 {
-                assert!(call_seq.spec_op_ids.is_empty());
-                //for merge spec res ptr
-                crate::ALLOCATOR.set_switch(true);
-                let acc = unsafe{ *Box::from_raw(call_seq.spec_res as *mut Vec<Self::ItemE>) };
-                crate::ALLOCATOR.set_switch(false);
-                acc
-            } else {
-                create_enc()
-            };
-
-            if !call_seq.spec_op_ids.is_empty() {
-                assert!(!call_seq.is_spec);
-                //the child rdd id of shuffle dependency
-                let _child_op_id = {
-                    call_seq.spec_op_ids.remove(0)
-                };
-                println!("spec_op_id = {:?}", call_seq.spec_op_ids);
-                let parent_op_id = call_seq.spec_op_ids[0];
-                //identifier is not used, so set it 0 
-                //let dep_info = DepInfo::new(1, 0, 0, 0, parent_op_id, child_op_id);
-                let dep_info = DepInfo::padding_new(0);
-                let cache_meta = call_seq.cache_meta.clone().transform();
-                //part ids are not neccessary
-                let mut padding_ids = vec![0; call_seq.spec_op_ids.len()];
-                *padding_ids.last_mut().unwrap() = cache_meta.cached_rdd_id;
-
-                let mut last_res_ptr = 0;
-                let mut idx = 0;
-                for result in result_iter {
-                    let data_enc = self.batch_encrypt(result.collect::<Vec<_>>());
-                    combine_enc(&mut acc, data_enc);
-                    last_res_ptr = spec_execute(call_seq.tid, &call_seq.spec_op_ids, &padding_ids, cache_meta, &dep_info, last_res_ptr);
-                    idx += 1;
-                }
-                call_seq.spec_res = last_res_ptr;
-            } else {
-                for result in result_iter {
-                    let block_enc = self.batch_encrypt(result.collect::<Vec<_>>());
-                    combine_enc(&mut acc, block_enc);
-                }
-            }
-            //cache to outside
-            let key = call_seq.get_caching_doublet();
-            if let Some(ct_ptr) = CACHE.remove_ptr(key) {
-                let mut res = 0;
-                unsafe { ocall_cache_to_outside(&mut res, key.0, key.1, ct_ptr); }
-                //        //TODO: Handle the case res != 0
-            }
-            to_ptr(acc)
-        /* 
+        println!("regular narrow");
+        let result_iter = self.compute(call_seq, input);
+        //acc stays outside enclave
+        let mut acc = create_enc();
+        for result in result_iter {
+            let block_enc = self.batch_encrypt(result.collect::<Vec<_>>());
+            combine_enc(&mut acc, block_enc);
         }
-        */
+        //cache to outside
+        let key = call_seq.get_caching_doublet();
+        if let Some(ct_ptr) = CACHE.remove_ptr(key) {
+            let mut res = 0;
+            unsafe { ocall_cache_to_outside(&mut res, key.0, key.1, ct_ptr); }
+            //TODO: Handle the case res != 0
+        }
+        to_ptr(acc)
     } 
 
     fn shuffle(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
@@ -1628,7 +1299,7 @@ pub trait OpE: Op {
             let iter = Box::new(result.collect::<Vec<_>>()) as Box<dyn Any>;
             buckets = shuf_dep.do_shuffle_task(tid, iter, buckets);
             cur_memory = crate::ALLOCATOR.get_max_memory_usage().0;
-            if cur_memory > 4_000_000 {
+            if cur_memory > CACHE_LIMIT {
                 crate::ALLOCATOR.reset_max_memory_usage();
                 result_ptr = shuf_dep.finish_buckets(tid, buckets, result_ptr);
                 buckets = shuf_dep.create_buckets(tid);

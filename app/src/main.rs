@@ -25,15 +25,13 @@ pub mod benchmarks;
 use benchmarks::*;
 
 macro_rules! numin {
-    () =>{
-        {
-          let mut input = String::new();
-            std::io::stdin()
-                .read_line(&mut input)
-              .expect("Failed to read line");
-            input.trim().parse().unwrap()
-      }
-  };
+    () => {{
+        let mut input = String::new();
+        std::io::stdin()
+            .read_line(&mut input)
+            .expect("Failed to read line");
+        input.trim().parse().unwrap()
+    }};
 }
 
 fn main() -> Result<()> {

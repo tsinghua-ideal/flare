@@ -33,7 +33,6 @@ enclave {
         size_t cached_rdd_id;
         struct op_id_t cached_op_id;
         size_t cached_part_id;
-        uint8_t can_spec;
     };
 
     struct dep_info_t {
@@ -47,17 +46,15 @@ enclave {
 
     struct input_t {
         size_t data;
-        size_t lower;
-        size_t upper;
-        size_t upper_bound;
-        size_t block_len;
-        size_t init_mem_usage;
-        size_t last_mem_usage;
-        size_t max_mem_usage;
+        size_t parallel_num;
     };
     
     trusted {
         /* define ECALLs here. */
+        public void secure_execute_pre(uint64_t tid,
+            [user_check] uint8_t* op_ids,
+            [user_check] uint8_t* part_nums,
+            struct dep_info_t dep_info);
         public size_t secure_execute(uint64_t tid,
             [user_check] uint8_t* rdd_ids,
             [user_check] uint8_t* op_ids,
@@ -65,21 +62,11 @@ enclave {
             struct cache_meta_t cache_meta,
             struct dep_info_t dep_info, 
 		    struct input_t input, 
-		    [user_check] uint8_t* captured_vars,
-            [user_check] uint8_t* spec_call_seq,
-            [user_check] size_t* spec_res);
+		    [user_check] uint8_t* captured_vars);
         public size_t pre_merge(uint64_t tid,
             struct op_id_t op_id,
             struct dep_info_t dep_info, 
 		    struct input_t input);
-        public size_t exploit_spec_oppty(uint64_t tid,
-            [user_check] uint8_t* op_ids,
-            [user_check] uint8_t* part_nums,
-            struct cache_meta_t cache_meta,
-            struct dep_info_t dep_info,
-            [user_check] size_t* spec_identifier,
-            [user_check] uint64_t* hash_ops);
-        public void free_spec_seq([user_check] uint8_t* input);
         public void free_res_enc(struct op_id_t op_id,
             struct dep_info_t dep_info,
 		    [user_check] uint8_t* input);

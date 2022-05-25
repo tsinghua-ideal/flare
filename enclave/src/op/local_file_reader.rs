@@ -171,10 +171,6 @@ where
         Arc::new(RwLock::new(HashMap::new()))
     }
 
-    fn has_spec_oppty(&self) -> bool {
-        true
-    }
-
     fn is_in_loop(&self) -> bool {
         self.vals.in_loop
     }

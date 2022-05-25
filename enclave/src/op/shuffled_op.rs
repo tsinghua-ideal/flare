@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::hash::Hash;
 
-use crate::CAVE;
 use crate::aggregator::Aggregator;
 use crate::dependency::ShuffleDependency;
 use crate::op::*;
@@ -97,7 +96,44 @@ where
         }
     }
 
-    pub fn compute_inner(&self, tid: u64, input: Input) -> Vec<(K, C)> {
+    pub fn compute_inner(&self, tid: u64, input: Input) -> Vec<(KE, CE)> {
+        let buckets_enc = input.get_enc_data::<Vec<Vec<(KE, CE)>>>();
+        let mut combiners: BTreeMap<K, Option<C>> = BTreeMap::new();
+        let mut sorted_max_key: BTreeMap<(K, usize), usize> = BTreeMap::new();
+        
+        let num_sub_part = buckets_enc.len();
+        let mut lower = vec![0; num_sub_part];
+        let mut upper = vec![1; num_sub_part];
+        let upper_bound = buckets_enc
+            .iter()
+            .map(|sub_part| sub_part.len())
+            .collect::<Vec<_>>();
+        
+        let mut res = create_enc();
+        while lower
+            .iter()
+            .zip(upper_bound.iter())
+            .filter(|(l, ub)| l < ub)
+            .count()
+            > 0
+        {
+            upper = upper
+                .iter()
+                .zip(upper_bound.iter())
+                .map(|(l, ub)| std::cmp::min(*l, *ub))
+                .collect::<Vec<_>>();
+            let (res_bl, remained_c) = self.compute_inner_core(tid, buckets_enc, &mut lower, &mut upper, &upper_bound, combiners, &mut sorted_max_key);
+            combine_enc(&mut res, res_bl);
+            combiners = remained_c;
+            lower = lower
+                .iter()
+                .zip(upper_bound.iter())
+                .map(|(l, ub)| std::cmp::min(*l, *ub))
+                .collect::<Vec<_>>();
+        }
+        res
+    }
+    pub fn compute_inner_core(&self, tid: u64, buckets_enc: &Vec<Vec<(KE, CE)>>, lower: &mut Vec<usize>, upper: &mut Vec<usize>, upper_bound: &Vec<usize>, mut combiners: BTreeMap<K, Option<C>>, sorted_max_key: &mut BTreeMap<(K, usize), usize>) -> (Vec<(KE, CE)>, BTreeMap<K, Option<C>>) {
         fn combine<K, V, C>(combiners: &mut BTreeMap<K, Option<C>>, aggregator: &Arc<Aggregator<K, V, C>>, block: Vec<(K, C)>)
         where
             K: Data + Eq + Hash + Ord,
@@ -115,42 +151,9 @@ where
                 }
             }
         }
-        
         let aggregator = self.aggregator.clone(); 
-        let remained_ptr = CAVE.lock().unwrap().remove(&tid);
-        let (mut combiners, mut sorted_max_key): (BTreeMap<K, Option<C>>, BTreeMap<(K, usize), usize>) = match remained_ptr {
-            /*
-            Some((c_ptr, s_ptr)) => {
-                let c = unsafe { Box::from_raw(c_ptr as *mut u8 as *mut Vec<u8>) };
-                let s = unsafe { Box::from_raw(s_ptr as *mut u8 as *mut Vec<u8>) };
-                let c_c = c.clone();
-                let s_c = s.clone();
-                crate::ALLOCATOR.set_switch(true);
-                drop(c);
-                drop(s);
-                crate::ALLOCATOR.set_switch(false);
-                (
-                    bincode::deserialize(decrypt(&c_c).as_ref()).unwrap(), 
-                    bincode::deserialize(decrypt(&s_c).as_ref()).unwrap(),
-                )
-            },
-            */
-            Some((c_ptr, s_ptr)) => (
-                *unsafe { Box::from_raw(c_ptr as *mut u8 as *mut BTreeMap<K, Option<C>>) },
-                *unsafe { Box::from_raw(s_ptr as *mut u8 as *mut BTreeMap<(K, usize), usize>) }
-            ),
-            None => (BTreeMap::new(), BTreeMap::new()),
-        };
-        let buckets_enc = input.get_enc_data::<Vec<Vec<(KE, CE)>>>();
-        let lower = input.get_lower();
-        let upper = input.get_upper();
-        let upper_bound = input.get_upper_bound();
-        let block_len = input.get_block_len();
-        let mut cur_len = 0;
-        //println!("cur mem before decryption: {:?}", crate::ALLOCATOR.get_memory_usage());
-        let now = Instant::now(); 
         if sorted_max_key.is_empty() {
-            sorted_max_key = buckets_enc.iter()
+            *sorted_max_key = buckets_enc.iter()
                 .enumerate()
                 .filter_map(|(idx, sub_part)| {
                     let l = &mut lower[idx];
@@ -161,7 +164,6 @@ where
                             let block = self.batch_decrypt(sub_part[*l..*u].to_vec());
                             *l += 1;
                             *u += 1;
-                            //cur_len += 1;  //consider remove it
                             let r = ((block.last().unwrap().0.clone(), idx), idx);
                             combine(&mut combiners, &aggregator, block);
                             Some(r)
@@ -170,7 +172,9 @@ where
                     }
                 }).collect::<BTreeMap<_, _>>();
         }
-        while cur_len < block_len {
+
+        let mut cur_memory = crate::ALLOCATOR.get_memory_usage().1;
+        while cur_memory < CACHE_LIMIT {
             let entry = match sorted_max_key.first_entry() {
                 Some(entry) => entry,
                 None => break,
@@ -185,33 +189,18 @@ where
             combine(&mut combiners, &aggregator, block);
             lower[idx] += 1;
             upper[idx] += 1;
-            cur_len += 1;
+            cur_memory = crate::ALLOCATOR.get_memory_usage().1;
         }
-        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("tid: {:?}, cur mem after decryption: {:?}, in enclave decrypt: {:?} s", tid, crate::ALLOCATOR.get_memory_usage(), dur);
 
-        if lower.iter().zip(upper_bound.iter()).filter(|(l, ub)| l < ub).count() > 0 {
+        let remained_c = if lower.iter().zip(upper_bound.iter()).filter(|(l, ub)| l < ub).count() > 0 {
             let min_max_k = sorted_max_key.first_entry().unwrap();
-            /* 
-            let remained_c = encrypt(bincode::serialize(&combiners.split_off(&min_max_k.key().0)).unwrap().as_ref());
-            let remained_s = encrypt(bincode::serialize(&sorted_max_key).unwrap().as_ref());
-            //Temporary stored for next computation
-            CAVE.lock().unwrap().insert(tid, 
-                (res_enc_to_ptr(remained_c) as usize, 
-                res_enc_to_ptr(remained_s)as usize)
-            );
-            */
-            let remained_c = combiners.split_off(&min_max_k.key().0);
-            let remained_s = sorted_max_key;
-            CAVE.lock().unwrap().insert(tid, 
-                (Box::into_raw(Box::new(remained_c)) as *mut u8 as usize, 
-                Box::into_raw(Box::new(remained_s)) as *mut u8 as usize)
-            );
-        }
+            combiners.split_off(&min_max_k.key().0)
+        } else {
+            BTreeMap::new()
+        };
 
-        println!("tid: {:?}, cur mem after shuffle read: {:?}", tid, crate::ALLOCATOR.get_memory_usage());
         let result = combiners.into_iter().map(|(k, v)| (k, v.unwrap())).collect::<Vec<_>>();
-        result
+        (self.batch_encrypt(result), remained_c)
     }
 }
 
@@ -268,10 +257,6 @@ where
 
     fn get_next_deps(&self) -> Arc<RwLock<HashMap<(OpId, OpId), Dependency>>> {
         self.next_deps.clone()
-    }
-
-    fn has_spec_oppty(&self) -> bool {
-        true
     }
 
     fn is_in_loop(&self) -> bool {
@@ -346,11 +331,7 @@ where
             }
             2 => {
                 let result = self.compute_inner(call_seq.tid, input);
-                let now = Instant::now();
-                let result_enc = self.batch_encrypt(result);
-                let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-                println!("In shuffled_op, encryption, time {:?} s, memroy usage: {:?} B", dur, crate::ALLOCATOR.get_memory_usage());
-                to_ptr(result_enc)
+                to_ptr(result)
             }
             _ => panic!("Invalid is_shuffle"),
         }
@@ -366,8 +347,7 @@ where
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
             let key = call_seq.get_cached_doublet();
-            let is_spec = call_seq.is_spec;
-            return self.get_and_remove_cached_data(key, is_spec);
+            return self.get_and_remove_cached_data(key);
         }
 
         let len = input.get_enc_data::<Vec<(KE, CE)>>().len();

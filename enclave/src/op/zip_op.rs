@@ -135,10 +135,6 @@ where
         self.vals.split_num.load(atomic::Ordering::SeqCst)
     }
 
-    fn has_spec_oppty(&self) -> bool {
-        true
-    }
-
     fn is_in_loop(&self) -> bool {
         self.vals.in_loop
     }
@@ -245,8 +241,7 @@ where
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
             let key = call_seq.get_cached_doublet();
-            let is_spec = call_seq.is_spec;
-            return self.get_and_remove_cached_data(key, is_spec);
+            return self.get_and_remove_cached_data(key);
         }
         
         let len = input.get_enc_data::<Vec<(TE, UE)>>().len();
