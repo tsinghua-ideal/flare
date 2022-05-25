@@ -122,7 +122,7 @@ where
                 .zip(upper_bound.iter())
                 .map(|(l, ub)| std::cmp::min(*l, *ub))
                 .collect::<Vec<_>>();
-            let (res_bl, remained_c) = self.compute_inner_core(tid, buckets_enc, &mut lower, &mut upper, &upper_bound, combiners, &mut sorted_max_key);
+            let (res_bl, remained_c) = self.compute_inner_core(input.get_parallel(), buckets_enc, &mut lower, &mut upper, &upper_bound, combiners, &mut sorted_max_key);
             combine_enc(&mut res, res_bl);
             combiners = remained_c;
             lower = lower
@@ -133,7 +133,7 @@ where
         }
         res
     }
-    pub fn compute_inner_core(&self, tid: u64, buckets_enc: &Vec<Vec<(KE, CE)>>, lower: &mut Vec<usize>, upper: &mut Vec<usize>, upper_bound: &Vec<usize>, mut combiners: BTreeMap<K, Option<C>>, sorted_max_key: &mut BTreeMap<(K, usize), usize>) -> (Vec<(KE, CE)>, BTreeMap<K, Option<C>>) {
+    pub fn compute_inner_core(&self, parallel_num: usize, buckets_enc: &Vec<Vec<(KE, CE)>>, lower: &mut Vec<usize>, upper: &mut Vec<usize>, upper_bound: &Vec<usize>, mut combiners: BTreeMap<K, Option<C>>, sorted_max_key: &mut BTreeMap<(K, usize), usize>) -> (Vec<(KE, CE)>, BTreeMap<K, Option<C>>) {
         fn combine<K, V, C>(combiners: &mut BTreeMap<K, Option<C>>, aggregator: &Arc<Aggregator<K, V, C>>, block: Vec<(K, C)>)
         where
             K: Data + Eq + Hash + Ord,
@@ -174,7 +174,7 @@ where
         }
 
         let mut cur_memory = crate::ALLOCATOR.get_memory_usage().1;
-        while cur_memory < CACHE_LIMIT {
+        while cur_memory < CACHE_LIMIT/parallel_num {
             let entry = match sorted_max_key.first_entry() {
                 Some(entry) => entry,
                 None => break,

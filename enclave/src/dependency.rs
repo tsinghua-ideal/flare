@@ -210,7 +210,7 @@ where
         data
     }
 
-    pub fn pre_merge_core(&self, buckets_enc: &[Vec<(KE, CE)>], lower: &mut Vec<usize>, upper: &mut Vec<usize>, upper_bound: &Vec<usize>, mut combiners: Vec<(K, C)>, sorted_max_key: &mut BTreeMap<(K, usize), usize>) -> (Vec<(KE, CE)>, Vec<(K, C)>)  {
+    pub fn pre_merge_core(&self, parallel_num: usize, buckets_enc: &[Vec<(KE, CE)>], lower: &mut Vec<usize>, upper: &mut Vec<usize>, upper_bound: &Vec<usize>, mut combiners: Vec<(K, C)>, sorted_max_key: &mut BTreeMap<(K, usize), usize>) -> (Vec<(KE, CE)>, Vec<(K, C)>)  {
         let aggregator = self.aggregator.clone();
         let mut block = Vec::new();
         if sorted_max_key.is_empty() {
@@ -240,7 +240,7 @@ where
         }
 
         let mut cur_memory = crate::ALLOCATOR.get_memory_usage().1;
-        while cur_memory < CACHE_LIMIT {
+        while cur_memory < CACHE_LIMIT/parallel_num {
             let entry = match sorted_max_key.first_entry() {
                 Some(entry) => entry,
                 None => break,
@@ -423,7 +423,7 @@ where
                         .zip(upper_bound.iter())
                         .map(|(l, ub)| std::cmp::min(*l, *ub))
                         .collect::<Vec<_>>();
-                    let (res_bl, remained_c) = self.pre_merge_core(buckets_enc, &mut lower, &mut upper, &upper_bound, combiners, &mut sorted_max_key);
+                    let (res_bl, remained_c) = self.pre_merge_core(input.get_parallel(), buckets_enc, &mut lower, &mut upper, &upper_bound, combiners, &mut sorted_max_key);
                     combiners = remained_c;
                     crate::ALLOCATOR.set_switch(true);
                     res[i].extend_from_slice(&res_bl);

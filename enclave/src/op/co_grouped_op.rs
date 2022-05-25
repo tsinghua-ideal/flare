@@ -224,7 +224,7 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
                 .zip(upper_bound.iter())
                 .map(|(l, ub)| std::cmp::min(*l, *ub))
                 .collect::<Vec<_>>();
-            let (res_bl, remained_a) = self.compute_inner_core(tid, data_enc, &mut lower, &mut upper, &upper_bound, agg, &mut sorted_max_key);
+            let (res_bl, remained_a) = self.compute_inner_core(input.get_parallel(), data_enc, &mut lower, &mut upper, &upper_bound, agg, &mut sorted_max_key);
             combine_enc(&mut res, res_bl);
             agg = remained_a;
             lower = lower
@@ -236,7 +236,7 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
         res
     }
 
-    pub fn compute_inner_core(&self, tid: u64, data_enc: &(Vec<Vec<(KE, VE)>>, Vec<Vec<(KE, Vec<u8>)>>, Vec<Vec<(KE, WE)>>, Vec<Vec<(KE, Vec<u8>)>>), lower: &mut Vec<usize>, upper: &mut Vec<usize>, upper_bound: &Vec<usize>, mut agg: BTreeMap<K, (Vec<V>, Vec<W>)>, sorted_max_key: &mut BTreeMap<(K, usize), usize>) -> (Vec<(KE, (CE, DE))>, BTreeMap<K, (Vec<V>, Vec<W>)>) {
+    pub fn compute_inner_core(&self, parallel_num: usize, data_enc: &(Vec<Vec<(KE, VE)>>, Vec<Vec<(KE, Vec<u8>)>>, Vec<Vec<(KE, WE)>>, Vec<Vec<(KE, Vec<u8>)>>), lower: &mut Vec<usize>, upper: &mut Vec<usize>, upper_bound: &Vec<usize>, mut agg: BTreeMap<K, (Vec<V>, Vec<W>)>, sorted_max_key: &mut BTreeMap<(K, usize), usize>) -> (Vec<(KE, (CE, DE))>, BTreeMap<K, (Vec<V>, Vec<W>)>) {
         let mut num_sub_part = vec![0, 0];
         let mut block = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
         num_sub_part[0] += data_enc.0.len();
@@ -265,7 +265,7 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
         }
 
         let mut cur_memory = crate::ALLOCATOR.get_memory_usage().1;
-        while cur_memory < CACHE_LIMIT {
+        while cur_memory < CACHE_LIMIT/parallel_num {
             let entry = match sorted_max_key.first_entry() {
                 Some(entry) => entry,
                 None => break,

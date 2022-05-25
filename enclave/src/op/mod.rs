@@ -368,6 +368,10 @@ impl Input {
     pub fn get_enc_data<T>(&self) -> &T {
         unsafe { (self.data as *const T).as_ref() }.unwrap()
     }
+
+    pub fn get_parallel(&self) -> usize {
+        self.parallel_num
+    }
 }
 
 #[derive(Default, Clone)]
@@ -1299,7 +1303,7 @@ pub trait OpE: Op {
             let iter = Box::new(result.collect::<Vec<_>>()) as Box<dyn Any>;
             buckets = shuf_dep.do_shuffle_task(tid, iter, buckets);
             cur_memory = crate::ALLOCATOR.get_max_memory_usage().0;
-            if cur_memory > CACHE_LIMIT {
+            if cur_memory > CACHE_LIMIT/input.get_parallel() {
                 crate::ALLOCATOR.reset_max_memory_usage();
                 result_ptr = shuf_dep.finish_buckets(tid, buckets, result_ptr);
                 buckets = shuf_dep.create_buckets(tid);
