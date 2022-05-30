@@ -221,6 +221,7 @@ impl<T: Data, TE: Data> Op for Union<T, TE>
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
         let is_caching_final_rdd = call_seq.is_caching_final_rdd();
+        let fd = self.get_fd();
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
@@ -228,9 +229,17 @@ impl<T: Data, TE: Data> Op for Union<T, TE>
             return self.get_and_remove_cached_data(key);
         }
         
-        let opb = call_seq.get_next_op().clone();
-        let op = opb.to_arc_op::<dyn Op<Item = T>>().unwrap();
-        let res_iter = op.compute(call_seq, input);
+        let res_iter = if call_seq.is_head() {
+            let len = input.get_enc_data::<Vec<TE>>().len();
+            Box::new((0..len).map(move|i| {
+                let data = input.get_enc_data::<Vec<TE>>();
+                Box::new((fd)(data[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
+            }))
+        } else {
+            let opb = call_seq.get_next_op().clone();
+            let op = opb.to_arc_op::<dyn Op<Item = T>>().unwrap();
+            op.compute(call_seq, input)
+        };
 
         let key = call_seq.get_caching_doublet();
         if need_cache && CACHE.get(key).is_none() {

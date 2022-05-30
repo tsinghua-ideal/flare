@@ -24,7 +24,7 @@ where
         FD: SerFunc((KE2, CE)) -> Vec<(K, C)>,
     {
         let new_op = SerArc::new(Shuffled::new(
-            self.get_op(),
+            self.get_ope(),
             Arc::new(aggregator),
             partitioner,
             fe,

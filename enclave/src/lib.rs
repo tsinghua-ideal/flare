@@ -21,6 +21,7 @@
 #![feature(coerce_unsized)]
 #![feature(drain_filter)]
 #![feature(fn_traits)]
+#![feature(is_sorted)]
 #![feature(map_first_last)]
 #![feature(once_cell)]
 #![feature(raw)]
@@ -88,6 +89,7 @@ static immediate_cout: bool = true;
 
 lazy_static! {
     static ref CACHE: OpCache = OpCache::new();
+    static ref CNT_PER_PARTITION: Arc<Mutex<HashMap<OpId, usize>>> = Arc::new(Mutex::new(HashMap::new()));
     static ref OP_MAP: AtomicPtrWrapper<BTreeMap<OpId, Arc<dyn OpBase>>> = AtomicPtrWrapper::new(Box::into_raw(Box::new(BTreeMap::new()))); 
     static ref init: Result<()> = {
         /* dijkstra */
@@ -245,6 +247,16 @@ pub extern "C" fn pre_merge(tid: u64,
     let op = load_opmap().get(&op_id).unwrap();
     let res = op.pre_merge(dep_info, tid, input);
     res
+}
+
+#[no_mangle]
+pub extern "C" fn get_cnt_per_partition(op_id: OpId) -> usize {
+    CNT_PER_PARTITION.lock().unwrap().remove(&op_id).unwrap()
+}
+
+#[no_mangle]
+pub extern "C" fn set_cnt_per_partition(op_id: OpId, cnt_per_partition: usize) {
+    CNT_PER_PARTITION.lock().unwrap().insert(op_id, cnt_per_partition);
 }
 
 #[no_mangle]

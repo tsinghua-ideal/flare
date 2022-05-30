@@ -246,6 +246,393 @@ fn get_text_loc_id() -> u64 {
     id
 }
 
+// prepare for column step 2, shuffle (transpose)
+// sub_parts and buckets_enc stay outside enclave
+pub fn column_sort_step_2<K, V, KE, VE>(sub_parts: Vec<(KE, VE)>, max_len: usize, num_output_splits: usize, fe: Box<dyn Func(Vec<(K, V)>) -> (KE, VE)>, fd: Box<dyn Func((KE, VE)) -> Vec<(K, V)>>) -> Vec<Vec<(KE, VE)>>
+where
+    K: Data + Ord,
+    V: Data,
+    KE: Data,
+    VE: Data,
+{
+    //TODO: can be optimized to avoid unneccessary copy, as column_sort_step_4 shows
+    crate::ALLOCATOR.set_switch(true);
+    let mut buckets_enc = vec![Vec::new(); num_output_splits];
+    crate::ALLOCATOR.set_switch(false);
+
+    let mut i = 0;
+    for sub_part in sub_parts.iter() {
+        let mut buckets = vec![Vec::with_capacity(max_len.saturating_sub(1) / num_output_splits + 1); num_output_splits];
+        let sub_part = (fd)(sub_part.clone());
+        for kc in sub_part {
+            buckets[i % num_output_splits].push(kc);
+            i += 1;
+        }
+
+        for (j, bucket_enc) in buckets.into_iter().map(|x| (fe)(x)).enumerate() {
+            crate::ALLOCATOR.set_switch(true);
+            buckets_enc[j].push(bucket_enc.clone());
+            crate::ALLOCATOR.set_switch(false);
+        }
+    }
+    crate::ALLOCATOR.set_switch(true);
+    drop(sub_parts);
+    crate::ALLOCATOR.set_switch(false);
+    buckets_enc
+}
+
+// sub_parts and buckets_enc stay outside enclave
+pub fn column_sort_step_4_6_8<K, V, KE, VE>(sub_parts: Vec<(KE, VE)>, cnt_per_partition: usize, max_len: usize, n: usize, num_output_splits: usize, fe: Box<dyn Func(Vec<(K, V)>) -> (KE, VE)>, fd: Box<dyn Func((KE, VE)) -> Vec<(K, V)>>) -> Vec<Vec<(KE, VE)>>
+where
+    K: Data + Ord,
+    V: Data,
+    KE: Data,
+    VE: Data,
+{
+    let n_last = n - (sub_parts.len() - 1) * max_len;
+    let chunk_size = cnt_per_partition / num_output_splits;
+    let mut next_i = 0;
+    let mut n_cur = 0;
+    let mut n_acc = 0;
+    let last_j = sub_parts.len() - 1;
+    let mut r = Vec::new();
+
+    crate::ALLOCATOR.set_switch(true);
+    let mut buckets_enc = vec![Vec::new(); num_output_splits];
+    let mut iter = sub_parts.into_iter();
+    let mut iter_cur = iter.next();
+    crate::ALLOCATOR.set_switch(false);
+    let mut j = 0;
+
+    while iter_cur.is_some() {
+        crate::ALLOCATOR.set_switch(true);
+        let sub_part_enc = iter_cur.unwrap();
+        crate::ALLOCATOR.set_switch(false);
+
+        let n_cur = if j == last_j {
+            n_last
+        } else {
+            max_len
+        };
+        if n_acc + n_cur >= chunk_size {
+            //form a chunk
+            if n_acc + n_cur > chunk_size {
+                //need to split
+                let mut sub_part = r;
+                sub_part.append(&mut (fd)(sub_part_enc.clone()));
+                r = sub_part.split_off(chunk_size - n_acc);
+                let sub_part_enc = (fe)(sub_part);
+                crate::ALLOCATOR.set_switch(true);
+                buckets_enc[next_i].push(sub_part_enc.clone());
+                crate::ALLOCATOR.set_switch(false);
+            } else {
+                if r.len() > 0 {
+                    let r_enc = (fe)(r);
+                    r = Vec::new();
+                    crate::ALLOCATOR.set_switch(true);
+                    buckets_enc[next_i].push(r_enc.clone());
+                    crate::ALLOCATOR.set_switch(false);
+                }
+                crate::ALLOCATOR.set_switch(true);
+                buckets_enc[next_i].push(sub_part_enc);
+                crate::ALLOCATOR.set_switch(false);
+            }
+            next_i += 1;
+            n_acc = r.len();
+        } else {
+            if r.len() > 0 {
+                let r_enc = (fe)(r);
+                r = Vec::new();
+                crate::ALLOCATOR.set_switch(true);
+                buckets_enc[next_i].push(r_enc.clone());
+                crate::ALLOCATOR.set_switch(false);
+            }
+            crate::ALLOCATOR.set_switch(true);
+            buckets_enc[next_i].push(sub_part_enc);
+            crate::ALLOCATOR.set_switch(false);
+            n_acc += n_cur;
+        };
+
+
+        crate::ALLOCATOR.set_switch(true);
+        iter_cur = iter.next();
+        crate::ALLOCATOR.set_switch(false);
+        j += 1;
+    }
+
+    if r.len() > 0 {
+        let r_enc = (fe)(r);
+        crate::ALLOCATOR.set_switch(true);
+        buckets_enc[next_i].push(r_enc.clone());
+        crate::ALLOCATOR.set_switch(false);
+    }
+
+    buckets_enc
+}
+
+pub struct SortHelper<K, V, KE, VE>
+where
+    K: Data + Ord,
+    V: Data,
+    KE: Data,
+    VE: Data,
+{
+    data: Vec<Arc<Mutex<(KE, VE)>>>,
+    max_len: usize,
+    max_key: K,
+    num_padding: Arc<AtomicUsize>,
+    ascending: bool,
+    fe: Box<dyn Func(Vec<(K, V)>) -> (KE, VE)>,
+    fd: Box<dyn Func((KE, VE)) -> Vec<(K, V)>>,
+    dist: Option<Vec<usize>>,
+}
+
+impl<K, V, KE, VE> SortHelper<K, V, KE, VE>
+where
+    K: Data + Ord,
+    V: Data,
+    KE: Data,
+    VE: Data,
+{
+    pub fn new(data: Vec<(KE, VE)>, max_len: usize, max_key: K, ascending: bool, fe: Box<dyn Func(Vec<(K, V)>) -> (KE, VE)>, fd: Box<dyn Func((KE, VE)) -> Vec<(K, V)>>) -> Self {
+        //the pointer of data is located inside enclave
+        //while the vec content is outside enclave
+        //if core dump, check this
+        let data = data
+            .into_iter()
+            .map(|x| Arc::new(Mutex::new(x)))
+            .collect::<Vec<_>>();
+        //note that data is outside enclave
+        SortHelper { data, max_len, max_key, num_padding: Arc::new(AtomicUsize::new(0)), ascending, fe, fd, dist: None}
+    }
+
+    //optimize for merging sorted arrays
+    pub fn new_with(data: Vec<Vec<(KE, VE)>>, max_len: usize, max_key: K, ascending: bool, fe: Box<dyn Func(Vec<(K, V)>) -> (KE, VE)>, fd: Box<dyn Func((KE, VE)) -> Vec<(K, V)>>) -> Self {
+        //both outer and inner pointers of (KE, VE) is located inside enclave
+        //while the content (KE, VE) is outside enclave
+        //if core dump, check this
+        let dist = Some(data.iter()
+            .map(|p| p.len())
+            .scan(0usize, |acc, x| {
+                *acc = *acc + x;
+                Some(*acc)
+            }).collect::<Vec<_>>());
+        let data = data.into_iter().map(|p| p.into_iter().map(|x|Arc::new(Mutex::new(x)))).flatten().collect::<Vec<_>>();
+        //note that data is outside enclave
+        SortHelper { data, max_len, max_key, num_padding: Arc::new(AtomicUsize::new(0)), ascending, fe, fd, dist}
+    }
+
+    pub fn sort(&self) {
+        let n = self.data.len();
+        self.bitonic_sort_arbitrary(0, n, self.ascending);
+    }
+
+    fn bitonic_sort_arbitrary(&self, lo: usize, n: usize, dir: bool) {
+        if n > 1 {
+            match &self.dist {
+                Some(dist) => {
+                    let m = match dist.binary_search(&(lo + n / 2)) {
+                        Ok(idx) => dist[idx] - lo,
+                        Err(idx) => dist[idx] - lo,
+                    };
+                    if m < n {
+                        self.bitonic_sort_arbitrary(lo, m, !dir);
+                    }
+                    if m > 0 {
+                        self.bitonic_sort_arbitrary(lo + m, n - m, dir);
+                    }
+                    self.bitonic_merge_arbitrary(lo, n, dir);
+                },
+                None => {
+                    let m = n / 2;
+                    self.bitonic_sort_arbitrary(lo, m, !dir);
+                    self.bitonic_sort_arbitrary(lo + m, n - m, dir);
+                    self.bitonic_merge_arbitrary(lo, n, dir);
+                }
+            };
+        }
+    }
+
+    fn bitonic_merge_arbitrary(&self, lo: usize, n: usize, dir: bool) {
+        if n > 1 {
+            let max_len = self.max_len;
+            let max_key = self.max_key.clone();
+            let num_padding = self.num_padding.clone();
+
+            let is_sorted = self.dist.as_ref().map_or(false, |dist| {
+                let idx = dist.binary_search(&(lo + n)).unwrap();
+                idx == 0 || dist[idx - 1] == lo 
+            });
+            if is_sorted {
+                let mut d_i = Vec::new();
+                let mut cnt = 0;
+                for i in lo..(lo + n) {
+                    d_i.append(&mut (self.fd)(self.data[i].lock().unwrap().clone()));
+                    if d_i.len() >= max_len {
+                        let mut r = d_i.split_off(max_len);
+                        std::mem::swap(&mut r, &mut d_i);
+                        if !dir {
+                            r.reverse();
+                        }
+                        let new_d_i = (self.fe)(r);
+                        crate::ALLOCATOR.set_switch(true);
+                        *self.data[cnt].lock().unwrap() = new_d_i.clone();
+                        crate::ALLOCATOR.set_switch(false);
+                        cnt += 1;
+                    }
+                }
+                while cnt < n {
+                    d_i.resize(max_len, (max_key.clone(), Default::default()));
+                    if !dir {
+                        d_i.reverse();
+                    }
+                    let new_d_i = (self.fe)(d_i);
+                    crate::ALLOCATOR.set_switch(true);
+                    *self.data[cnt].lock().unwrap() = new_d_i.clone();
+                    crate::ALLOCATOR.set_switch(false);
+                    d_i = Vec::new();
+                    cnt += 1;
+                }
+
+                if !dir {
+                    for i in lo..(lo + n / 2) {
+                        let l = lo + n - 1 - i;
+                        let mut data_i = self.data[i].lock().unwrap();
+                        let mut data_l = self.data[l].lock().unwrap();
+                        crate::ALLOCATOR.set_switch(true);
+                        std::mem::swap(&mut *data_i, &mut *data_l);
+                        crate::ALLOCATOR.set_switch(false);
+                    }
+                }
+            } else {
+                let m = n.next_power_of_two() >> 1;
+                for i in lo..(lo + n - m) {
+                    let l = i + m;
+                    //merge
+                    let mut data_i = self.data[i].lock().unwrap();
+                    let mut data_l = self.data[l].lock().unwrap();
+    
+                    let d_i = (self.fd)(data_i.clone());
+                    let d_l = (self.fd)(data_l.clone());
+    
+                    let real_len = d_i.len() + d_l.len();
+                    let dummy_len = max_len * 2 - real_len;
+                    if real_len < max_len * 2 {
+                        num_padding.fetch_add(dummy_len, atomic::Ordering::SeqCst);
+                    }
+    
+                    let mut new_d_i = Vec::with_capacity(max_len);
+                    let mut new_d_l = Vec::with_capacity(max_len);
+                    //desending, append dummy elements first
+                    if !dir {
+                        new_d_i.append(&mut vec![(max_key.clone(), Default::default()); std::cmp::min(dummy_len, max_len)]);
+                        new_d_l.append(&mut vec![(max_key.clone(), Default::default()); dummy_len.saturating_sub(max_len)]);
+                    }
+    
+                    let mut iter_i = if d_i
+                        .first()
+                        .zip(d_i.last())
+                        .map(|(x, y)| (x.0 < y.0) != dir)
+                        .unwrap_or(false)
+                    {
+                        Box::new(d_i.into_iter().rev()) as Box<dyn Iterator<Item = (K, V)>>
+                    } else {
+                        Box::new(d_i.into_iter()) as Box<dyn Iterator<Item = (K, V)>>
+                    };
+    
+                    let mut iter_l = if d_l
+                        .first()
+                        .zip(d_l.last())
+                        .map(|(x, y)| (x.0 < y.0) != dir)
+                        .unwrap_or(false)
+                    {
+                        Box::new(d_l.into_iter().rev()) as Box<dyn Iterator<Item = (K, V)>>
+                    } else {
+                        Box::new(d_l.into_iter()) as Box<dyn Iterator<Item = (K, V)>>
+                    };
+    
+                    let mut cur_i = iter_i.next();
+                    let mut cur_l = iter_l.next();
+    
+                    while cur_i.is_some() || cur_l.is_some() {
+                        let should_puti = cur_l.is_none()
+                            || cur_i.is_some()
+                                && (cur_i.as_ref().unwrap().0 < cur_l.as_ref().unwrap().0) == dir;
+                        let kv = if should_puti {
+                            let t = cur_i.unwrap();
+                            cur_i = iter_i.next();
+                            t
+                        } else {
+                            let t = cur_l.unwrap();
+                            cur_l = iter_l.next();
+                            t
+                        };
+    
+                        if new_d_i.len() < max_len {
+                            new_d_i.push(kv);
+                        } else {
+                            new_d_l.push(kv);
+                        }
+                    }
+    
+                    //ascending, append dummy elements finally
+                    if dir {
+                        new_d_i.resize(max_len, (max_key.clone(), Default::default()));
+                        new_d_l.resize(max_len, (max_key.clone(), Default::default()));
+                    }
+    
+                    let new_d_i = (self.fe)(new_d_i);
+                    let new_d_l = (self.fe)(new_d_l);
+                    crate::ALLOCATOR.set_switch(true);
+                    *data_i = new_d_i.clone();
+                    *data_l = new_d_l.clone();
+                    crate::ALLOCATOR.set_switch(false);
+                }
+    
+                self.bitonic_merge_arbitrary(lo, m, dir);
+                self.bitonic_merge_arbitrary(lo + m, n - m, dir);
+            }
+        }
+    }
+
+    pub fn take(&mut self) -> (Vec<(KE, VE)>, usize) {
+        let mut data = std::mem::take(&mut self.data);
+        let num_padding = self.num_padding.load(atomic::Ordering::SeqCst);
+        let num_real_elem = data.len() * self.max_len - num_padding;
+        let num_real_sub_part = data.len() - num_padding / self.max_len;
+        let num_padding_remaining = num_real_sub_part * self.max_len - num_real_elem;
+
+        crate::ALLOCATOR.set_switch(true);
+        //remove dummy elements
+        let dummy_sub_parts = data.split_off(num_real_sub_part);
+        drop(dummy_sub_parts);
+        let mut res = Vec::with_capacity(data.len());
+        crate::ALLOCATOR.set_switch(false);
+    
+        for x in data.into_iter() {
+            let x = Arc::try_unwrap(x).unwrap().into_inner().unwrap();
+            crate::ALLOCATOR.set_switch(true);
+            res.push(x);
+            crate::ALLOCATOR.set_switch(false);
+        }
+
+        let last = res.last_mut();
+        if last.is_some() {
+            let last = last.unwrap();
+            let mut sub_part = (self.fd)(last.clone());
+            sub_part.truncate(self.max_len - num_padding_remaining);
+            let sub_part_enc = (self.fe)(sub_part);
+            crate::ALLOCATOR.set_switch(true);
+            let t = std::mem::take(last);
+            drop(t);
+            *last = sub_part_enc.clone();
+            crate::ALLOCATOR.set_switch(false);
+        }
+
+        (res, num_real_elem)
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct CacheMeta {
@@ -340,7 +727,8 @@ impl DepInfo {
         self.identifier
     }
 
-    /// 0 for narrow, 1 for shuffle write, 2 for shuffle read, 3 for action
+    /// 0 for narrow, 1 for shuffle write, 2 for shuffle read, 3, 4 for action
+    /// 20-23 for column sort
     pub fn dep_type(&self) -> u8 {
         self.is_shuffle
     }
@@ -1292,35 +1680,14 @@ pub trait OpE: Op {
         let tid = call_seq.tid;
         let now = Instant::now();
 
-        let result_iter = self.compute(call_seq, input);
-        let mut cur_memory = 0;
-        let mut buckets = shuf_dep.create_buckets(tid);
-
-        let mut still_in = true;
-        let mut result_ptr = None;
-        for result in result_iter {
-            still_in = true;
-            let iter = Box::new(result.collect::<Vec<_>>()) as Box<dyn Any>;
-            buckets = shuf_dep.do_shuffle_task(tid, iter, buckets);
-            cur_memory = crate::ALLOCATOR.get_max_memory_usage().0;
-            if cur_memory > CACHE_LIMIT/input.get_parallel() {
-                crate::ALLOCATOR.reset_max_memory_usage();
-                result_ptr = shuf_dep.finish_buckets(tid, buckets, result_ptr);
-                buckets = shuf_dep.create_buckets(tid);
-                still_in = false;
-            }
-        }
-        
-        if still_in {
-            result_ptr = shuf_dep.finish_buckets(tid, buckets, result_ptr);
-        } else {
-            shuf_dep.free_buckets(tid, buckets);
-        }
+        let result_iter = Box::new(self.compute(call_seq, input)
+            .map(|x| Box::new(x.collect::<Vec<_>>()) as Box<dyn Any>)) as Box<dyn Iterator<Item = Box<dyn Any>>>;
+        let result_ptr = shuf_dep.do_shuffle_task(tid, result_iter, input.get_parallel());
 
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("tid: {:?}, shuffle write: {:?}s, cur mem: {:?}B", call_seq.tid, dur, crate::ALLOCATOR.get_memory_usage());
         //let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
-        result_ptr.unwrap()
+        result_ptr
     }
 
     fn randomize_in_place_(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
