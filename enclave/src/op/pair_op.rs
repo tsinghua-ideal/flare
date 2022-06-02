@@ -3,32 +3,24 @@ use crate::aggregator::Aggregator;
 use crate::partitioner::HashPartitioner;
 use crate::op::*;
 
-pub trait Pair<K, V, KE, VE>: OpE<Item = (K, V), ItemE = (KE, VE)> + Send + Sync 
+pub trait Pair<K, V>: Op<Item = (K, V)> + Send + Sync 
 where 
     K: Data + Eq + Hash + Ord, 
-    V: Data, 
-    KE: Data + Eq + Hash + Ord, 
-    VE: Data,
+    V: Data,
 {
     #[track_caller]
-    fn combine_by_key<KE2: Data, C: Data, CE: Data, FE, FD>(
+    fn combine_by_key<C: Data>(
         &self,
         aggregator: Aggregator<K, V, C>,
         partitioner: Box<dyn Partitioner>,
-        fe: FE,
-        fd: FD,
-    ) -> SerArc<dyn OpE<Item = (K, C), ItemE = (KE2, CE)>>
+    ) -> SerArc<dyn Op<Item = (K, C)>>
     where
         Self: Sized + 'static,
-        FE: SerFunc(Vec<(K, C)>) -> (KE2, CE), 
-        FD: SerFunc((KE2, CE)) -> Vec<(K, C)>,
     {
         let new_op = SerArc::new(Shuffled::new(
             self.get_op(),
             Arc::new(aggregator),
             partitioner,
-            fe,
-            fd,
         ));
         if !self.get_context().get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
@@ -37,68 +29,46 @@ where
     }
 
     #[track_caller]
-    fn group_by_key<CE, FE, FD>(&self, fe: FE, fd: FD, num_splits: usize) -> SerArc<dyn OpE<Item = (K, Vec<V>), ItemE = (KE, CE)>>
+    fn group_by_key(&self, num_splits: usize) -> SerArc<dyn Op<Item = (K, Vec<V>)>>
     where
         Self: Sized + 'static,
-        CE: Data,
-        FE: SerFunc(Vec<(K, Vec<V>)>) -> (KE, CE),
-        FD: SerFunc((KE, CE)) -> Vec<(K, Vec<V>)>,
     {
         self.group_by_key_using_partitioner(
-            fe,
-            fd,
             Box::new(HashPartitioner::<K>::new(num_splits)) as Box<dyn Partitioner>
         )
     }
 
     #[track_caller]
-    fn group_by_key_using_partitioner<CE, FE, FD>(
+    fn group_by_key_using_partitioner<>(
         &self,
-        fe: FE,
-        fd: FD,
         partitioner: Box<dyn Partitioner>,
-    ) -> SerArc<dyn OpE<Item = (K, Vec<V>), ItemE = (KE, CE)>>
+    ) -> SerArc<dyn Op<Item = (K, Vec<V>)>>
     where
         Self: Sized + 'static,
-        CE: Data,
-        FE: SerFunc(Vec<(K, Vec<V>)>) -> (KE, CE),
-        FD: SerFunc((KE, CE)) -> Vec<(K, Vec<V>)>,
     {
-        self.combine_by_key(Aggregator::<K, V, _>::default(), partitioner, fe, fd)
+        self.combine_by_key(Aggregator::<K, V, _>::default(), partitioner)
     }
 
     #[track_caller]
-    fn reduce_by_key<KE2, VE2, F, FE, FD>(&self, func: F, num_splits: usize, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = (K, V), ItemE = (KE2, VE2)>>
+    fn reduce_by_key<F>(&self, func: F, num_splits: usize) -> SerArc<dyn Op<Item = (K, V)>>
     where
         Self: Sized + 'static,
-        KE2: Data,
-        VE2: Data,
-        F: SerFunc((V, V)) -> V,
-        FE: SerFunc(Vec<(K, V)>) -> (KE2, VE2), 
-        FD: SerFunc((KE2, VE2)) -> Vec<(K, V)>,        
+        F: SerFunc((V, V)) -> V,     
     {
         self.reduce_by_key_using_partitioner(
             func,
             Box::new(HashPartitioner::<K>::new(num_splits)) as Box<dyn Partitioner>,
-            fe,
-            fd
         )
     }
 
     #[track_caller]
-    fn reduce_by_key_using_partitioner<KE2, VE2, F, FE, FD>(
+    fn reduce_by_key_using_partitioner<F>(
         &self,
         func: F,
         partitioner: Box<dyn Partitioner>,
-        fe: FE,
-        fd: FD,
-    ) -> SerArc<dyn OpE<Item = (K, V), ItemE = (KE2, VE2)>>
+    ) -> SerArc<dyn Op<Item = (K, V)>>
     where
-        KE2: Data,
-        VE2: Data,
         F: SerFunc((V, V)) -> V,
-        FE: SerFunc(Vec<(K, V)>) -> (KE2, VE2), 
-        FD: SerFunc((KE2, VE2)) -> Vec<(K, V)>,  
         Self: Sized + 'static,
     {
         let create_combiner = Box::new(|v: V| v);
@@ -106,21 +76,17 @@ where
         let merge_value = Box::new(move |(buf, v)| { (f_clone)((buf, v)) });
         let merge_combiners = Box::new(move |(b1, b2)| { (func)((b1, b2)) });
         let aggregator = Aggregator::new(create_combiner, merge_value, merge_combiners);
-        self.combine_by_key(aggregator, partitioner, fe, fd)
+        self.combine_by_key(aggregator, partitioner)
     }
 
     #[track_caller]
-    fn values<FE, FD>(
+    fn values(
         &self,
-        fe: FE,  //the type corresponding to the encryption form is fixed
-        fd: FD,
-    ) -> SerArc<dyn OpE<Item = V, ItemE = VE>>
+    ) -> SerArc<dyn Op<Item = V>>
     where
         Self: Sized,
-        FE: SerFunc(Vec<V>) -> VE, 
-        FD: SerFunc(VE) -> Vec<V>,
     {
-        let new_op = SerArc::new(Values::new(self.get_op(), fe, fd));
+        let new_op = SerArc::new(Values::new(self.get_op()));
         if !self.get_context().get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         }
@@ -128,21 +94,16 @@ where
     }
 
     #[track_caller]
-    fn map_values<U, UE, F, FE, FD>(
+    fn map_values<U, F>(
         &self,
         f: F,
-        fe: FE,
-        fd: FD,
-    ) -> SerArc<dyn OpE<Item = (K, U), ItemE = (KE, UE)>>
+    ) -> SerArc<dyn Op<Item = (K, U)>>
     where
         Self: Sized,
         F: SerFunc(V) -> U + Clone,
         U: Data,
-        UE: Data,
-        FE: SerFunc(Vec<(K, U)>) -> (KE, UE), 
-        FD: SerFunc((KE, UE)) -> Vec<(K, U)>,
     {
-        let new_op = SerArc::new(MappedValues::new(self.get_op(), f, fe, fd));
+        let new_op = SerArc::new(MappedValues::new(self.get_op(), f));
         if !self.get_context().get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         }
@@ -150,21 +111,16 @@ where
     }
 
     #[track_caller]
-    fn flat_map_values<U, UE, F, FE, FD>(
+    fn flat_map_values<U, F>(
         &self,
         f: F,
-        fe: FE,
-        fd: FD,
-    ) -> SerArc<dyn OpE<Item = (K, U), ItemE = (KE, UE)>>
+    ) -> SerArc<dyn Op<Item = (K, U)>>
     where
         Self: Sized,
         F: SerFunc(V) -> Box<dyn Iterator<Item = U>> + Clone,
         U: Data,
-        UE: Data,
-        FE: SerFunc(Vec<(K, U)>) -> (KE, UE), 
-        FD: SerFunc((KE, UE)) -> Vec<(K, U)>,
     {
-        let new_op = SerArc::new(FlatMappedValues::new(self.get_op(), f, fe, fd));
+        let new_op = SerArc::new(FlatMappedValues::new(self.get_op(), f));
         if !self.get_context().get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         }
@@ -172,18 +128,13 @@ where
     }
 
     #[track_caller]
-    fn join<W, WE, FE, FD>(
+    fn join<W>(
         &self,
-        other: SerArc<dyn OpE<Item = (K, W), ItemE = (KE, WE)>>,
-        fe: FE,
-        fd: FD,
+        other: SerArc<dyn Op<Item = (K, W)>>,
         num_splits: usize,
-    ) -> SerArc<dyn OpE<Item = (K, (V, W)), ItemE = (KE, (VE, WE))>> 
+    ) -> SerArc<dyn Op<Item = (K, (V, W))>> 
     where
         W: Data,
-        WE: Data,
-        FE: SerFunc(Vec<(K, (V, W))>) -> (KE, (VE, WE)), 
-        FD: SerFunc((KE, (VE, WE))) -> Vec<(K, (V, W))>, 
     {
         let f = Box::new(|v: (Vec<V>, Vec<W>)| {
             let (vs, ws) = v;
@@ -193,61 +144,24 @@ where
             Box::new(combine) as Box<dyn Iterator<Item = (V, W)>>
         });
 
-        let fe0 = self.get_fe();
-        let fd0 = self.get_fd();
-        let fe1 = other.get_fe();
-        let fd1 = other.get_fd();
-        //temporarily built
-        let fe_cg = Box::new(move |v: Vec<(K, (Vec<V>, Vec<W>))>| {
-            let (k, vw): (Vec<K>, Vec<(Vec<V>, Vec<W>)>) = v.into_iter().unzip();
-            let (v, w): (Vec<Vec<V>>, Vec<Vec<W>>) = vw.into_iter().unzip();
-            let w_default = Default::default();
-            let w_padding: Vec<W> = vec![w_default; k.len()];
-            let (ct_x, _) = (fe1)(k.into_iter()
-                .zip(w_padding.into_iter())
-                .collect::<Vec<_>>()
-            );
-            (ct_x, (ser_encrypt(v), ser_encrypt(w)))
-        });
-        let fd_cg = Box::new(move |v: (KE, (Vec<u8>, Vec<u8>))| {
-            let (ct_x, (ct_y, ct_z)) = v;
-            let w_padding: WE = Default::default();
-            let (x, _): (Vec<K>, Vec<W>)= (fd1)((ct_x, w_padding)).into_iter().unzip();
-            let y = ser_decrypt(ct_y);
-            let z = ser_decrypt(ct_z);
-            x.into_iter()
-                .zip(y.into_iter()
-                    .zip(z.into_iter())
-                ).collect::<Vec<_>>()
-        });
-
         let cogrouped = self.cogroup(
             other,
-            fe_cg,
-            fd_cg,
             Box::new(HashPartitioner::<K>::new(num_splits)) as Box<dyn Partitioner>,
         );
         self.get_context().add_num(1);
-        cogrouped.flat_map_values(Box::new(f), fe, fd)
+        cogrouped.flat_map_values(Box::new(f))
     }
 
     #[track_caller]
-    fn cogroup<W, WE, CE, DE, FE, FD>(
+    fn cogroup<W>(
         &self,
-        other: SerArc<dyn OpE<Item = (K, W), ItemE = (KE, WE)>>,
-        fe: FE,
-        fd: FD,
+        other: SerArc<dyn Op<Item = (K, W)>>,
         partitioner: Box<dyn Partitioner>,
-    ) -> SerArc<dyn OpE<Item = (K, (Vec<V>, Vec<W>)), ItemE = (KE, (CE, DE))>> 
+    ) -> SerArc<dyn Op<Item = (K, (Vec<V>, Vec<W>))>> 
     where
         W: Data,
-        WE: Data,
-        CE: Data,
-        DE: Data,
-        FE: SerFunc(Vec<(K, (Vec<V>, Vec<W>))>) -> (KE, (CE, DE)), 
-        FD: SerFunc((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))>, 
     {
-        let mut cogrouped = CoGrouped::new(self.get_ope(), other.get_ope(), fe, fd, partitioner);
+        let mut cogrouped = CoGrouped::new(self.get_op(), other.get_op(), partitioner);
         cogrouped.is_for_join = true;
         let new_op = SerArc::new(cogrouped);
         if !self.get_context().get_is_tail_comp() {
@@ -259,68 +173,51 @@ where
 }
 
 // Implementing the Pair trait for all types which implements Op
-impl<K, V, KE, VE, T> Pair<K, V, KE, VE> for T
+impl<K, V, T> Pair<K, V> for T
 where
-    T: OpE<Item = (K, V), ItemE = (KE, VE)>,
+    T: Op<Item = (K, V)>,
     K: Data + Eq + Hash + Ord, 
     V: Data, 
-    KE: Data + Eq + Hash + Ord, 
-    VE: Data,
 {}
 
-impl<K, V, KE, VE, T> Pair<K, V, KE, VE> for SerArc<T>
+impl<K, V, T> Pair<K, V> for SerArc<T>
 where
-    T: OpE<Item = (K, V), ItemE = (KE, VE)>,
+    T: Op<Item = (K, V)>,
     K: Data + Eq + Hash + Ord, 
     V: Data, 
-    KE: Data + Eq + Hash + Ord, 
-    VE: Data,
 {}
 
-pub struct Values<K, V, VE, FE, FD>
+pub struct Values<K, V>
 where
     K: Data,
     V: Data,
-    VE: Data,
-    FE: Func(Vec<V>) -> VE + Clone,
-    FD: Func(VE) -> Vec<V> + Clone,
 { 
     vals: Arc<OpVals>,
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     prev: Arc<dyn Op<Item = (K, V)>>,
-    fe: FE,
-    fd: FD,
 }
 
-impl<K, V, VE, FE, FD> Clone for Values<K, V, VE, FE, FD>
+impl<K, V> Clone for Values<K, V>
 where
     K: Data,
     V: Data,
-    VE: Data,
-    FE: Func(Vec<V>) -> VE + Clone,
-    FD: Func(VE) -> Vec<V> + Clone,
 {
     fn clone(&self) -> Self {
         Values { 
             vals: self.vals.clone(),
             next_deps: self.next_deps.clone(),
             prev: self.prev.clone(),
-            fe: self.fe.clone(),
-            fd: self.fd.clone(),
         }
     }
 }
 
-impl<K, V, VE, FE, FD> Values<K, V, VE, FE, FD>
+impl<K, V> Values<K, V>
 where
     K: Data,
     V: Data,
-    VE: Data,
-    FE: Func(Vec<V>) -> VE + Clone,
-    FD: Func(VE) -> Vec<V> + Clone,
 {
     #[track_caller]
-    fn new(prev: Arc<dyn Op<Item = (K, V)>>, fe: FE, fd: FD) -> Self {
+    fn new(prev: Arc<dyn Op<Item = (K, V)>>) -> Self {
         let mut vals = OpVals::new(prev.get_context(), prev.number_of_splits());
         let cur_id = vals.id;
         let prev_id = prev.get_op_id();
@@ -339,19 +236,14 @@ where
             vals,
             next_deps: Arc::new(RwLock::new(HashMap::new())),
             prev,
-            fe,
-            fd,
         }
     }
 }
 
-impl<K, V, VE, FE, FD> OpBase for Values<K, V, VE, FE, FD>
+impl<K, V> OpBase for Values<K, V>
 where
     K: Data,
     V: Data,
-    VE: Data,
-    FE: SerFunc(Vec<V>) -> VE,
-    FD: SerFunc(VE) -> Vec<V>,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
@@ -438,13 +330,10 @@ where
 }
 
 
-impl<K, V, VE, FE, FD> Op for Values<K, V, VE, FE, FD>
+impl<K, V> Op for Values<K, V>
 where
     K: Data,
     V: Data,
-    VE: Data,
-    FE: SerFunc(Vec<V>) -> VE,
-    FD: SerFunc(VE) -> Vec<V>,
 {   
     type Item = V;
     
@@ -503,58 +392,26 @@ where
     }
 }
 
-impl<K, V, VE, FE, FD> OpE for Values<K, V, VE, FE, FD>
-where
-    K: Data,
-    V: Data,
-    VE: Data,
-    FE: SerFunc(Vec<V>) -> VE,
-    FD: SerFunc(VE) -> Vec<V>,
-{
-    type ItemE = VE;
-    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
-        Arc::new(self.clone())
-    }
 
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
-        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Self::ItemE>
-    }
-
-    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
-        Box::new(self.fd.clone()) as Box<dyn Func(Self::ItemE)->Vec<Self::Item>>
-    }
-}
-
-
-pub struct MappedValues<K, V, U, KE, UE, F, FE, FD>
+pub struct MappedValues<K, V, U, F>
 where
     K: Data,
     V: Data,
     U: Data,
-    KE: Data,
-    UE: Data,
     F: Func(V) -> U + Clone,
-    FE: Func(Vec<(K, U)>) -> (KE, UE) + Clone,
-    FD: Func((KE, UE)) -> Vec<(K, U)> + Clone,
 { 
     vals: Arc<OpVals>,
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     prev: Arc<dyn Op<Item = (K, V)>>,
     f: F,
-    fe: FE,
-    fd: FD,
 }
 
-impl<K, V, U, KE, UE, F, FE, FD> Clone for MappedValues<K, V, U, KE, UE, F, FE, FD>
+impl<K, V, U, F> Clone for MappedValues<K, V, U, F>
 where
     K: Data,
     V: Data,
     U: Data,
-    KE: Data,
-    UE: Data,
     F: Func(V) -> U + Clone,
-    FE: Func(Vec<(K, U)>) -> (KE, UE) + Clone,
-    FD: Func((KE, UE)) -> Vec<(K, U)> + Clone,
 {
     fn clone(&self) -> Self {
         MappedValues { 
@@ -562,25 +419,19 @@ where
             next_deps: self.next_deps.clone(),
             prev: self.prev.clone(),
             f: self.f.clone(),
-            fe: self.fe.clone(),
-            fd: self.fd.clone(),
         }
     }
 }
 
-impl<K, V, U, KE, UE, F, FE, FD> MappedValues<K, V, U, KE, UE, F, FE, FD>
+impl<K, V, U, F> MappedValues<K, V, U, F>
 where
     K: Data,
     V: Data,
     U: Data,
-    KE: Data,
-    UE: Data,
     F: Func(V) -> U + Clone,
-    FE: Func(Vec<(K, U)>) -> (KE, UE) + Clone,
-    FD: Func((KE, UE)) -> Vec<(K, U)> + Clone,
 {
     #[track_caller]
-    fn new(prev: Arc<dyn Op<Item = (K, V)>>, f: F, fe: FE, fd: FD) -> Self {
+    fn new(prev: Arc<dyn Op<Item = (K, V)>>, f: F) -> Self {
         let mut vals = OpVals::new(prev.get_context(), prev.number_of_splits());
         let cur_id = vals.id;
         let prev_id = prev.get_op_id();
@@ -600,22 +451,16 @@ where
             next_deps: Arc::new(RwLock::new(HashMap::new())),
             prev,
             f,
-            fe,
-            fd,
         }
     }
 }
 
-impl<K, V, U, KE, UE, F, FE, FD> OpBase for MappedValues<K, V, U, KE, UE, F, FE, FD>
+impl<K, V, U, F> OpBase for MappedValues<K, V, U, F>
 where
     K: Data,
     V: Data,
     U: Data,
-    KE: Data,
-    UE: Data,
     F: SerFunc(V) -> U + Clone,
-    FE: SerFunc(Vec<(K, U)>) -> (KE, UE),
-    FD: SerFunc((KE, UE)) -> Vec<(K, U)>,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
@@ -702,16 +547,12 @@ where
 }
 
 
-impl<K, V, U, KE, UE, F, FE, FD> Op for MappedValues<K, V, U, KE, UE, F, FE, FD>
+impl<K, V, U, F> Op for MappedValues<K, V, U, F>
 where
     K: Data,
     V: Data,
     U: Data,
-    KE: Data,
-    UE: Data,
     F: SerFunc(V) -> U + Clone,
-    FE: SerFunc(Vec<(K, U)>) -> (KE, UE),
-    FD: SerFunc((KE, UE)) -> Vec<(K, U)>,
 {   
     type Item = (K, U);
     
@@ -776,60 +617,25 @@ where
     }
 }
 
-impl<K, V, U, KE, UE, F, FE, FD> OpE for MappedValues<K, V, U, KE, UE, F, FE, FD>
+pub struct FlatMappedValues<K, V, U, F>
 where
     K: Data,
     V: Data,
     U: Data,
-    KE: Data,
-    UE: Data,
-    F: SerFunc(V) -> U + Clone,
-    FE: SerFunc(Vec<(K, U)>) -> (KE, UE),
-    FD: SerFunc((KE, UE)) -> Vec<(K, U)>,
-{
-    type ItemE = (KE, UE);
-    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
-        Arc::new(self.clone())
-    }
-
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
-        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Self::ItemE>
-    }
-
-    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
-        Box::new(self.fd.clone()) as Box<dyn Func(Self::ItemE)->Vec<Self::Item>>
-    }
-}
-
-pub struct FlatMappedValues<K, V, U, KE, UE, F, FE, FD>
-where
-    K: Data,
-    V: Data,
-    U: Data,
-    KE: Data,
-    UE: Data,
     F: Func(V) -> Box<dyn Iterator<Item = U>> + Clone,
-    FE: Func(Vec<(K, U)>) -> (KE, UE) + Clone,
-    FD: Func((KE, UE)) -> Vec<(K, U)> + Clone,
 {
     vals: Arc<OpVals>,
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     prev: Arc<dyn Op<Item = (K, V)>>,
     f: F,    
-    fe: FE,
-    fd: FD,
 }
 
-impl<K, V, U, KE, UE, F, FE, FD> Clone for FlatMappedValues<K, V, U, KE, UE, F, FE, FD>
+impl<K, V, U, F> Clone for FlatMappedValues<K, V, U, F>
 where
     K: Data,
     V: Data,
     U: Data,
-    KE: Data,
-    UE: Data,
     F: Func(V) -> Box<dyn Iterator<Item = U>> + Clone,
-    FE: Func(Vec<(K, U)>) -> (KE, UE) + Clone,
-    FD: Func((KE, UE)) -> Vec<(K, U)> + Clone,
 {
     fn clone(&self) -> Self {
         FlatMappedValues {
@@ -837,25 +643,19 @@ where
             next_deps: self.next_deps.clone(),
             prev: self.prev.clone(),
             f: self.f.clone(),
-            fe: self.fe.clone(),
-            fd: self.fd.clone(),
         }
     }
 }
 
-impl<K, V, U, KE, UE, F, FE, FD> FlatMappedValues<K, V, U, KE, UE, F, FE, FD>
+impl<K, V, U, F> FlatMappedValues<K, V, U, F>
 where
     K: Data,
     V: Data,
     U: Data,
-    KE: Data,
-    UE: Data,
     F: Func(V) -> Box<dyn Iterator<Item = U>> + Clone,
-    FE: Func(Vec<(K, U)>) -> (KE, UE) + Clone,
-    FD: Func((KE, UE)) -> Vec<(K, U)> + Clone,
 {
     #[track_caller]
-    fn new(prev: Arc<dyn Op<Item = (K, V)>>, f: F, fe: FE, fd: FD) -> Self {
+    fn new(prev: Arc<dyn Op<Item = (K, V)>>, f: F) -> Self {
         let mut vals = OpVals::new(prev.get_context(), prev.number_of_splits());
         let cur_id = vals.id;
         let prev_id = prev.get_op_id();
@@ -875,22 +675,16 @@ where
             next_deps: Arc::new(RwLock::new(HashMap::new())),
             prev,
             f,
-            fe,
-            fd,
         }
     }
 }
 
-impl<K, V, U, KE, UE, F, FE, FD> OpBase for FlatMappedValues<K, V, U, KE, UE, F, FE, FD>
+impl<K, V, U, F> OpBase for FlatMappedValues<K, V, U, F>
 where
     K: Data,
     V: Data,
     U: Data,
-    KE: Data,
-    UE: Data,
     F: SerFunc(V) -> Box<dyn Iterator<Item = U>>,
-    FE: SerFunc(Vec<(K, U)>) -> (KE, UE),
-    FD: SerFunc((KE, UE)) -> Vec<(K, U)>,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
@@ -975,16 +769,12 @@ where
     }
 }
 
-impl<K, V, U, KE, UE, F, FE, FD> Op for FlatMappedValues<K, V, U, KE, UE, F, FE, FD>
+impl<K, V, U, F> Op for FlatMappedValues<K, V, U, F>
 where
     K: Data,
     V: Data,
     U: Data,
-    KE: Data,
-    UE: Data,
     F: SerFunc(V) -> Box<dyn Iterator<Item = U>>,
-    FE: SerFunc(Vec<(K, U)>) -> (KE, UE),
-    FD: SerFunc((KE, UE)) -> Vec<(K, U)>,
 {
     type Item = (K, U);
     
@@ -1047,30 +837,5 @@ where
             )
         }
         res_iter
-    }
-}
-
-impl<K, V, U, KE, UE, F, FE, FD> OpE for FlatMappedValues<K, V, U, KE, UE, F, FE, FD>
-where
-    K: Data,
-    V: Data,
-    U: Data,
-    KE: Data,
-    UE: Data,
-    F: SerFunc(V) -> Box<dyn Iterator<Item = U>>,
-    FE: SerFunc(Vec<(K, U)>) -> (KE, UE),
-    FD: SerFunc((KE, UE)) -> Vec<(K, U)>,
-{
-    type ItemE = (KE, UE);
-    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
-        Arc::new(self.clone())
-    }
-
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
-        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Self::ItemE>
-    }
-
-    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
-        Box::new(self.fd.clone()) as Box<dyn Func(Self::ItemE)->Vec<Self::Item>>
     }
 }

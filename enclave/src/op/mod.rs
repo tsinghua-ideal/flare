@@ -61,12 +61,11 @@ pub use union_op::*;
 mod zip_op;
 pub use zip_op::*;
 
-type PT<T, TE> = Text<T, TE>;
-pub type OText<T> = Text<T, T>; 
+pub type ItemE = Vec<u8>;
 type ResIter<T> = Box<dyn Iterator<Item = Box<dyn Iterator<Item = T>>>>;
 
 pub const MAX_ENC_BL: usize = 1024;
-pub const MERGE_FACTOR: usize = 64;
+pub const MERGE_FACTOR: usize = 32;
 pub const CACHE_LIMIT: usize = 4_000_000;
 pub type Result<T> = std::result::Result<T, &'static str>;
 
@@ -110,21 +109,11 @@ pub fn encrypt(pt: &[u8]) -> Vec<u8> {
 }
 
 #[inline(always)]
-pub fn ser_encrypt<T>(pt: Vec<T>) -> Vec<u8> 
+pub fn ser_encrypt<T>(pt: &T) -> Vec<u8>
 where
-    T: serde::ser::Serialize + serde::de::DeserializeOwned + 'static
+    T: ?Sized + serde::Serialize,
 {
-    match TypeId::of::<u8>() == TypeId::of::<T>() {
-        true => {
-            let (ptr, len, cap) = pt.into_raw_parts();
-            let rebuilt = unsafe {
-                let ptr = ptr as *mut u8;
-                Vec::from_raw_parts(ptr, len, cap)
-            };
-            encrypt(&rebuilt)
-        },
-        false => encrypt(bincode::serialize(&pt).unwrap().as_ref()),
-    } 
+    encrypt(bincode::serialize(pt).unwrap().as_ref())
 }
 
 #[inline(always)]
@@ -136,57 +125,35 @@ pub fn decrypt(ct: &[u8]) -> Vec<u8> {
 }
 
 #[inline(always)]
-pub fn ser_decrypt<T>(ct: Vec<u8>) -> Vec<T> 
+pub fn ser_decrypt<T>(ct: &[u8]) -> T
 where
-    T: serde::ser::Serialize + serde::de::DeserializeOwned + 'static
+    T: serde::de::DeserializeOwned,
 {
-    if ct.len() == 0 {
-        return Vec::new();
-    }
-    match TypeId::of::<u8>() == TypeId::of::<T>() {
-        true => {
-            let pt = decrypt(&ct);
-            let (ptr, len, cap) = pt.into_raw_parts();
-            let rebuilt = unsafe {
-                let ptr = ptr as *mut T;
-                Vec::from_raw_parts(ptr, len, cap)
-            };
-            rebuilt
-        },
-        false => bincode::deserialize(decrypt(&ct).as_ref()).unwrap(),
-    }
-
+    bincode::deserialize(decrypt(ct).as_ref()).unwrap()
 }
 
-fn batch_encrypt<T, TE, FE>(mut data: Vec<T>, fe: FE) -> Vec<TE> 
-where
-    FE: Func(Vec<T>)->TE
+pub fn batch_encrypt<T: Data>(data: &[T], is_enc_outside: bool) -> Vec<ItemE> 
 {
-    let mut len = data.len();
-    let mut data_enc = Vec::with_capacity(len/MAX_ENC_BL+1);
-    while len >= MAX_ENC_BL {
-        len -= MAX_ENC_BL;
-        let remain = data.split_off(MAX_ENC_BL);
-        let input = data;
-        data = remain;
-        data_enc.push(fe(input));
+    if is_enc_outside {
+        let acc = create_enc();
+        data.chunks(MAX_ENC_BL).map(|x| ser_encrypt(x)).fold(acc, |mut acc, x| {
+            crate::ALLOCATOR.set_switch(true);
+            acc.push(x.clone());
+            crate::ALLOCATOR.set_switch(false);
+            acc
+        })
+    } else {
+        data.chunks(MAX_ENC_BL).map(|x| ser_encrypt(x)).collect::<Vec<_>>()
     }
-    if len != 0 {
-        data_enc.push(fe(data));
-    }
-    data_enc
 }
 
-fn batch_decrypt<T, TE, FD>(data_enc: Vec<TE>, fd: FD) -> Vec<T> 
-where
-    FD: Func(TE)->Vec<T>
+pub fn batch_decrypt<T: Data>(data_enc: &[ItemE], is_enc_outside: bool) -> Vec<T> 
 {
-    let mut data = Vec::new();
-    for block in data_enc {
-        let mut pt = fd(block);
-        data.append(&mut pt); //need to check security
+    if is_enc_outside {
+        data_enc.iter().map(|x| ser_decrypt::<Vec<T>>(&x.clone())).flatten().collect::<Vec<_>>()
+    } else {
+        data_enc.iter().map(|x| ser_decrypt::<Vec<T>>(x)).flatten().collect::<Vec<_>>()
     }
-    data
 }
 
 //The result_enc stays inside
@@ -374,16 +341,12 @@ impl Input {
     }
 }
 
-#[derive(Default, Clone)]
-pub struct Text<T, TE> 
-where
-    T: Data,
-    TE: Data,
+#[derive(Default, Clone, Serialize, Deserialize)]
+pub struct Text<T, TE>
 {
-    data: T,
+    data: Option<T>,
+    data_enc: Option<TE>,
     id: u64,
-    bfe: Option<Box<dyn Func(T) -> TE>>,
-    bfd: Option<Box<dyn Func(TE) -> T>>,
 }
 
 impl<T, TE> Text<T, TE> 
@@ -392,71 +355,113 @@ where
     TE: Data,
 {
     #[track_caller]
-    pub fn new(data: T, bfe: Option<Box<dyn Func(T) -> TE>>, bfd: Option<Box<dyn Func(TE) -> T>>) -> Self {
+    pub fn new(data: Option<T>, data_enc: Option<TE>) -> Self {
         let id = get_text_loc_id();
         Text {
             data,
+            data_enc,
             id,
-            bfe,
-            bfd,
         }
     }
 
+    pub fn get_ct(&self) -> TE {
+        self.data_enc.clone().unwrap()
+    }
+
+    pub fn get_ct_ref(&self) -> &TE {
+        self.data_enc.as_ref().unwrap()
+    }
+
+    pub fn get_ct_mut(&mut self) -> &mut TE {
+        self.data_enc.as_mut().unwrap()
+    }
+
+    pub fn update_from_tail_info(&mut self, tail_info: &TailCompInfo) {
+        let text = bincode::deserialize(&tail_info.get(self.id).unwrap()).unwrap();
+        *self = text;
+    }
+}
+
+impl<T> Text<T, Vec<u8>>
+where
+    T: Data,
+{
     #[track_caller]
-    pub fn rec(tail_info: &TailCompInfo, bfe: Option<Box<dyn Func(T) -> TE>>, bfd: Option<Box<dyn Func(TE) -> T>>) -> Self {
+    pub fn rec(tail_info: &TailCompInfo) -> Self {
         let id = get_text_loc_id();
-        let data = match tail_info.get(id) {
-            Some(data_enc) => {
-                match &bfd {
-                    Some(bfd) => bfd(data_enc),
-                    None => {
-                        let data_enc = Box::new(data_enc) as Box<dyn Any>;
-                        *data_enc.downcast::<T>().unwrap()
-                    },
-                }
+        let mut text: Text<T, Vec<u8>> = match tail_info.get(id) {
+            Some(bytes) => {
+                bincode::deserialize(&bytes).unwrap()
             },
             None => {
                 Default::default()
             },
         };
-
-        Text {
-            data,
-            id,
-            bfe,
-            bfd,
+        if text.data.is_none() && text.data_enc.is_some() {
+            text.data = Some(ser_decrypt(text.data_enc.as_ref().unwrap()));
+            text.data_enc = None;
         }
+        text
     }
 
-    pub fn get_ct(&self) -> TE {
-        match &self.bfe {
-            Some(bfe) => bfe(self.data.clone()),
-            None => {
-                let data_enc = Box::new(self.data.clone()) as Box<dyn Any>;
-                *data_enc.downcast::<TE>().unwrap()
-            },
-        }
-    }
-
+    //currently it is only used for the case
+    //where the captured variables are encrypted
     pub fn get_pt(&self) -> T {
-        self.data.clone()
+        if self.data.is_some() {
+            self.data.clone().unwrap()
+        } else if self.data_enc.is_some() {
+            ser_decrypt(self.data_enc.as_ref().unwrap())
+        } else {
+            Default::default()
+        }
     }
+}
 
-    pub fn get_tail_info(&self) -> (u64, &T) {
-        (self.id, &self.data)
-    }
-
-    pub fn update_from_tail_info(&mut self, tail_info: &TailCompInfo) {
-        let data_enc = tail_info.get(self.id).unwrap();
-        self.data = match &self.bfd {
-            Some(bfd) => bfd(data_enc),
+impl<T> Text<Vec<T>, Vec<Vec<u8>>>
+where
+    T: Data,
+{
+    #[track_caller]
+    pub fn rec(tail_info: &TailCompInfo) -> Self {
+        let id = get_text_loc_id();
+        let mut text: Text<Vec<T>, Vec<Vec<u8>>> = match tail_info.get(id) {
+            Some(bytes) => {
+                bincode::deserialize(&bytes).unwrap()
+            },
             None => {
-                let data_enc = Box::new(data_enc) as Box<dyn Any>;
-                *data_enc.downcast::<T>().unwrap()
+                Default::default()
             },
         };
+        if text.data.is_none() && text.data_enc.is_some() {
+            text.data = Some(text.data_enc.as_ref()
+                .unwrap()
+                .iter()
+                .map(|x| ser_decrypt::<Vec<T>>(x).into_iter())
+                .flatten()
+                .collect::<Vec<_>>()
+            );
+            text.data_enc = None;
+        }
+        text
     }
 
+    //currently it is only used for the case
+    //where the captured variables are encrypted
+    pub fn get_pt(&self) -> Vec<T> {
+        if self.data.is_some() {
+            self.data.clone().unwrap()
+        } else if self.data_enc.is_some() {
+            self.data_enc
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|x| ser_decrypt::<Vec<T>>(x).into_iter())
+                .flatten()
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 impl<T, TE> Deref for Text<T, TE> 
@@ -467,7 +472,7 @@ where
     type Target = T;
 
     fn deref(&self) -> &T {
-        &self.data
+        self.data.as_ref().unwrap()
     }
 }
 
@@ -477,7 +482,7 @@ where
     TE: Data,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.data
+        self.data.as_mut().unwrap()
     }
 }
 
@@ -489,9 +494,7 @@ pub struct TailCompInfo {
 
 impl TailCompInfo {
     pub fn new() -> Self {
-        TailCompInfo {
-            m: HashMap::new(),
-        }
+        TailCompInfo { m: HashMap::new() }
     }
 
     pub fn insert<T, TE>(&mut self, text: &Text<T, TE>)
@@ -499,18 +502,16 @@ impl TailCompInfo {
         T: Data,
         TE: Data,
     {
-        let ser = bincode::serialize(&text.get_ct()).unwrap();
-        self.m.insert(text.id, ser);
+        self.m.insert(text.id, bincode::serialize(text).unwrap());
     }
 
-    pub fn remove<TE: Data>(&mut self, id: u64) -> TE {
-        let ser = self.m.remove(&id).unwrap();
-        bincode::deserialize(&ser).unwrap()
+    pub fn remove(&mut self, id: u64) -> Vec<u8> {
+        self.m.remove(&id).unwrap()
     }
 
-    pub fn get<TE: Data>(&self, id: u64) -> Option<TE> {
+    pub fn get(&self, id: u64) -> Option<Vec<u8>> {
         match self.m.get(&id) {
-            Some(ser) => Some(bincode::deserialize(&ser).unwrap()),
+            Some(ser) => Some(ser.clone()),
             None => None,
         }
     }
@@ -518,7 +519,6 @@ impl TailCompInfo {
     pub fn clear(&mut self) {
         self.m.clear();
     }
-
 }
 
 #[derive(Clone)]
@@ -777,14 +777,11 @@ impl Context {
     }
 
     #[track_caller]
-    pub fn make_op<T, TE, FE, FD>(self: &Arc<Self>, fe: FE, fd: FD, num_splits: usize) -> SerArc<dyn OpE<Item = T, ItemE = TE>> 
+    pub fn make_op<T>(self: &Arc<Self>, num_splits: usize) -> SerArc<dyn Op<Item = T>> 
     where
         T: Data,
-        TE: Data,
-        FE: SerFunc(Vec<T>) -> TE,
-        FD: SerFunc(TE) -> Vec<T>,
     {
-        let new_op = SerArc::new(ParallelCollection::new(self.clone(), fe, fd, num_splits));
+        let new_op = SerArc::new(ParallelCollection::new(self.clone(), num_splits));
         if !self.get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         }
@@ -793,24 +790,20 @@ impl Context {
 
     /// Load from a distributed source and turns it into a parallel collection.
     #[track_caller]
-    pub fn read_source<C, FE, FD, I: Data, O: Data, OE: Data>(
+    pub fn read_source<C, I: Data, O: Data>(
         self: &Arc<Self>,
         config: C,
         func: Option< Box<dyn Func(I) -> O >>,
-        sec_func: Option< Box<dyn Func(I) -> Vec<OE> >>,
-        fe: FE,
-        fd: FD,
-    ) -> SerArc<dyn OpE<Item = O, ItemE = OE>>
+        sec_func: Option< Box<dyn Func(I) -> Vec<ItemE> >>,
+    ) -> SerArc<dyn Op<Item = O>>
     where
         C: ReaderConfiguration<I>,
-        FE: SerFunc(Vec<O>) -> OE,
-        FD: SerFunc(OE) -> Vec<O>,
     {
-        config.make_reader(self.clone(), func, sec_func, fe, fd)
+        config.make_reader(self.clone(), func, sec_func)
     }
 
     #[track_caller]
-    pub fn union<T: Data, TE: Data>(rdds: &[Arc<dyn OpE<Item = T, ItemE = TE>>]) -> impl OpE<Item = T, ItemE = TE> {
+    pub fn union<T: Data>(rdds: &[Arc<dyn Op<Item = T>>]) -> impl Op<Item = T> {
         Union::new(rdds)
     }
 
@@ -976,7 +969,7 @@ impl Ord for dyn OpBase {
     }
 }
 
-impl<I: OpE + ?Sized> OpBase for SerArc<I> {
+impl<I: Op + ?Sized> OpBase for SerArc<I> {
     //need to avoid freeing the encrypted data for subsequent "clone_enc_data_out"
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         (**self).build_enc_data_sketch(p_buf, p_data_enc, dep_info);
@@ -1029,7 +1022,7 @@ impl<I: OpE + ?Sized> OpBase for SerArc<I> {
     }
 }
 
-impl<I: OpE + ?Sized> Op for SerArc<I> {
+impl<I: Op + ?Sized> Op for SerArc<I> {
     type Item = I::Item;
     fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>> {
         (**self).get_op()
@@ -1048,21 +1041,6 @@ impl<I: OpE + ?Sized> Op for SerArc<I> {
     }
 }
 
-impl<I: OpE + ?Sized> OpE for SerArc<I> {
-    type ItemE = I::ItemE;
-    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
-        (**self).get_ope()
-    }
-
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
-        (**self).get_fe()
-    }
-
-    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
-        (**self).get_fd()
-    }
-}
-
 
 pub trait Op: OpBase + 'static {
     type Item: Data;
@@ -1073,17 +1051,7 @@ pub trait Op: OpBase + 'static {
     fn cache(&self, data: Vec<Self::Item>) {
         ()
     }
-}
-
-pub trait OpE: Op {
-    type ItemE: Data;
-    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>;
-
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE>;
-
-    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>>;
-    
-    fn cache_from_outside(&self, key: (usize, usize)) -> Option<&'static Vec<Self::ItemE>> {
+    fn cache_from_outside(&self, key: (usize, usize)) -> Option<&'static Vec<ItemE>> {
         let mut ptr: usize = 0;
         let sgx_status = unsafe { 
             ocall_cache_from_outside(&mut ptr, key.0, key.1)
@@ -1099,26 +1067,26 @@ pub trait OpE: Op {
         }
         /*
         let ct_ = unsafe {
-            Box::from_raw(ptr as *mut u8 as *mut Vec<Self::ItemE>)
+            Box::from_raw(ptr as *mut u8 as *mut Vec<ItemE>)
         };
         let ct = ct_.clone();
         forget(ct_);
-        self.batch_decrypt(*ct)
+        batch_decrypt(*ct)
         */
         Some(unsafe {
-            (ptr as *const u8 as *const Vec<Self::ItemE>).as_ref()
+            (ptr as *const u8 as *const Vec<ItemE>).as_ref()
         }.unwrap())
     }
 
     fn cache_to_outside(&self, key: (usize, usize), value: Vec<Self::Item>) -> Option<PThread> {
         //let handle = unsafe {
         //    PThread::new(Box::new(move || {
-        let ct = self.batch_encrypt(value);
+        let ct = batch_encrypt(&value, true);
         //println!("finish encryption, memory usage {:?} B", crate::ALLOCATOR.get_memory_usage());
         let acc = match CACHE.remove_ptr(key) {
             Some(ptr) => {
                 crate::ALLOCATOR.set_switch(true);
-                let mut acc = *unsafe { Box::from_raw(ptr as *mut Vec<Self::ItemE>) };
+                let mut acc = *unsafe { Box::from_raw(ptr as *mut Vec<ItemE>) };
                 combine_enc(&mut acc, ct);
                 crate::ALLOCATOR.set_switch(false);
                 to_ptr(acc)
@@ -1134,7 +1102,6 @@ pub trait OpE: Op {
     }
 
     fn get_and_remove_cached_data(&self, key: (usize, usize)) -> ResIter<Self::Item> {
-        let fd = self.get_fd();
         let bid_range = CACHE.remove_bid(key.0, key.1);
         
         let mut res_iter = {
@@ -1145,7 +1112,7 @@ pub trait OpE: Op {
             //cache outside enclave
             Box::new((0..seperator.0).chain(seperator.1..len).map(move |i| {
                 //println!("get cached data outside enclave");
-                Box::new((fd)(ct[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
+                Box::new(ser_decrypt::<Vec<Self::Item>>(&ct[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
             })) as ResIter<_>
         };
 
@@ -1161,7 +1128,7 @@ pub trait OpE: Op {
     }
 
     fn set_cached_data(&self, call_seq: &NextOpId, res_iter: ResIter<Self::Item>, is_caching_final_rdd: bool) -> ResIter<Self::Item> {
-        let ope = self.get_ope();
+        let ope = self.get_op();
         let op_id = self.get_op_id();
         let key = call_seq.get_caching_doublet();
         let (lower_bound, upper_bound) = res_iter.size_hint();
@@ -1196,7 +1163,7 @@ pub trait OpE: Op {
         match dep_info.dep_type() {
             0 | 2 => {
                 let mut idx = Idx::new();
-                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::ItemE>) };
+                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<ItemE>) };
                 data_enc.send(&mut buf, &mut idx);
                 forget(data_enc);
             }, 
@@ -1206,7 +1173,7 @@ pub trait OpE: Op {
             },
             3 | 4 => {
                 let mut idx = Idx::new();
-                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::ItemE>) };
+                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<ItemE>) };
                 data_enc.send(&mut buf, &mut idx);
                 forget(data_enc);
             }
@@ -1218,8 +1185,8 @@ pub trait OpE: Op {
     fn step1_of_clone(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
             0 | 2 => {
-                let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<Self::ItemE>) };
-                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::ItemE>) };
+                let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<ItemE>) };
+                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<ItemE>) };
                 v_out.clone_in_place(&data_enc);
                 forget(v_out);
             }, 
@@ -1228,8 +1195,8 @@ pub trait OpE: Op {
                 shuf_dep.send_enc_data(p_out, p_data_enc);
             },
             3 | 4 => {
-                let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<Self::ItemE>) };
-                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<Self::ItemE>) };
+                let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<ItemE>) };
+                let data_enc = unsafe{ Box::from_raw(p_data_enc as *mut Vec<ItemE>) };
                 v_out.clone_in_place(&data_enc);
                 forget(v_out);
             }
@@ -1240,32 +1207,12 @@ pub trait OpE: Op {
     fn free_res_enc(&self, res_ptr: *mut u8, is_enc: bool) {
         if is_enc {
             crate::ALLOCATOR.set_switch(true);
-            let res = unsafe { Box::from_raw(res_ptr as *mut Vec<Self::ItemE>) };
+            let res = unsafe { Box::from_raw(res_ptr as *mut Vec<ItemE>) };
             drop(res);
             crate::ALLOCATOR.set_switch(false);
         } else {
             let _res = unsafe { Box::from_raw(res_ptr as *mut Vec<Self::Item>) };
         }
-    }
-
-    fn batch_encrypt(&self, mut data: Vec<Self::Item>) -> Vec<Self::ItemE> {
-        let mut acc = create_enc();
-        let mut len = data.len();
-        while len >= MAX_ENC_BL {
-            len -= MAX_ENC_BL;
-            let remain = data.split_off(MAX_ENC_BL);
-            let input = data;
-            data = remain;
-            merge_enc(&mut acc, &(self.get_fe())(input));
-        }
-        if len != 0 {
-            merge_enc(&mut acc, &(self.get_fe())(data));
-        }
-        acc
-    }
-
-    fn batch_decrypt(&self, data_enc: Vec<Self::ItemE>) -> Vec<Self::Item> {
-        batch_decrypt(data_enc, self.get_fd())
     }
 
     fn narrow(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
@@ -1274,7 +1221,7 @@ pub trait OpE: Op {
         //acc stays outside enclave
         let mut acc = create_enc();
         for result in result_iter {
-            let block_enc = self.batch_encrypt(result.collect::<Vec<_>>());
+            let block_enc = batch_encrypt(&result.collect::<Vec<_>>(), true);
             combine_enc(&mut acc, block_enc);
         }
         //cache to outside
@@ -1324,8 +1271,8 @@ pub trait OpE: Op {
     }
 
     fn randomize_in_place_(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
-        let sample_enc = unsafe{ (input as *const Vec<Self::ItemE>).as_ref() }.unwrap(); 
-        let mut sample = self.batch_decrypt(sample_enc.to_vec());
+        let sample_enc = unsafe{ (input as *const Vec<ItemE>).as_ref() }.unwrap(); 
+        let mut sample: Vec<Self::Item> = batch_decrypt(sample_enc, true);
         let mut rng = if let Some(seed) = seed {
             rand_pcg::Pcg64::seed_from_u64(seed)
         } else {
@@ -1334,22 +1281,22 @@ pub trait OpE: Op {
         };
         utils::randomize_in_place(&mut sample, &mut rng);
         sample = sample.into_iter().take(num as usize).collect();
-        let sample_enc = self.batch_encrypt(sample);
+        let sample_enc = batch_encrypt(&sample, true);
         to_ptr(sample_enc)
     }
 
     fn take_(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
-        let data_enc = unsafe{ (input as *const Vec<Self::ItemE>).as_ref() }.unwrap(); 
-        let mut data = self.batch_decrypt(data_enc.to_vec());
+        let data_enc = unsafe{ (input as *const Vec<ItemE>).as_ref() }.unwrap(); 
+        let mut data: Vec<Self::Item> = batch_decrypt(data_enc, true);
         data = data.into_iter().take(should_take).collect();
         *have_take = data.len();
-        let data_enc = self.batch_encrypt(data);
+        let data_enc = batch_encrypt(&data, true);
         to_ptr(data_enc)
     }
 
     /// Return a new RDD containing only the elements that satisfy a predicate.
     #[track_caller]
-    fn filter<F>(&self, predicate: F) -> SerArc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>
+    fn filter<F>(&self, predicate: F) -> SerArc<dyn Op<Item = Self::Item>>
     where
         F: Fn(&Self::Item) -> bool + Send + Sync + Clone + Copy + 'static,
         Self: Sized,
@@ -1359,7 +1306,7 @@ pub trait OpE: Op {
               -> Box<dyn Iterator<Item = _>> {
             Box::new(items.filter(predicate))
         });
-        let new_op = SerArc::new(MapPartitions::new(self.get_op(), filter_fn, self.get_fe(), self.get_fd()));
+        let new_op = SerArc::new(MapPartitions::new(self.get_op(), filter_fn));
         if !self.get_context().get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         }
@@ -1367,16 +1314,13 @@ pub trait OpE: Op {
     }
 
     #[track_caller]
-    fn map<U, UE, F, FE, FD>(&self, f: F, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = U, ItemE = UE>>
+    fn map<U, F>(&self, f: F) -> SerArc<dyn Op<Item = U>>
     where
         Self: Sized,
         U: Data,
-        UE: Data,
         F: SerFunc(Self::Item) -> U,
-        FE: SerFunc(Vec<U>) -> UE,
-        FD: SerFunc(UE) -> Vec<U>,
     {
-        let new_op = SerArc::new(Mapper::new(self.get_op(), f, fe, fd));
+        let new_op = SerArc::new(Mapper::new(self.get_op(), f));
         if !self.get_context().get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         }
@@ -1384,16 +1328,13 @@ pub trait OpE: Op {
     }
 
     #[track_caller]
-    fn flat_map<U, UE, F, FE, FD>(&self, f: F, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = U, ItemE = UE>>
+    fn flat_map<U, F>(&self, f: F) -> SerArc<dyn Op<Item = U>>
     where
         Self: Sized,
         U: Data,
-        UE: Data,
         F: SerFunc(Self::Item) -> Box<dyn Iterator<Item = U>>,
-        FE: SerFunc(Vec<U>) -> UE,
-        FD: SerFunc(UE) -> Vec<U>,
     {
-        let new_op = SerArc::new(FlatMapper::new(self.get_op(), f, fe, fd));
+        let new_op = SerArc::new(FlatMapper::new(self.get_op(), f));
         if !self.get_context().get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         }
@@ -1401,13 +1342,10 @@ pub trait OpE: Op {
     }
 
     #[track_caller]
-    fn reduce<F, UE, FE, FD>(&self, f: F, fe: FE, fd: FD) -> Result<PT<Self::Item, UE>>
+    fn reduce<F>(&self, f: F) -> Result<Text<Self::Item, ItemE>>
     where
         Self: Sized,
-        UE: Data,
         F: SerFunc(Self::Item, Self::Item) -> Self::Item,
-        FE: SerFunc(Self::Item) -> UE,
-        FD: SerFunc(UE) -> Self::Item,
     {
         // cloned cause we will use `f` later.
         let cf = f.clone();        
@@ -1418,33 +1356,28 @@ pub trait OpE: Op {
                 Some(e) => vec![e],
             }
         });         
-        let new_op = SerArc::new(Reduced::new(self.get_ope(), reduce_partition, fe.clone(), fd.clone()));
+        let new_op = SerArc::new(Reduced::new(self.get_op(), reduce_partition));
         if !self.get_context().get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         }
-        Ok(Text::new(Default::default(), Some(Box::new(fe)), Some(Box::new(fd))))
+        Ok(Text::<Self::Item, ItemE>::new(None, None))
     }
 
+    //secure_*** are used to receive
     #[track_caller]
-    fn secure_reduce<F, UE, FE, FD>(&self, f: F, fe: FE, fd: FD, tail_info: &TailCompInfo) -> Result<PT<Self::Item, UE>>
+    fn secure_reduce<F>(&self, f: F, tail_info: &TailCompInfo) -> Result<Text<Self::Item, ItemE>>
     where
         Self: Sized,
-        UE: Data,
         F: SerFunc(Self::Item, Self::Item) -> Self::Item,
-        FE: SerFunc(Self::Item) -> UE,
-        FD: SerFunc(UE) -> Self::Item,
     {
-        Ok(Text::rec(tail_info, Some(Box::new(fe)), Some(Box::new(fd))))
+        Ok(Text::<Self::Item, ItemE>::rec(tail_info))
     }
 
     #[track_caller]
-    fn fold<F, UE, FE, FD>(&self, init: Self::Item, f: F, fe: FE, fd: FD) -> Result<PT<Self::Item, UE>>
+    fn fold<F>(&self, init: Self::Item, f: F) -> Result<Text<Self::Item, ItemE>>
     where
         Self: Sized,
-        UE: Data,
         F: SerFunc(Self::Item, Self::Item) -> Self::Item,
-        FE: SerFunc(Self::Item) -> UE,
-        FD: SerFunc(UE) -> Self::Item,
     {
         let cf = f.clone();
         let zero = init.clone();
@@ -1452,35 +1385,29 @@ pub trait OpE: Op {
             move |iter: Box<dyn Iterator<Item = Self::Item>>| {
                 iter.fold(zero.clone(), &cf)
         });
-        let new_op = SerArc::new(Fold::new(self.get_ope(), reduce_partition, fe.clone(), fd.clone()));
+        let new_op = SerArc::new(Fold::new(self.get_op(), reduce_partition));
         if !self.get_context().get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         }
-        Ok(Text::new(Default::default(), Some(Box::new(fe)), Some(Box::new(fd))))
+        Ok(Text::<Self::Item, ItemE>::new(None, None))
     }
 
     #[track_caller]
-    fn secure_fold<F, UE, FE, FD>(&self, init: Self::Item, f: F, fe: FE, fd: FD, tail_info: &TailCompInfo) -> Result<PT<Self::Item, UE>>
+    fn secure_fold<F>(&self, init: Self::Item, f: F, tail_info: &TailCompInfo) -> Result<Text<Self::Item, ItemE>>
     where
         Self: Sized,
-        UE: Data,
         F: SerFunc(Self::Item, Self::Item) -> Self::Item,
-        FE: SerFunc(Self::Item) -> UE,
-        FD: SerFunc(UE) -> Self::Item,
     {
-        Ok(Text::rec(tail_info, Some(Box::new(fe)), Some(Box::new(fd))))
+        Ok(Text::<Self::Item, ItemE>::rec(tail_info))
     }
 
     #[track_caller]
-    fn aggregate<U, UE, SF, CF, FE, FD>(&self, init: U, seq_fn: SF, comb_fn: CF, fe: FE, fd: FD) -> Result<PT<U, UE>>
+    fn aggregate<U, SF, CF>(&self, init: U, seq_fn: SF, comb_fn: CF) -> Result<Text<U, ItemE>>
     where
         Self: Sized,
         U: Data,
-        UE: Data,
         SF: SerFunc(U, Self::Item) -> U,
         CF: SerFunc(U, U) -> U,
-        FE: SerFunc(U) -> UE,
-        FD: SerFunc(UE) -> U,
     {
         let zero = init.clone();
         let reduce_partition = Fn!(
@@ -1490,49 +1417,38 @@ pub trait OpE: Op {
         let combine = Fn!(
             move |iter: Box<dyn Iterator<Item = U>>| iter.fold(zero.clone(), &comb_fn)
         );
-        let new_op = SerArc::new(Aggregated::new(self.get_ope(), reduce_partition, combine, fe.clone(), fd.clone()));
+        let new_op = SerArc::new(Aggregated::new(self.get_op(), reduce_partition, combine));
         if !self.get_context().get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         }
-        Ok(Text::new(Default::default(), Some(Box::new(fe)), Some(Box::new(fd))))
+        Ok(Text::<U, ItemE>::new(None, None))
     }
 
     #[track_caller]
-    fn secure_aggregate<U, UE, SF, CF, FE, FD>(&self, init: U, seq_fn: SF, comb_fn: CF, fe: FE, fd: FD, tail_info: &TailCompInfo) -> Result<PT<U, UE>>
+    fn secure_aggregate<U, SF, CF>(&self, init: U, seq_fn: SF, comb_fn: CF, tail_info: &TailCompInfo) -> Result<Text<U, ItemE>>
     where
         Self: Sized,
         U: Data,
-        UE: Data,
         SF: SerFunc(U, Self::Item) -> U,
         CF: SerFunc(U, U) -> U,
-        FE: SerFunc(U) -> UE,
-        FD: SerFunc(UE) -> U,
     {
-        Ok(Text::rec(tail_info, Some(Box::new(fe)), Some(Box::new(fd))))
+        Ok(Text::<U, ItemE>::rec(tail_info))
     }
 
     #[track_caller]
-    fn collect(&self) -> Result<PT<Vec<Self::Item>, Vec<Self::ItemE>>> 
+    fn collect(&self) -> Result<Text<Vec<Self::Item>, Vec<ItemE>>> 
     where
         Self: Sized,
     {
-        let fe = self.get_fe();
-        let fd = self.get_fd();
-        let bfe = Box::new(move |data| batch_encrypt(data, fe.clone()));
-        let bfd = Box::new(move |data_enc| batch_decrypt(data_enc, fd.clone()));
-        Ok(Text::new(vec![], Some(bfe), Some(bfd)))
+        Ok(Text::<Vec<Self::Item>, Vec<ItemE>>::new(None, None))
     }
 
     #[track_caller]
-    fn secure_collect(&self, tail_info: &TailCompInfo) -> Result<PT<Vec<Self::Item>, Vec<Self::ItemE>>> 
+    fn secure_collect(&self, tail_info: &TailCompInfo) -> Result<Text<Vec<Self::Item>, Vec<ItemE>>> 
     where
         Self: Sized,
     {
-        let fe = self.get_fe();
-        let fd = self.get_fd();
-        let bfe = Box::new(move |data| batch_encrypt(data, fe.clone()));
-        let bfd = Box::new(move |data_enc| batch_decrypt(data_enc, fd.clone()));
-        Ok(Text::rec(tail_info, Some(bfe), Some(bfd)))
+        Ok(Text::<Vec<Self::Item>, Vec<ItemE>>::rec(tail_info))
     }
     
     #[track_caller]
@@ -1540,7 +1456,7 @@ pub trait OpE: Op {
     where
         Self: Sized,
     {
-        let new_op = SerArc::new(Count::new(self.get_ope()));
+        let new_op = SerArc::new(Count::new(self.get_op()));
         if !self.get_context().get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         }
@@ -1552,46 +1468,18 @@ pub trait OpE: Op {
     fn distinct_with_num_partitions(
         &self,
         num_partitions: usize,
-    ) -> SerArc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>
+    ) -> SerArc<dyn Op<Item = Self::Item>>
     where
         Self: Sized,
         Self::Item: Data + Eq + Hash + Ord,
-        Self::ItemE: Data + Eq + Hash + Ord,
     {
-        let fe_c = self.get_fe();
-        let fe_wrapper_mp0 = Box::new(move |v: Vec<(Option<Self::Item>, Option<Self::Item>)>| {
-            let (vx, vy): (Vec<Option<Self::Item>>, Vec<Option<Self::Item>>) = v.into_iter().unzip();
-            let ct_x = (fe_c)(vx.into_iter().map(|x| x.unwrap()).collect::<Vec<_>>());
-            (ct_x, vy)
-        }); 
-        let fd_c = self.get_fd();
-        let fd_wrapper_mp0 = Box::new(move |v: (Self::ItemE, Vec<Option<Self::Item>>)| {
-            let (vx, vy) = v;
-            let pt_x = (fd_c)(vx).into_iter().map(|x| Some(x));
-            pt_x.zip(vy.into_iter()).collect::<Vec<_>>()
-        });
-        let fe_wrapper_rd = fe_wrapper_mp0.clone();
-        let fd_wrapper_rd = fd_wrapper_mp0.clone();
-        let fe = self.get_fe();       
-        let fe_wrapper_mp1 = Box::new(move |v: Vec<Self::Item>| {
-            let ct = (fe)(v);
-            ct
-        });
-        let fd = self.get_fd();
-        let fd_wrapper_mp1 = Box::new(move |v: Self::ItemE| {
-            let pt = (fd)(v);
-            pt
-        });
-        
         let mapped = self.map(Box::new(Fn!(|x| (Some(x), None)))
             as Box<
                 dyn Func(Self::Item) -> (Option<Self::Item>, Option<Self::Item>),
-            >, fe_wrapper_mp0, fd_wrapper_mp0);
+            >);
         self.get_context().add_num(1);
         let reduced_by_key = mapped.reduce_by_key(Box::new(Fn!(|(_x, y)| y)),
-            num_partitions,
-            fe_wrapper_rd,
-            fd_wrapper_rd);
+            num_partitions);
         self.get_context().add_num(1);
         reduced_by_key.map(Box::new(Fn!(|x: (
             Option<Self::Item>,
@@ -1599,22 +1487,21 @@ pub trait OpE: Op {
         )| {
             let (x, _y) = x;
             x.unwrap()
-        })), fe_wrapper_mp1, fd_wrapper_mp1)
+        })))
     }
 
     /// Return a new RDD containing the distinct elements in this RDD.
     #[track_caller]
-    fn distinct(&self) -> SerArc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>
+    fn distinct(&self) -> SerArc<dyn Op<Item = Self::Item>>
     where
         Self: Sized,
         Self::Item: Data + Eq + Hash + Ord,
-        Self::ItemE: Data + Eq + Hash + Ord,
     {
         self.distinct_with_num_partitions(self.number_of_splits())
     }
 
     #[track_caller]
-    fn sample(&self, with_replacement: bool, fraction: f64) -> SerArc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>
+    fn sample(&self, with_replacement: bool, fraction: f64) -> SerArc<dyn Op<Item = Self::Item>>
     where
         Self: Sized,
     {
@@ -1625,7 +1512,7 @@ pub trait OpE: Op {
         } else {
             Arc::new(BernoulliSampler::new(fraction)) as Arc<dyn RandomSampler<Self::Item>>
         };
-        let new_op = SerArc::new(PartitionwiseSampled::new(self.get_op(), sampler, true, self.get_fe(), self.get_fd()));
+        let new_op = SerArc::new(PartitionwiseSampled::new(self.get_op(), sampler, true));
         if !self.get_context().get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         }
@@ -1638,7 +1525,7 @@ pub trait OpE: Op {
         with_replacement: bool,
         _num: u64,
         _seed: Option<u64>,
-    ) -> Result<PT<Vec<Self::Item>, Vec<Self::ItemE>>>
+    ) -> Result<Text<Vec<Self::Item>, Vec<ItemE>>>
     where
         Self: Sized,
     {
@@ -1655,7 +1542,7 @@ pub trait OpE: Op {
         _num: u64,
         _seed: Option<u64>,
         tail_info: &TailCompInfo,
-    ) -> Result<PT<Vec<Self::Item>, Vec<Self::ItemE>>>
+    ) -> Result<Text<Vec<Self::Item>, Vec<ItemE>>>
     where
         Self: Sized,
     {
@@ -1665,39 +1552,31 @@ pub trait OpE: Op {
     }
 
     #[track_caller]
-    fn take(&self, num: usize) -> Result<PT<Vec<Self::Item>, Vec<Self::ItemE>>> 
+    fn take(&self, num: usize) -> Result<Text<Vec<Self::Item>, Vec<ItemE>>> 
     where
         Self: Sized,
     {
-        let fe = self.get_fe();
-        let fd = self.get_fd();
-        let bfe = Box::new(move |data| batch_encrypt(data, fe.clone()));
-        let bfd = Box::new(move |data_enc| batch_decrypt(data_enc, fd.clone()));
-        Ok(Text::new(vec![], Some(bfe), Some(bfd)))
+        Ok(Text::<Vec<Self::Item>, Vec<ItemE>>::new(None, None))
     }
 
     #[track_caller]
-    fn secure_take(&self, num: usize, tail_info: &TailCompInfo) -> Result<PT<Vec<Self::Item>, Vec<Self::ItemE>>> 
+    fn secure_take(&self, num: usize, tail_info: &TailCompInfo) -> Result<Text<Vec<Self::Item>, Vec<ItemE>>> 
     where
         Self: Sized,
     {
-        let fe = self.get_fe();
-        let fd = self.get_fd();
-        let bfe = Box::new(move |data| batch_encrypt(data, fe.clone()));
-        let bfd = Box::new(move |data_enc| batch_decrypt(data_enc, fd.clone()));
-        Ok(Text::rec(tail_info, Some(bfe), Some(bfd)))
+        Ok(Text::<Vec<Self::Item>, Vec<ItemE>>::rec(tail_info))
     }
 
     #[track_caller]
     fn union(
         &self,
-        other: Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>,
-    ) -> SerArc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>
+        other: Arc<dyn Op<Item = Self::Item>>,
+    ) -> SerArc<dyn Op<Item = Self::Item>>
     where
         Self: Clone,
     {
         let new_op = SerArc::new(Context::union(&[
-            Arc::new(self.clone()) as Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>,
+            Arc::new(self.clone()) as Arc<dyn Op<Item = Self::Item>>,
             other,
         ]));
         if !self.get_context().get_is_tail_comp() {
@@ -1707,24 +1586,17 @@ pub trait OpE: Op {
     }
 
     #[track_caller]
-    fn zip<S, SE, FE, FD>(
+    fn zip<S>(
         &self,
-        second: Arc<dyn OpE<Item = S, ItemE = SE>>,
-        fe: FE,
-        fd: FD,
-    ) -> SerArc<dyn OpE<Item = (Self::Item, S), ItemE = (Self::ItemE, SE)>>
+        second: Arc<dyn Op<Item = S>>,
+    ) -> SerArc<dyn Op<Item = (Self::Item, S)>>
     where
         Self: Clone,
         S: Data,
-        SE: Data,
-        FE: SerFunc(Vec<(Self::Item, S)>) -> (Self::ItemE, SE),
-        FD: SerFunc((Self::ItemE, SE)) -> Vec<(Self::Item, S)>,
     {
         let new_op = SerArc::new(Zipped::new(
-            Arc::new(self.clone()) as Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>>,
+            Arc::new(self.clone()) as Arc<dyn Op<Item = Self::Item>>,
             second,
-            fe,
-            fd,
         ));
         if !self.get_context().get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
@@ -1733,34 +1605,16 @@ pub trait OpE: Op {
     }
 
     #[track_caller]
-    fn key_by<T, F>(&self, func: F) -> SerArc<dyn OpE<Item = (T, Self::Item), ItemE = (Vec<u8>, Self::ItemE)>>
+    fn key_by<T, F>(&self, func: F) -> SerArc<dyn Op<Item = (T, Self::Item)>>
     where
         Self: Sized,
         T: Data,
         F: SerFunc(&Self::Item) -> T,
     {
-        let fe = self.get_fe();
-        let fe_wrapper_mp = Fn!(move |v: Vec<(T, Self::Item)>| {
-            let len = v.len();
-            let (vx, vy): (Vec<T>, Vec<Self::Item>) = v.into_iter().unzip();
-            let ct_x = ser_encrypt(vx);
-            let ct_y = (fe)(vy);
-            (ct_x, ct_y)
-        });
-
-        let fd = self.get_fd();
-        let fd_wrapper_mp = Fn!(move |v: (Vec<u8>, Self::ItemE)| {
-            let (vx, vy) = v;
-            let pt_x: Vec<T> = ser_decrypt(vx);
-            let mut pt_y = (fd)(vy);
-            pt_y.resize_with(pt_x.len(), Default::default); //this case occurs when a cogrouped op follows it
-            pt_x.into_iter().zip(pt_y.into_iter()).collect::<Vec<_>>()
-        });
-       
         self.map(Fn!(move |k: Self::Item| -> (T, Self::Item) {
             let t = (func)(&k);
             (t, k)
-        }), fe_wrapper_mp, fd_wrapper_mp)
+        }))
     }
 
 }

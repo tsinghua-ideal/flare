@@ -1,52 +1,36 @@
 use crate::op::*;
 
-pub struct Fold<T, TE, UE, F, FE, FD>
+pub struct Fold<T, F>
 where
     T: Data, 
-    TE: Data, 
-    UE: Data,
     F: Func(Box<dyn Iterator<Item = T>>) -> T + Clone,
-    FE: Func(T) -> UE + Clone,
-    FD: Func(UE) -> T + Clone,
 {
     vals: Arc<OpVals>,
-    prev: Arc<dyn OpE<Item = T, ItemE = TE>>,
+    prev: Arc<dyn Op<Item = T>>,
     f: F,
-    fe: FE,
-    fd: FD,
 }
 
-impl<T, TE, UE, F, FE, FD> Clone for Fold<T, TE, UE, F, FE, FD>
+impl<T, F> Clone for Fold<T, F>
 where
     T: Data, 
-    TE: Data, 
-    UE: Data,
     F: Func(Box<dyn Iterator<Item = T>>) -> T + Clone,
-    FE: Func(T) -> UE + Clone,
-    FD: Func(UE) -> T + Clone,
 {
     fn clone(&self) -> Self {
         Fold {
             vals: self.vals.clone(),
             prev: self.prev.clone(),
             f: self.f.clone(),
-            fe: self.fe.clone(),
-            fd: self.fd.clone(),
         }
     }
 }
 
-impl<T, TE, UE, F, FE, FD> Fold<T, TE, UE, F, FE, FD>
+impl<T, F> Fold<T, F>
 where
     T: Data, 
-    TE: Data, 
-    UE: Data,
     F: Func(Box<dyn Iterator<Item = T>>) -> T + Clone,
-    FE: Func(T) -> UE + Clone,
-    FD: Func(UE) -> T + Clone,
 {
     #[track_caller]
-    pub(crate) fn new(prev: Arc<dyn OpE<Item = T, ItemE = TE>>, f: F, fe: FE, fd: FD) -> Self {
+    pub(crate) fn new(prev: Arc<dyn Op<Item = T>>, f: F) -> Self {
         let vals = Arc::new(OpVals::new(prev.get_context(), usize::MAX));
         /*
         prev.get_next_deps().lock().unwrap().push(
@@ -59,20 +43,14 @@ where
             vals,
             prev,
             f,
-            fe,
-            fd,
         }
     }
 }
 
-impl<T, TE, UE, F, FE, FD> OpBase for Fold<T, TE, UE, F, FE, FD>
+impl<T, F> OpBase for Fold<T, F>
 where
     T: Data,
-    TE: Data,
-    UE: Data,
     F: SerFunc(Box<dyn Iterator<Item = T>>) -> T,
-    FE: SerFunc(T) -> UE,
-    FD: SerFunc(UE) -> T,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
@@ -113,14 +91,10 @@ where
     }
 }
 
-impl<T, TE, UE, F, FE, FD> Op for Fold<T, TE, UE, F, FE, FD>
+impl<T, F> Op for Fold<T, F>
 where
     T: Data,
-    TE: Data,
-    UE: Data,
     F: SerFunc(Box<dyn Iterator<Item = T>>) -> T,
-    FE: SerFunc(T) -> UE,
-    FD: SerFunc(UE) -> T,
 {
     type Item = T;
     
@@ -136,20 +110,20 @@ where
         //3 is only for global reduce & fold (cf)
         //4 is only for local reduce & fold (sf + cf)
         if dep_info.dep_type() == 3 {
-            let data_enc = input.get_enc_data::<Vec<UE>>();
+            let data_enc = input.get_enc_data::<Vec<ItemE>>();
             let data = data_enc.clone();
             let t = (self.f)(Box::new(data_enc.clone()
                 .into_iter()
-                .map(|x| (self.fd)(x))
+                .map(|x| ser_decrypt::<T>(&x))
                 .collect::<Vec<_>>()
                 .into_iter()));
-            let ue = vec![(self.fe)(t)];
+            let ue = vec![ser_encrypt(&t)];
             res_enc_to_ptr(ue)
         } else if dep_info.dep_type() == 4 {
-            let data_enc = input.get_enc_data::<Vec<TE>>();
-            let data = self.prev.batch_decrypt(data_enc.clone());
+            let data_enc = input.get_enc_data::<Vec<ItemE>>();
+            let data = batch_decrypt(data_enc, true);
             let t = (self.f)(Box::new(data.into_iter()));
-            let ue = vec![(self.fe)(t)];
+            let ue = vec![ser_encrypt(&t)];
             res_enc_to_ptr(ue)
         } else {
             let opb = call_seq.get_next_op().clone();
@@ -164,7 +138,7 @@ where
                 let result_iter = self.compute(call_seq, input);
                 let mut acc = create_enc();
                 for result in result_iter {
-                    let block_enc = self.prev.batch_encrypt(result.collect::<Vec<_>>());
+                    let block_enc = batch_encrypt(&result.collect::<Vec<_>>(), true);
                     combine_enc(&mut acc, block_enc);
                 }
                 to_ptr(acc)
@@ -180,27 +154,4 @@ where
             Box::new(vec![(f)(res_iter)].into_iter()) as Box<dyn Iterator<Item = _>>))
     }
 
-}
-
-impl<T, TE, UE, F, FE, FD> OpE for Fold<T, TE, UE, F, FE, FD>
-where
-    T: Data,
-    TE: Data,
-    UE: Data,
-    F: SerFunc(Box<dyn Iterator<Item = T>>) -> T,
-    FE: SerFunc(T) -> UE,
-    FD: SerFunc(UE) -> T,
-{
-    type ItemE = UE;
-    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
-        Arc::new(self.clone())
-    }
-
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
-        unreachable!()
-    }
-
-    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
-        unreachable!()
-    }
 }

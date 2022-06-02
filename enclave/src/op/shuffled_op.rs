@@ -5,34 +5,24 @@ use crate::aggregator::Aggregator;
 use crate::dependency::ShuffleDependency;
 use crate::op::*;
 
-pub struct Shuffled<K, V, C, KE, CE, FE, FD>
+pub struct Shuffled<K, V, C>
 where
     K: Data + Eq + Hash + Ord,
     V: Data, 
     C: Data,
-    KE: Data,
-    CE: Data,
-    FE: Func(Vec<(K, C)>) -> (KE, CE) + Clone,
-    FD: Func((KE, CE)) -> Vec<(K, C)> + Clone,
 {
     vals: Arc<OpVals>,
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     parent: Arc<dyn Op<Item = (K, V)>>,
     aggregator: Arc<Aggregator<K, V, C>>,
     part: Box<dyn Partitioner>,
-    fe: FE,
-    fd: FD,
 }
 
-impl<K, V, C, KE, CE, FE, FD> Clone for Shuffled<K, V, C, KE, CE, FE, FD> 
+impl<K, V, C> Clone for Shuffled<K, V, C> 
 where 
     K: Data + Eq + Hash + Ord,
     V: Data, 
     C: Data,
-    KE: Data,
-    CE: Data,
-    FE: Func(Vec<(K, C)>) -> (KE, CE) + Clone,
-    FD: Func((KE, CE)) -> Vec<(K, C)> + Clone,
 {
     fn clone(&self) -> Self {
         Shuffled {
@@ -41,29 +31,21 @@ where
             parent: self.parent.clone(),
             aggregator: self.aggregator.clone(),
             part: self.part.clone(),
-            fe: self.fe.clone(),
-            fd: self.fd.clone(),
         }
     }
 }
 
-impl<K, V, C, KE, CE, FE, FD> Shuffled<K, V, C, KE, CE, FE, FD> 
+impl<K, V, C> Shuffled<K, V, C> 
 where 
     K: Data + Eq + Hash + Ord,
     V: Data, 
     C: Data,
-    KE: Data,
-    CE: Data,
-    FE: Func(Vec<(K, C)>) -> (KE, CE) + Clone,
-    FD: Func((KE, CE)) -> Vec<(K, C)> + Clone,
 {
     #[track_caller]
     pub(crate) fn new(
         parent: Arc<dyn Op<Item = (K, V)>>,
         aggregator: Arc<Aggregator<K, V, C>>,
         part: Box<dyn Partitioner>,
-        fe: FE,
-        fd: FD,
     ) -> Self {
         let ctx = parent.get_context();
         let mut vals = OpVals::new(ctx, part.get_num_of_partitions());
@@ -77,8 +59,6 @@ where
                 0,
                 prev_id,
                 cur_id,
-                Box::new(fe.clone()),
-                Box::new(fd.clone()),
             ),
         ));
 
@@ -91,13 +71,11 @@ where
             parent,
             aggregator,
             part,
-            fe,
-            fd,
         }
     }
 
-    pub fn compute_inner(&self, tid: u64, input: Input) -> Vec<(KE, CE)> {
-        let buckets_enc = input.get_enc_data::<Vec<Vec<(KE, CE)>>>();
+    pub fn compute_inner(&self, tid: u64, input: Input) -> Vec<ItemE> {
+        let buckets_enc = input.get_enc_data::<Vec<Vec<ItemE>>>();
         let mut combiners: BTreeMap<K, Option<C>> = BTreeMap::new();
         let mut sorted_max_key: BTreeMap<(K, usize), usize> = BTreeMap::new();
         
@@ -133,7 +111,7 @@ where
         }
         res
     }
-    pub fn compute_inner_core(&self, parallel_num: usize, buckets_enc: &Vec<Vec<(KE, CE)>>, lower: &mut Vec<usize>, upper: &mut Vec<usize>, upper_bound: &Vec<usize>, mut combiners: BTreeMap<K, Option<C>>, sorted_max_key: &mut BTreeMap<(K, usize), usize>) -> (Vec<(KE, CE)>, BTreeMap<K, Option<C>>) {
+    pub fn compute_inner_core(&self, parallel_num: usize, buckets_enc: &Vec<Vec<ItemE>>, lower: &mut Vec<usize>, upper: &mut Vec<usize>, upper_bound: &Vec<usize>, mut combiners: BTreeMap<K, Option<C>>, sorted_max_key: &mut BTreeMap<(K, usize), usize>) -> (Vec<ItemE>, BTreeMap<K, Option<C>>) {
         fn combine<K, V, C>(combiners: &mut BTreeMap<K, Option<C>>, aggregator: &Arc<Aggregator<K, V, C>>, block: Vec<(K, C)>)
         where
             K: Data + Eq + Hash + Ord,
@@ -161,7 +139,7 @@ where
                     let ub = upper_bound[idx];
                     match *l < ub {
                         true => {
-                            let block = self.batch_decrypt(sub_part[*l..*u].to_vec());
+                            let block = batch_decrypt::<(K, C)>(&sub_part[*l..*u], true);
                             *l += 1;
                             *u += 1;
                             let r = ((block.last().unwrap().0.clone(), idx), idx);
@@ -174,7 +152,8 @@ where
         }
 
         let mut cur_memory = crate::ALLOCATOR.get_memory_usage().1;
-        while cur_memory < CACHE_LIMIT/parallel_num {
+        let mut cur_len = 0;
+        while cur_memory < CACHE_LIMIT/parallel_num || cur_len == 0 {
             let entry = match sorted_max_key.first_entry() {
                 Some(entry) => entry,
                 None => break,
@@ -184,12 +163,13 @@ where
             if lower[idx] >= upper_bound[idx] {
                 continue;
             }
-            let block = self.batch_decrypt(buckets_enc[idx][lower[idx]..upper[idx]].to_vec());
+            let block = batch_decrypt::<(K, C)>(&buckets_enc[idx][lower[idx]..upper[idx]], true);
             sorted_max_key.insert((block.last().unwrap().0.clone(), idx), idx);
             combine(&mut combiners, &aggregator, block);
             lower[idx] += 1;
             upper[idx] += 1;
             cur_memory = crate::ALLOCATOR.get_memory_usage().1;
+            cur_len += 1;
         }
 
         let remained_c = if lower.iter().zip(upper_bound.iter()).filter(|(l, ub)| l < ub).count() > 0 {
@@ -200,19 +180,15 @@ where
         };
 
         let result = combiners.into_iter().map(|(k, v)| (k, v.unwrap())).collect::<Vec<_>>();
-        (self.batch_encrypt(result), remained_c)
+        (batch_encrypt(&result, true), remained_c)
     }
 }
 
-impl<K, V, C, KE, CE, FE, FD> OpBase for Shuffled<K, V, C, KE, CE, FE, FD> 
+impl<K, V, C> OpBase for Shuffled<K, V, C> 
 where 
     K: Data + Eq + Hash + Ord,
     V: Data, 
     C: Data,
-    KE: Data,
-    CE: Data,
-    FE: SerFunc(Vec<(K, C)>) -> (KE, CE),
-    FD: SerFunc((KE, CE)) -> Vec<(K, C)>,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
@@ -301,15 +277,11 @@ where
     }
 }
 
-impl<K, V, C, KE, CE, FE, FD> Op for Shuffled<K, V, C, KE, CE, FE, FD>
+impl<K, V, C> Op for Shuffled<K, V, C>
 where
     K: Data + Eq + Hash + Ord,
     V: Data, 
-    C: Data,
-    KE: Data,
-    CE: Data,
-    FE: SerFunc(Vec<(K, C)>) -> (KE, CE),
-    FD: SerFunc((KE, CE)) -> Vec<(K, C)>, 
+    C: Data, 
 {
     type Item = (K, C);
 
@@ -342,7 +314,6 @@ where
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
         let is_caching_final_rdd = call_seq.is_caching_final_rdd();
-        let fd = self.get_fd();
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
@@ -350,10 +321,10 @@ where
             return self.get_and_remove_cached_data(key);
         }
 
-        let len = input.get_enc_data::<Vec<(KE, CE)>>().len();
+        let len = input.get_enc_data::<Vec<ItemE>>().len();
         let res_iter = Box::new((0..len).map(move|i| {
-            let data = input.get_enc_data::<Vec<(KE, CE)>>();
-            Box::new((fd)(data[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
+            let data = input.get_enc_data::<Vec<ItemE>>();
+            Box::new(ser_decrypt::<Vec<Self::Item>>(&data[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
         }));
 
         let key = call_seq.get_caching_doublet();
@@ -365,29 +336,5 @@ where
             )
         }
         res_iter
-    }
-}
-
-impl<K, V, C, KE, CE, FE, FD> OpE for Shuffled<K, V, C, KE, CE, FE, FD>
-where
-    K: Data + Eq + Hash + Ord,
-    V: Data, 
-    C: Data,
-    KE: Data,
-    CE: Data,
-    FE: SerFunc(Vec<(K, C)>) -> (KE, CE),
-    FD: SerFunc((KE, CE)) -> Vec<(K, C)>, 
-{
-    type ItemE = (KE, CE);
-    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
-        Arc::new(self.clone())
-    }
-
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
-        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Self::ItemE>
-    }
-
-    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
-        Box::new(self.fd.clone()) as Box<dyn Func(Self::ItemE)->Vec<Self::Item>>
     }
 }

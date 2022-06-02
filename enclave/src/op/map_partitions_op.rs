@@ -1,30 +1,22 @@
 use crate::op::*;
 
-pub struct MapPartitions<T, U, UE, F, FE, FD>
+pub struct MapPartitions<T, U, F>
 where
     T: Data,
     U: Data,
-    UE: Data,
     F: Func(usize, Box<dyn Iterator<Item = T>>) -> Box<dyn Iterator<Item = U>> + Clone,
-    FE: Func(Vec<U>) -> UE + Clone,
-    FD: Func(UE) -> Vec<U> + Clone,
 {
     vals: Arc<OpVals>,
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     prev: Arc<dyn Op<Item = T>>,
     f: F,
-    fe: FE,
-    fd: FD,
 }
 
-impl<T, U, UE, F, FE, FD> Clone for MapPartitions<T, U, UE, F, FE, FD>
+impl<T, U, F> Clone for MapPartitions<T, U, F>
 where
     T: Data,
     U: Data,
-    UE: Data,
     F: Func(usize, Box<dyn Iterator<Item = T>>) -> Box<dyn Iterator<Item = U>> + Clone,
-    FE: Func(Vec<U>) -> UE + Clone,
-    FD: Func(UE) -> Vec<U> + Clone,
 {
     fn clone(&self) -> Self {
         MapPartitions {
@@ -32,23 +24,18 @@ where
             next_deps: self.next_deps.clone(),
             prev: self.prev.clone(),
             f: self.f.clone(),
-            fe: self.fe.clone(),
-            fd: self.fd.clone(),
         }
     }
 }
 
-impl<T, U, UE, F, FE, FD> MapPartitions<T, U, UE, F, FE, FD>
+impl<T, U, F> MapPartitions<T, U, F>
 where
     T: Data,
     U: Data,
-    UE: Data,
     F: Func(usize, Box<dyn Iterator<Item = T>>) -> Box<dyn Iterator<Item = U>> + Clone,
-    FE: Func(Vec<U>) -> UE + Clone,
-    FD: Func(UE) -> Vec<U> + Clone,
 {
     #[track_caller]
-    pub(crate) fn new(prev: Arc<dyn Op<Item = T>>, f: F, fe: FE, fd: FD) -> Self {
+    pub(crate) fn new(prev: Arc<dyn Op<Item = T>>, f: F) -> Self {
         let mut vals = OpVals::new(prev.get_context(), prev.number_of_splits());
         let cur_id = vals.id;
         let prev_id = prev.get_op_id();
@@ -68,20 +55,15 @@ where
             next_deps: Arc::new(RwLock::new(HashMap::new())),
             prev,
             f,
-            fe,
-            fd,
         }
     }
 }
 
-impl<T, U, UE, F, FE, FD> OpBase for MapPartitions<T, U, UE, F, FE, FD>
+impl<T, U, F> OpBase for MapPartitions<T, U, F>
 where
     T: Data,
     U: Data,
-    UE: Data,
     F: SerFunc(usize, Box<dyn Iterator<Item = T>>) -> Box<dyn Iterator<Item = U>>,
-    FE: SerFunc(Vec<U>) -> UE,
-    FD: SerFunc(UE) -> Vec<U>,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
@@ -167,14 +149,11 @@ where
 
 }
 
-impl<T, U, UE, F, FE, FD> Op for MapPartitions<T, U, UE, F, FE, FD>
+impl<T, U, F> Op for MapPartitions<T, U, F>
 where
     T: Data,
     U: Data,
-    UE: Data,
     F: SerFunc(usize, Box<dyn Iterator<Item = T>>) -> Box<dyn Iterator<Item = U>>,
-    FE: SerFunc(Vec<U>) -> UE,
-    FD: SerFunc(UE) -> Vec<U>,
 {
     type Item = U;
         
@@ -239,27 +218,3 @@ where
     }
 
 }
-
-impl<T, U, UE, F, FE, FD> OpE for MapPartitions<T, U, UE, F, FE, FD>
-where
-    T: Data,
-    U: Data,
-    UE: Data,
-    F: SerFunc(usize, Box<dyn Iterator<Item = T>>) -> Box<dyn Iterator<Item = U>>,
-    FE: SerFunc(Vec<U>) -> UE,
-    FD: SerFunc(UE) -> Vec<U>,
-{
-    type ItemE = UE;
-    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
-        Arc::new(self.clone())
-    }
-
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
-        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Self::ItemE>
-    }
-
-    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
-        Box::new(self.fd.clone()) as Box<dyn Func(Self::ItemE)->Vec<Self::Item>>
-    }
-}
-

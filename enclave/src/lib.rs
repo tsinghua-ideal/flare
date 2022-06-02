@@ -92,7 +92,6 @@ lazy_static! {
     static ref init: Result<()> = {
         /* dijkstra */
         //dijkstra_sec_0()?;
-        //dijkstra_sec_1()?;
 
         /* map */
         //map_sec_0()?;
@@ -137,7 +136,6 @@ lazy_static! {
 
         /* kmeans */
         //kmeans_sec_0()?;
-        //kmeans_sec_1()?;
 
         /* linear regression */
         //lr_sec()?;
@@ -154,7 +152,6 @@ lazy_static! {
         /* transitive_closure */
         //transitive_closure_sec_0()?;
         //transitive_closure_sec_1()?;
-        //transitive_closure_sec_2()?;
 
         /* triangle counting */
         //triangle_counting_sec_0()?;
@@ -337,7 +334,6 @@ pub extern "C" fn tail_compute(input: *mut u8) -> usize {
     let tail_info = unsafe{ (input as *const TailCompInfo).as_ref() }.unwrap();
     let mut tail_info = tail_info.clone();
     kmeans_sec_0_(&mut tail_info).unwrap();
-    //kmeans_sec_1_(&mut tail_info).unwrap();
     ALLOCATOR.set_switch(true);
     let ptr = Box::into_raw(Box::new(tail_info.clone()));
     ALLOCATOR.set_switch(false);

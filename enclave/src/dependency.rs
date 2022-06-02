@@ -9,7 +9,7 @@ use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
 use crate::basic::{AnyData, Data, Func};
-use crate::op::{res_enc_to_ptr, to_ptr, MAX_ENC_BL, MERGE_FACTOR, CACHE_LIMIT, Input, OpId};
+use crate::op::{res_enc_to_ptr, to_ptr, batch_encrypt, batch_decrypt, ItemE, MAX_ENC_BL, MERGE_FACTOR, CACHE_LIMIT, Input, OpId, combine_enc};
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use downcast_rs::DowncastSync;
@@ -37,15 +37,13 @@ impl Dependency {
     }
 }
 
-impl<K, V, C, KE, CE> From<ShuffleDependency<K, V, C, KE, CE>> for Dependency 
+impl<K, V, C> From<ShuffleDependency<K, V, C>> for Dependency 
 where
     K: Data + Eq + Hash + Ord, 
     V: Data, 
     C: Data,
-    KE: Data,
-    CE: Data,
 {
-    fn from(shuf_dep: ShuffleDependency<K, V, C, KE, CE>) -> Self {
+    fn from(shuf_dep: ShuffleDependency<K, V, C>) -> Self {
         Dependency::ShuffleDependency(Arc::new(shuf_dep) as Arc<dyn ShuffleDependencyTrait>)
     }
 }
@@ -123,13 +121,11 @@ pub trait ShuffleDependencyTrait: DowncastSync + Send + Sync  {
 
 impl_downcast!(sync ShuffleDependencyTrait);
 
-pub struct ShuffleDependency<K, V, C, KE, CE> 
+pub struct ShuffleDependency<K, V, C> 
 where
     K: Data + Eq + Hash + Ord, 
     V: Data, 
     C: Data,
-    KE: Data,
-    CE: Data,
 {
     pub is_cogroup: bool,
     pub aggregator: Arc<Aggregator<K, V, C>>,
@@ -138,17 +134,13 @@ where
     pub identifier: usize,
     pub parent: OpId,
     pub child: OpId,
-    pub fe: Box<dyn Func(Vec<(K, C)>) -> (KE, CE)>,
-    pub fd: Box<dyn Func((KE, CE)) -> Vec<(K, C)>>,
 }
 
-impl<K, V, C, KE, CE> ShuffleDependency<K, V, C, KE, CE> 
+impl<K, V, C> ShuffleDependency<K, V, C> 
 where 
     K: Data + Eq + Hash + Ord, 
     V: Data, 
     C: Data,
-    KE: Data,
-    CE: Data,
 {
     pub fn new(
         is_cogroup: bool,
@@ -157,8 +149,6 @@ where
         identifier: usize,
         parent: OpId,
         child: OpId,
-        fe: Box<dyn Func(Vec<(K, C)>) -> (KE, CE)>,
-        fd: Box<dyn Func((KE, CE)) -> Vec<(K, C)>>,
     ) -> Self {
         ShuffleDependency {
             is_cogroup,
@@ -168,49 +158,47 @@ where
             identifier,
             parent,
             child,
-            fe,
-            fd,
         }
     }
 
-    pub fn encrypt_buckets(&self, buckets: Vec<Vec<(K, C)>>) -> Vec<Vec<(KE, CE)>> {
-        let result = buckets.into_iter()
-            .map(|mut bucket| {
-                //batch encrypt
-                let mut len = bucket.len();
-                let mut data_enc = Vec::with_capacity(len/MAX_ENC_BL+1);
-                if len >= 1 {    
-                    len -= 1;
-                    let input = vec![bucket.remove(0)];
-                    data_enc.push((self.fe)(input));
-                }
-                //TODO: need to adjust the block size
-                while len >= MAX_ENC_BL {    
-                    len -= MAX_ENC_BL;
-                    let remain = bucket.split_off(MAX_ENC_BL);
-                    let input = bucket;
-                    bucket = remain;
-                    data_enc.push((self.fe)(input));
-                }
-                if len != 0 {
-                    data_enc.push((self.fe)(bucket));
-                }
-                data_enc
-            })
-            .collect::<Vec<_>>();  //BTreeMap to Vec
-        result
-    }
+    // pub fn encrypt_buckets(&self, buckets: Vec<Vec<(K, C)>>) -> Vec<Vec<ItemE>> {
+    //     let result = buckets.into_iter()
+    //         .map(|mut bucket| {
+    //             //batch encrypt
+    //             let mut len = bucket.len();
+    //             let mut data_enc = Vec::with_capacity(len/MAX_ENC_BL+1);
+    //             if len >= 1 {    
+    //                 len -= 1;
+    //                 let input = vec![bucket.remove(0)];
+    //                 data_enc.push((self.fe)(input));
+    //             }
+    //             //TODO: need to adjust the block size
+    //             while len >= MAX_ENC_BL {    
+    //                 len -= MAX_ENC_BL;
+    //                 let remain = bucket.split_off(MAX_ENC_BL);
+    //                 let input = bucket;
+    //                 bucket = remain;
+    //                 data_enc.push((self.fe)(input));
+    //             }
+    //             if len != 0 {
+    //                 data_enc.push((self.fe)(bucket));
+    //             }
+    //             data_enc
+    //         })
+    //         .collect::<Vec<_>>();  //BTreeMap to Vec
+    //     result
+    // }
 
-    pub fn batch_decrypt(&self, data_enc: Vec<(KE, CE)>) -> Vec<(K, C)> {
-        let mut data = Vec::new();
-        for block in data_enc {
-            let mut pt = (self.fd)(block);
-            data.append(&mut pt); //need to check security
-        }
-        data
-    }
+    // pub fn batch_decrypt(&self, data_enc: Vec<(KE, CE)>) -> Vec<(K, C)> {
+    //     let mut data = Vec::new();
+    //     for block in data_enc {
+    //         let mut pt = (self.fd)(block);
+    //         data.append(&mut pt); //need to check security
+    //     }
+    //     data
+    // }
 
-    pub fn pre_merge_core(&self, parallel_num: usize, buckets_enc: &[Vec<(KE, CE)>], lower: &mut Vec<usize>, upper: &mut Vec<usize>, upper_bound: &Vec<usize>, mut combiners: Vec<(K, C)>, sorted_max_key: &mut BTreeMap<(K, usize), usize>) -> (Vec<(KE, CE)>, Vec<(K, C)>)  {
+    pub fn pre_merge_core(&self, parallel_num: usize, buckets_enc: &[Vec<ItemE>], lower: &mut Vec<usize>, upper: &mut Vec<usize>, upper_bound: &Vec<usize>, mut combiners: Vec<(K, C)>, sorted_max_key: &mut BTreeMap<(K, usize), usize>) -> (Vec<ItemE>, Vec<(K, C)>)  {
         let aggregator = self.aggregator.clone();
         let mut block = Vec::new();
         if sorted_max_key.is_empty() {
@@ -225,7 +213,7 @@ where
                             let data_enc = sub_part[*l..*u].to_vec();
                             *l += 1;
                             *u += 1;
-                            self.batch_decrypt(data_enc)
+                            batch_decrypt::<(K, C)>(&data_enc, false)
                         },
                         false => Vec::new(),
                     }
@@ -239,8 +227,9 @@ where
             block.resize(lower.len(), Vec::new());
         }
 
+        let mut cur_len = 0;
         let mut cur_memory = crate::ALLOCATOR.get_memory_usage().1;
-        while cur_memory < CACHE_LIMIT/parallel_num {
+        while cur_memory < CACHE_LIMIT / parallel_num || cur_len == 0 {
             let entry = match sorted_max_key.first_entry() {
                 Some(entry) => entry,
                 None => break,
@@ -250,12 +239,13 @@ where
             if lower[idx] >= upper_bound[idx] {
                 continue;
             }
-            let mut inc_block = self.batch_decrypt(buckets_enc[idx][lower[idx]..upper[idx]].to_vec());
+            let mut inc_block = batch_decrypt::<(K, C)>(&buckets_enc[idx][lower[idx]..upper[idx]], true);
             block[idx].append(&mut inc_block); 
             sorted_max_key.insert((block[idx].last().unwrap().0.clone(), idx), idx);
             lower[idx] += 1;
             upper[idx] += 1;
             cur_memory = crate::ALLOCATOR.get_memory_usage().1;
+            cur_len += 1;
         }
 
         let mut iter = block.into_iter().chain(vec![combiners]).kmerge_by(|a, b| a.0 < b.0);
@@ -281,22 +271,20 @@ where
             let seek = &min_max_k.key().0;
             let idx = combiners.binary_search_by(|probe| probe.0.cmp(seek)).unwrap();
             let remained_c = combiners.split_off(idx);
-            let res_bl = self.encrypt_buckets(vec![combiners]).remove(0);
+            let res_bl = batch_encrypt(&combiners, true);
             (res_bl, remained_c)
         } else {
-            (self.encrypt_buckets(vec![combiners]).remove(0), vec![])
+            (batch_encrypt(&combiners, true), vec![])
         }
     }
 
 }
 
-impl<K, V, C, KE, CE> ShuffleDependencyTrait for ShuffleDependency<K, V, C, KE, CE>
+impl<K, V, C> ShuffleDependencyTrait for ShuffleDependency<K, V, C>
 where
     K: Data + Eq + Hash + Ord, 
     V: Data, 
     C: Data,
-    KE: Data,
-    CE: Data,
 {
     fn change_partitioner(&self, reduce_num: usize) {
         let mut cur_partitioner = self.partitioner.write().unwrap();
@@ -357,12 +345,11 @@ where
 
     fn finish_buckets(&self, tid: u64, buckets: *mut u8, result_ptr: Option<*mut u8>) -> Option<*mut u8> {
         let buckets = unsafe{ Box::from_raw(buckets as *mut Vec<BTreeMap<K, C>>) };
-        let buckets = buckets.into_iter().map(|bucket| bucket.into_iter().collect::<Vec<_>>()).collect::<Vec<_>>();
-        let result = self.encrypt_buckets(buckets);
+        let result = buckets.into_iter().map(|bucket| batch_encrypt(&bucket.into_iter().collect::<Vec<_>>(), false)).collect::<Vec<_>>();
         let ptr = Some(match result_ptr {
             Some(ptr) => {
                 crate::ALLOCATOR.set_switch(true);
-                let mut res = *unsafe { Box::from_raw(ptr as *mut Vec<Vec<Vec<(KE, CE)>>>) };
+                let mut res = *unsafe { Box::from_raw(ptr as *mut Vec<Vec<Vec<ItemE>>>) };
                 res.push(result.clone());
                 crate::ALLOCATOR.set_switch(false);
                 to_ptr(res)
@@ -379,7 +366,7 @@ where
     }
 
     fn pre_merge(&self, tid: u64, input: Input) -> usize {
-        let data_original = input.get_enc_data::<Vec<Vec<(KE, CE)>>>();
+        let data_original = input.get_enc_data::<Vec<Vec<ItemE>>>();
         crate::ALLOCATOR.set_switch(true); 
         let mut data = Vec::new();
         let mut res = Vec::new();
@@ -426,7 +413,7 @@ where
                     let (res_bl, remained_c) = self.pre_merge_core(input.get_parallel(), buckets_enc, &mut lower, &mut upper, &upper_bound, combiners, &mut sorted_max_key);
                     combiners = remained_c;
                     crate::ALLOCATOR.set_switch(true);
-                    res[i].extend_from_slice(&res_bl);
+                    combine_enc(&mut res[i], res_bl);
                     crate::ALLOCATOR.set_switch(false);
                     lower = lower
                         .iter()
@@ -455,14 +442,14 @@ where
 
     fn send_sketch(&self, buf: &mut SizeBuf, p_data_enc: *mut u8){
         let mut idx = Idx::new();
-        let buckets_enc = unsafe { Box::from_raw(p_data_enc as *mut Vec<Vec<(KE, CE)>>) };
+        let buckets_enc = unsafe { Box::from_raw(p_data_enc as *mut Vec<Vec<ItemE>>) };
         buckets_enc.send(buf, &mut idx);
         forget(buckets_enc);
     }
     
     fn send_enc_data(&self, p_out: usize, p_data_enc: *mut u8) {
-        let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<Vec<(KE, CE)>>) };
-        let buckets_enc = unsafe { Box::from_raw(p_data_enc as *mut Vec<Vec<(KE, CE)>>) };
+        let mut v_out = unsafe { Box::from_raw(p_out as *mut u8 as *mut Vec<Vec<ItemE>>) };
+        let buckets_enc = unsafe { Box::from_raw(p_data_enc as *mut Vec<Vec<ItemE>>) };
         v_out.clone_in_place(&buckets_enc);
         forget(v_out);
         //and free encrypted buckets
@@ -471,7 +458,7 @@ where
     fn free_res_enc(&self, res_ptr: *mut u8, is_enc: bool) {
         assert!(is_enc);
         crate::ALLOCATOR.set_switch(true);
-        let res = unsafe { Box::from_raw(res_ptr as *mut Vec<Vec<Vec<(KE, CE)>>>) };
+        let res = unsafe { Box::from_raw(res_ptr as *mut Vec<Vec<Vec<ItemE>>>) };
         drop(res);
         crate::ALLOCATOR.set_switch(false);
     }
@@ -496,8 +483,6 @@ where
             self.identifier,
             parent_op_id,
             child_op_id,
-            self.fe.clone(),
-            self.fd.clone(),
         )) as Arc<dyn ShuffleDependencyTrait>
     }
 

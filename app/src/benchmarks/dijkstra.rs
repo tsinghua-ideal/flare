@@ -1,23 +1,28 @@
-use std::collections::{HashMap, BTreeMap};
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::time::Instant;
 use vega::*;
 
-fn custom_split_nodes_text_file(node: (usize, usize, Option<String>)) -> (usize, (usize, Option<Vec<String>>, String)) {
+fn custom_split_nodes_text_file(
+    node: (usize, usize, Option<String>),
+) -> (usize, (usize, Option<Vec<String>>, String)) {
     let neighbors = node.2.map(|s| {
-        let mut v = s.split(":")
-            .map(|x| x.to_string())
-            .collect::<Vec<_>>();
-        v.split_off(v.len()-1);
+        let mut v = s.split(":").map(|x| x.to_string()).collect::<Vec<_>>();
+        v.split_off(v.len() - 1);
         v
     });
     let path = node.0.to_string();
     (node.0, (node.1, neighbors, path))
 }
 
-fn custom_split_neighbor(parent_path: &String, parent_distance: usize, neighbor: &String) -> (usize, (usize, Option<Vec<String>>, String)) {
+fn custom_split_neighbor(
+    parent_path: &String,
+    parent_distance: usize,
+    neighbor: &String,
+) -> (usize, (usize, Option<Vec<String>>, String)) {
     let neighbor = neighbor.split(',').collect::<Vec<_>>();
-    let (nid, mut distance): (usize, usize) = (neighbor[0].parse().unwrap(), neighbor[1].parse().unwrap());
+    let (nid, mut distance): (usize, usize) =
+        (neighbor[0].parse().unwrap(), neighbor[1].parse().unwrap());
     distance += parent_distance;
     let mut path = parent_path.to_string();
     path.push_str("->");
@@ -25,7 +30,9 @@ fn custom_split_neighbor(parent_path: &String, parent_distance: usize, neighbor:
     (nid, (distance, None, path))
 }
 
-fn custom_split_nodes_iterative(node: (usize, (usize, Option<Vec<String>>, String))) -> (usize, (usize, Option<Vec<String>>, String)) {
+fn custom_split_nodes_iterative(
+    node: (usize, (usize, Option<Vec<String>>, String)),
+) -> (usize, (usize, Option<Vec<String>>, String)) {
     let (nid, (distance, neighbors, mut path)) = node;
     let elements = path.split("->");
     if elements.last().unwrap().parse::<usize>().unwrap() != nid {
@@ -35,7 +42,10 @@ fn custom_split_nodes_iterative(node: (usize, (usize, Option<Vec<String>>, Strin
     (nid, (distance, neighbors, path))
 }
 
-fn min_distance(node_value0: (usize, Option<Vec<String>>, String), node_value1: (usize, Option<Vec<String>>, String)) -> (usize, Option<Vec<String>>, String) {
+fn min_distance(
+    node_value0: (usize, Option<Vec<String>>, String),
+    node_value1: (usize, Option<Vec<String>>, String),
+) -> (usize, Option<Vec<String>>, String) {
     let mut neighbors = None;
     let mut distance = 0;
     let mut path = String::new();
@@ -59,249 +69,157 @@ fn min_distance(node_value0: (usize, Option<Vec<String>>, String), node_value1: 
 pub fn dijkstra_sec_0() -> Result<()> {
     let sc = Context::new()?;
     let now = Instant::now();
-    let fe = Fn!(|vp: Vec<(usize, usize, Option<String>)>|{
-        ser_encrypt::<>(vp)    
-    });
-
-    let fd = Fn!(|ve: Vec<u8>|{  //ItemE = Vec<u8>
-        let data: Vec<(usize, usize, Option<String>)> = ser_decrypt::<>(ve);
-        data
-    });
-
-    let fe_mp = Fn!(|vp: Vec<(usize, (usize, Option<Vec<String>>, String))>| {
-        let len = vp.len();
-        let mut buf0 = Vec::with_capacity(len);
-        let mut buf1 = Vec::with_capacity(len);
-        for i in vp {
-            buf0.push(i.0);
-            buf1.push(i.1);
-        }
-        let buf0 = ser_encrypt::<>(buf0);
-        let buf1 = ser_encrypt::<>(buf1);
-        (buf0, buf1)
-    });
-
-    let fd_mp = Fn!(|ve: (Vec<u8>, Vec<u8>)| {
-        let (buf0, buf1) = ve;
-        let mut pt0: Vec<usize> = ser_decrypt::<>(buf0); 
-        let mut pt1: Vec<(usize, Option<Vec<String>>, String)> = ser_decrypt::<>(buf1);
-        let len = pt0.len() | pt1.len();
-        pt0.resize_with(len, Default::default);
-        pt1.resize_with(len, Default::default);
-        pt0.into_iter().zip(pt1.into_iter()).collect::<Vec<_>>() 
-    });
 
     let deserializer = Box::new(Fn!(|file: Vec<u8>| {
-        bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap()  //ItemE = Vec<u8>
+        bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap() //ItemE = Vec<u8>
     }));
 
     let dir = PathBuf::from("/opt/data/ct_dij_CA");
-    let mut nodes = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(1), None, Some(deserializer), fe, fd)
-        .map(Fn!(|node| custom_split_nodes_text_file(node)), fe_mp.clone(), fd_mp.clone());
-    let mut old = nodes.secure_aggregate(
+    let mut nodes = sc
+        .read_source(
+            LocalFsReaderConfig::new(dir).num_partitions_per_executor(1),
+            None,
+            Some(deserializer),
+        )
+        .map(Fn!(|node| custom_split_nodes_text_file(node)));
+    let mut old = nodes
+        .secure_aggregate(
             0,
-            Fn!(|local_sum: usize, node: (usize, (usize, Option<Vec<String>>, String))| local_sum + node.1.0),
-            Fn!(|local_sum0, local_sum1| local_sum0 + local_sum1),  
-            Fn!(|v| v),
-            Fn!(|v| v)
-        ).unwrap().to_plain();
+            Fn!(
+                |local_sum: usize, node: (usize, (usize, Option<Vec<String>>, String))| local_sum
+                    + node.1 .0
+            ),
+            Fn!(|local_sum0, local_sum1| local_sum0 + local_sum1),
+        )
+        .unwrap()
+        .get_pt();
     let mut new = old.clone();
     let mut iterations = 0;
-    //let mut result = Text::<_, _>::new(Vec::new(), None, None);
     while (iterations == 0 || old != new) && iterations < 5 {
         iterations += 1;
         old = new;
-        let mapper = nodes.flat_map(Fn!(|node: (usize, (usize, Option<Vec<String>>, String))| {
+        let mapper = nodes.flat_map(Fn!(|node: (
+            usize,
+            (usize, Option<Vec<String>>, String)
+        )| {
             let (nid, (data0, data1, data2)) = node.clone();
             let mut res = Vec::new();
             res.push(node);
             if let Some(d) = data1 {
-                res.append(&mut d.into_iter()
-                    .map(|neighbor: String| custom_split_neighbor(&data2, data0, &neighbor))
-                    .collect::<Vec<_>>());
+                res.append(
+                    &mut d
+                        .into_iter()
+                        .map(|neighbor: String| custom_split_neighbor(&data2, data0, &neighbor))
+                        .collect::<Vec<_>>(),
+                );
             }
             Box::new(res.into_iter()) as Box<dyn Iterator<Item = _>>
-        }), fe_mp.clone(), fd_mp.clone());
-        let reducer = mapper.reduce_by_key(Fn!(|(x, y)| min_distance(x, y)), 1, fe_mp.clone(), fd_mp.clone());
-        nodes = reducer.map(Fn!(|node| custom_split_nodes_iterative(node)), fe_mp.clone(), fd_mp.clone());
-        //result = nodes.secure_collect().unwrap();
-        //nodes = sc.parallelize(vec![], (*result).clone(), fe_mp.clone(), fd_mp.clone(), 1);
+        }));
+        let reducer = mapper.reduce_by_key(Fn!(|(x, y)| min_distance(x, y)), 1);
+        nodes = reducer.map(Fn!(|node| custom_split_nodes_iterative(node)));
         nodes.cache();
-        new = nodes.secure_aggregate(
-            0,
-            Fn!(|local_sum: usize, node: (usize, (usize, Option<Vec<String>>, String))| local_sum + node.1.0),
-            Fn!(|local_sum0, local_sum1| local_sum0 + local_sum1),  
-            Fn!(|v| v), 
-            Fn!(|v| v)
-        ).unwrap().to_plain();
+        new = nodes
+            .secure_aggregate(
+                0,
+                Fn!(
+                    |local_sum: usize, node: (usize, (usize, Option<Vec<String>>, String))| {
+                        local_sum + node.1 .0
+                    }
+                ),
+                Fn!(|local_sum0, local_sum1| local_sum0 + local_sum1),
+            )
+            .unwrap()
+            .get_pt();
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("new = {:?}, elapsed time = {:?}", new, dur);
     }
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    println!("Finished after {:?} iterations, total time {:?}s", iterations, dur);
+    println!(
+        "Finished after {:?} iterations, total time {:?}s",
+        iterations, dur
+    );
     Ok(())
 }
 
-// secure mode
-pub fn dijkstra_sec_1() -> Result<()> {
-    let sc = Context::new()?;
-    let now = Instant::now();
-    let fe = Fn!(|vp: Vec<(usize, usize, Option<String>)>|{
-        ser_encrypt::<>(vp)    
-    });
-
-    let fd = Fn!(|ve: Vec<u8>|{  //ItemE = Vec<u8>
-        let data: Vec<(usize, usize, Option<String>)> = ser_decrypt::<>(ve);
-        data
-    });
-
-    let fe_mp = Fn!(|vp: Vec<(usize, (usize, Option<Vec<String>>, String))>| {
-        let len = vp.len();
-        let mut buf0 = Vec::with_capacity(len);
-        let mut buf1 = Vec::with_capacity(len);
-        for i in vp {
-            buf0.push(i.0);
-            buf1.push(i.1);
-        }
-        let buf0 = ser_encrypt::<>(buf0);
-        let buf1 = ser_encrypt::<>(buf1);
-        (buf0, buf1)
-    });
-
-    let fd_mp = Fn!(|ve: (Vec<u8>, Vec<u8>)| {
-        let (buf0, buf1) = ve;
-        let mut pt0: Vec<usize> = ser_decrypt::<>(buf0); 
-        let mut pt1: Vec<(usize, Option<Vec<String>>, String)> = ser_decrypt::<>(buf1);
-        let len = pt0.len() | pt1.len();
-        pt0.resize_with(len, Default::default);
-        pt1.resize_with(len, Default::default);
-        pt0.into_iter().zip(pt1.into_iter()).collect::<Vec<_>>() 
-    });
-
-    let deserializer = Box::new(Fn!(|file: Vec<u8>| {
-        bincode::deserialize::<Vec<Vec<u8>>>(&file).unwrap()  //ItemE = Vec<u8>
-    }));
-
-    let dir = PathBuf::from("/opt/data/ct_dij_CA");
-    let mut nodes = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(1), None, Some(deserializer), fe, fd)
-        .map(Fn!(|node| custom_split_nodes_text_file(node)), fe_mp.clone(), fd_mp.clone());
-    let mut old = 0;
-    let mut new = 0;
-
-    let mut iterations = 0;
-    //let mut result = nodes.secure_collect().unwrap();
-    while (iterations == 0 || old != new) && iterations < 5 {
-        iterations += 1;
-        old = new;
-        //nodes = sc.parallelize(vec![], (*result).clone(), fe_mp.clone(), fd_mp.clone(), 1);
-        nodes.cache();
-        new = nodes.secure_aggregate(
-            0,
-            Fn!(|local_sum: usize, node: (usize, (usize, Option<Vec<String>>, String))| local_sum + node.1.0),
-            Fn!(|local_sum0, local_sum1| local_sum0 + local_sum1),  
-            Fn!(|v| v), 
-            Fn!(|v| v)
-        ).unwrap().to_plain();
-        println!("new = {:?}", new);
-        let mapper = nodes.flat_map(Fn!(|node: (usize, (usize, Option<Vec<String>>, String))| {
-            let (nid, (data0, data1, data2)) = node.clone();
-            let mut res = Vec::new();
-            res.push(node);
-            if let Some(d) = data1 {
-                res.append(&mut d.into_iter()
-                    .map(|neighbor: String| custom_split_neighbor(&data2, data0, &neighbor))
-                    .collect::<Vec<_>>());
-            }
-            Box::new(res.into_iter()) as Box<dyn Iterator<Item = _>>
-        }), fe_mp.clone(), fd_mp.clone());
-        let reducer = mapper.reduce_by_key(Fn!(|(x, y)| min_distance(x, y)), 1, fe_mp.clone(), fd_mp.clone());
-        nodes = reducer.map(Fn!(|node| custom_split_nodes_iterative(node)), fe_mp.clone(), fd_mp.clone());
-        //result = nodes.secure_collect().unwrap();
-    }
-    let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    println!("Finished after {:?} iterations, total time {:?}s", iterations, dur);
-    //println!("len(res) = {:?}", result.to_plain().len());
-    Ok(())
-}
-    
 // unsecure mode
 pub fn dijkstra_unsec_0() -> Result<()> {
     let sc = Context::new()?;
     let now = Instant::now();
-    let lfe = Fn!(|vp: Vec<Vec<(usize, usize, Option<String>)>>| {
-        vp
-    });
-    let lfd = Fn!(|ve: Vec<Vec<(usize, usize, Option<String>)>>| {
-        ve
-    });
-
-    let fe_mp = Fn!(|vp: Vec<(usize, (usize, Option<Vec<String>>, String))>| {
-        let len = vp.len();
-        let mut buf0 = Vec::with_capacity(len);
-        let mut buf1 = Vec::with_capacity(len);
-        for i in vp {
-            buf0.push(i.0);
-            buf1.push(i.1);
-        }
-        let buf0 = ser_encrypt::<>(buf0);
-        let buf1 = ser_encrypt::<>(buf1);
-        (buf0, buf1)
-    });
-
-    let fd_mp = Fn!(|ve: (Vec<u8>, Vec<u8>)| {
-        let (buf0, buf1) = ve;
-        let mut pt0: Vec<usize> = ser_decrypt::<>(buf0); 
-        let mut pt1: Vec<(usize, Option<Vec<String>>, String)> = ser_decrypt::<>(buf1);
-        let len = pt0.len() | pt1.len();
-        pt0.resize_with(len, Default::default);
-        pt1.resize_with(len, Default::default);
-        pt0.into_iter().zip(pt1.into_iter()).collect::<Vec<_>>() 
-    });
 
     let deserializer = Box::new(Fn!(|file: Vec<u8>| {
-        bincode::deserialize::<Vec<(usize, usize, Option<String>)>>(&file).unwrap()  //Item = (u32, u32)
+        bincode::deserialize::<Vec<(usize, usize, Option<String>)>>(&file).unwrap()
+        //Item = (u32, u32)
     }));
 
     let dir = PathBuf::from("/opt/data/pt_dij_CA");
-    let mut nodes = sc.read_source(LocalFsReaderConfig::new(dir).num_partitions_per_executor(1), Some(deserializer), None, lfe, lfd)
-        .flat_map(Fn!(|nodes: Vec<(usize, usize, Option<String>)>| Box::new(nodes.into_iter().map(|node| custom_split_nodes_text_file(node))) as Box<dyn Iterator<Item = _>>), fe_mp.clone(), fd_mp.clone());
-    let mut old = nodes.aggregate(
-        0,
-        Fn!(|local_sum: usize, node: (usize, (usize, Option<Vec<String>>, String))| local_sum + node.1.0),
-        Fn!(|local_sum0, local_sum1| local_sum0 + local_sum1),
-    ).unwrap();
+    let mut nodes = sc
+        .read_source(
+            LocalFsReaderConfig::new(dir).num_partitions_per_executor(1),
+            Some(deserializer),
+            None,
+        )
+        .flat_map(Fn!(|nodes: Vec<(usize, usize, Option<String>)>| Box::new(
+            nodes
+                .into_iter()
+                .map(|node| custom_split_nodes_text_file(node))
+        )
+            as Box<dyn Iterator<Item = _>>));
+    let mut old = nodes
+        .aggregate(
+            0,
+            Fn!(
+                |local_sum: usize, node: (usize, (usize, Option<Vec<String>>, String))| local_sum
+                    + node.1 .0
+            ),
+            Fn!(|local_sum0, local_sum1| local_sum0 + local_sum1),
+        )
+        .unwrap();
     let mut new = old.clone();
     let mut iterations = 0;
     //let mut result = Vec::new();
     while (iterations == 0 || old != new) && iterations < 5 {
         iterations += 1;
         old = new;
-        let mapper = nodes.flat_map(Fn!(|node: (usize, (usize, Option<Vec<String>>, String))| {
+        let mapper = nodes.flat_map(Fn!(|node: (
+            usize,
+            (usize, Option<Vec<String>>, String)
+        )| {
             let (nid, (data0, data1, data2)) = node.clone();
             let mut res = Vec::new();
             res.push(node);
             if let Some(d) = data1 {
-                res.append(&mut d.into_iter()
-                    .map(|neighbor: String| custom_split_neighbor(&data2, data0, &neighbor))
-                    .collect::<Vec<_>>());
+                res.append(
+                    &mut d
+                        .into_iter()
+                        .map(|neighbor: String| custom_split_neighbor(&data2, data0, &neighbor))
+                        .collect::<Vec<_>>(),
+                );
             }
             Box::new(res.into_iter()) as Box<dyn Iterator<Item = _>>
-        }), fe_mp.clone(), fd_mp.clone());
-        let reducer = mapper.reduce_by_key(Fn!(|(x, y)| min_distance(x, y)), 1, fe_mp.clone(), fd_mp.clone());
-        nodes = reducer.map(Fn!(|node| custom_split_nodes_iterative(node)), fe_mp.clone(), fd_mp.clone());
+        }));
+        let reducer = mapper.reduce_by_key(Fn!(|(x, y)| min_distance(x, y)), 1);
+        nodes = reducer.map(Fn!(|node| custom_split_nodes_iterative(node)));
         //result = nodes.collect().unwrap();
         //nodes = sc.parallelize(result.clone(), vec![], fe_mp.clone(), fd_mp.clone(), 1);
         nodes.cache();
-        new = nodes.aggregate(
-            0,
-            Fn!(|local_sum: usize, node: (usize, (usize, Option<Vec<String>>, String))| local_sum + node.1.0),
-            Fn!(|local_sum0, local_sum1| local_sum0 + local_sum1)
-        ).unwrap();
+        new = nodes
+            .aggregate(
+                0,
+                Fn!(
+                    |local_sum: usize, node: (usize, (usize, Option<Vec<String>>, String))| {
+                        local_sum + node.1 .0
+                    }
+                ),
+                Fn!(|local_sum0, local_sum1| local_sum0 + local_sum1),
+            )
+            .unwrap();
         println!("new = {:?}", new);
     }
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    println!("Finished after {:?} iterations, total time {:?}s", iterations, dur);
+    println!(
+        "Finished after {:?} iterations, total time {:?}s",
+        iterations, dur
+    );
 
     Ok(())
 }
-

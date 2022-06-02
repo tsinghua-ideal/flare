@@ -1,67 +1,46 @@
 use std::marker::PhantomData;
 use crate::op::*;
 
-pub struct ParallelCollection<T, TE, FE, FD> 
+pub struct ParallelCollection<T> 
 where
     T: Data,
-    TE: Data,
-    FE: Func(Vec<T>) -> TE + Clone,
-    FD: Func(TE) -> Vec<T> + Clone,
 {
     vals: Arc<OpVals>, 
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
-    fe: FE,
-    fd: FD,
     _marker_t: PhantomData<T>,
-    _marker_te: PhantomData<TE>,
 }
 
-impl<T, TE, FE, FD> Clone for ParallelCollection<T, TE, FE, FD> 
+impl<T> Clone for ParallelCollection<T> 
 where
     T: Data,
-    TE: Data,
-    FE: Func(Vec<T>) -> TE + Clone,
-    FD: Func(TE) -> Vec<T> + Clone,
 {
     fn clone(&self) -> Self {
         ParallelCollection {
             vals: self.vals.clone(),
             next_deps: self.next_deps.clone(),
-            fe: self.fe.clone(),
-            fd: self.fd.clone(),
             _marker_t: PhantomData,
-            _marker_te: PhantomData,
         }
     }
 } 
 
-impl<T, TE, FE, FD> ParallelCollection<T, TE, FE, FD> 
+impl<T> ParallelCollection<T> 
 where 
     T: Data,
-    TE: Data,
-    FE: Func(Vec<T>) -> TE + Clone,
-    FD: Func(TE) -> Vec<T> + Clone,
 {
     #[track_caller]
-    pub fn new(context: Arc<Context>, fe: FE, fd: FD, num_splits: usize) -> Self {
+    pub fn new(context: Arc<Context>, num_splits: usize) -> Self {
         let vals = OpVals::new(context.clone(), num_splits);
         ParallelCollection {
             vals: Arc::new(vals),
             next_deps: Arc::new(RwLock::new(HashMap::new())),
-            fe,
-            fd,
             _marker_t: PhantomData,
-            _marker_te: PhantomData,
         }
     }
 }
 
-impl<T, TE, FE, FD> OpBase for ParallelCollection<T, TE, FE, FD> 
+impl<T> OpBase for ParallelCollection<T> 
 where 
     T: Data,
-    TE: Data,
-    FE: SerFunc(Vec<T>) -> TE,
-    FD: SerFunc(TE) -> Vec<T>,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
@@ -146,12 +125,9 @@ where
     }
 }
 
-impl<T, TE, FE, FD> Op for ParallelCollection<T, TE, FE, FD> 
+impl<T> Op for ParallelCollection<T> 
 where 
     T: Data,
-    TE: Data,
-    FE: SerFunc(Vec<T>) -> TE,
-    FD: SerFunc(TE) -> Vec<T>,
 {
     type Item = T;
 
@@ -181,7 +157,6 @@ where
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
         let is_caching_final_rdd = call_seq.is_caching_final_rdd();
-        let fd = self.get_fd();
 
         //In this case, the data is either cached outside enclave or inside enclave
         if have_cache {
@@ -190,10 +165,10 @@ where
             return self.get_and_remove_cached_data(key);
         }
 
-        let len = input.get_enc_data::<Vec<TE>>().len();
+        let len = input.get_enc_data::<Vec<ItemE>>().len();
         let res_iter = Box::new((0..len).map(move|i| {
-            let data = input.get_enc_data::<Vec<TE>>();
-            Box::new((fd)(data[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
+            let data = input.get_enc_data::<Vec<ItemE>>();
+            Box::new(ser_decrypt::<Vec<Self::Item>>(&data[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
         }));
 
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
@@ -207,28 +182,6 @@ where
             )
         }
         res_iter
-    }
-
-}
-
-impl<T, TE, FE, FD> OpE for ParallelCollection<T, TE, FE, FD> 
-where 
-    T: Data,
-    TE: Data,
-    FE: SerFunc(Vec<T>) -> TE,
-    FD: SerFunc(TE) -> Vec<T>,
-{
-    type ItemE = TE;
-    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
-        Arc::new(self.clone())
-    }
-
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
-        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Self::ItemE>
-    }
-
-    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
-        Box::new(self.fd.clone()) as Box<dyn Func(Self::ItemE)->Vec<Self::Item>>
     }
 
 }
