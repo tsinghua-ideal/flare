@@ -1,24 +1,18 @@
 use crate::op::*;
 
-pub struct FlatMapper<T: Data, U: Data, UE: Data, F, FE, FD>
+pub struct FlatMapper<T: Data, U: Data, F>
 where
     F: Func(T) -> Box<dyn Iterator<Item = U>> + Clone,
-    FE: Func(Vec<U>) -> UE + Clone,
-    FD: Func(UE) -> Vec<U> + Clone,
 {
     vals: Arc<OpVals>,
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     prev: Arc<dyn Op<Item = T>>,
     f: F,
-    fe: FE,
-    fd: FD,
 }
 
-impl<T: Data, U: Data, UE: Data, F, FE, FD> Clone for FlatMapper<T, U, UE, F, FE, FD>
+impl<T: Data, U: Data, F> Clone for FlatMapper<T, U, F>
 where
     F: Func(T) -> Box<dyn Iterator<Item = U>> + Clone,
-    FE: Func(Vec<U>) -> UE + Clone,
-    FD: Func(UE) -> Vec<U> + Clone,
 {
     fn clone(&self) -> Self {
         FlatMapper {
@@ -26,20 +20,16 @@ where
             next_deps: self.next_deps.clone(),
             prev: self.prev.clone(),
             f: self.f.clone(),
-            fe: self.fe.clone(),
-            fd: self.fd.clone(),
         }
     }
 }
 
-impl<T: Data, U: Data, UE: Data, F, FE, FD> FlatMapper<T, U, UE, F, FE, FD>
+impl<T: Data, U: Data, F> FlatMapper<T, U, F>
 where
     F: Func(T) -> Box<dyn Iterator<Item = U>> + Clone,
-    FE: Func(Vec<U>) -> UE + Clone,
-    FD: Func(UE) -> Vec<U> + Clone,
 {
     #[track_caller]
-    pub(crate) fn new(prev: Arc<dyn Op<Item = T>>, f: F, fe: FE, fd: FD) -> Self {
+    pub(crate) fn new(prev: Arc<dyn Op<Item = T>>, f: F) -> Self {
         let mut vals = OpVals::new(prev.get_op_base().get_context(), prev.number_of_splits());
         let cur_id = vals.id;
         let prev_id = prev.get_op_id();
@@ -59,17 +49,13 @@ where
             next_deps: Arc::new(RwLock::new(HashMap::new())),
             prev,
             f,
-            fe,
-            fd,
         }
     }
 }
 
-impl<T: Data, U: Data, UE: Data, F, FE, FD> OpBase for FlatMapper<T, U, UE, F, FE, FD>
+impl<T: Data, U: Data, F> OpBase for FlatMapper<T, U, F>
 where
     F: SerFunc(T) -> Box<dyn Iterator<Item = U>>,
-    FE: SerFunc(Vec<U>) -> UE,
-    FD: SerFunc(UE) -> Vec<U>,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
@@ -153,11 +139,9 @@ where
     }
 }
 
-impl<T: Data, U: Data, UE: Data, F, FE, FD> Op for FlatMapper<T, U, UE, F, FE, FD>
+impl<T: Data, U: Data, F> Op for FlatMapper<T, U, F>
 where
-    F: SerFunc(T) -> Box<dyn Iterator<Item = U>> ,
-    FE: SerFunc(Vec<U>) -> UE,
-    FD: SerFunc(UE) -> Vec<U>,
+    F: SerFunc(T) -> Box<dyn Iterator<Item = U>>,
 { 
     type Item = U;
     
@@ -221,24 +205,4 @@ where
         res_iter
     }
 
-}
-
-impl<T: Data, U: Data, UE: Data, F, FE, FD> OpE for FlatMapper<T, U, UE, F, FE, FD>
-where
-    F: SerFunc(T) -> Box<dyn Iterator<Item = U>>,
-    FE: SerFunc(Vec<U>) -> UE,
-    FD: SerFunc(UE) -> Vec<U>,
-{
-    type ItemE = UE;
-    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
-        Arc::new(self.clone())
-    }
-
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
-        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Self::ItemE>
-    }
-
-    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
-        Box::new(self.fd.clone()) as Box<dyn Func(Self::ItemE)->Vec<Self::Item>>
-    }
 }

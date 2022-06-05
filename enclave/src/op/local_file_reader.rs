@@ -5,14 +5,11 @@ use serde_derive::{Deserialize, Serialize};
 
 pub trait ReaderConfiguration<I: Data> {
     #[track_caller]
-    fn make_reader<O, OE, F, F0, FE, FD>(self, context: Arc<Context>, decoder: Option<F>, sec_decoder: Option<F0>, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = O, ItemE = OE>>
+    fn make_reader<O, F, F0>(self, context: Arc<Context>, decoder: Option<F>, sec_decoder: Option<F0>) -> SerArc<dyn Op<Item = O>>
     where
         O: Data,
-        OE: Data,
         F: SerFunc(I) -> O,
-        F0: SerFunc(I) -> Vec<OE>,
-        FE: SerFunc(Vec<O>) -> OE,
-        FD: SerFunc(OE) -> Vec<O>;
+        F0: SerFunc(I) -> Vec<ItemE>;
 }
 
 pub struct LocalFsReaderConfig {
@@ -35,16 +32,13 @@ impl LocalFsReaderConfig {
 }
 
 impl<I: Data> ReaderConfiguration<I> for LocalFsReaderConfig {
-    fn make_reader<O, OE, F, F0, FE, FD>(self, context: Arc<Context>, decoder: Option<F>, sec_decoder: Option<F0>, fe: FE, fd: FD) -> SerArc<dyn OpE<Item = O, ItemE = OE>>
+    fn make_reader<O, F, F0>(self, context: Arc<Context>, decoder: Option<F>, sec_decoder: Option<F0>) -> SerArc<dyn Op<Item = O>>
     where
         O: Data,
-        OE: Data,
         F: SerFunc(I) -> O,
-        F0: SerFunc(I) -> Vec<OE>,
-        FE: SerFunc(Vec<O>) -> OE,
-        FD: SerFunc(OE) -> Vec<O>,
+        F0: SerFunc(I) -> Vec<ItemE>,
     {
-        let reader = LocalFsReader::new(self, context, sec_decoder.clone(), fe.clone(), fd.clone());
+        let reader = LocalFsReader::new(self, context, sec_decoder.clone());
         if !reader.get_context().get_is_tail_comp() {
             insert_opmap(reader.get_op_id(), reader.get_op_base());
         }
@@ -56,11 +50,11 @@ impl<I: Data> ReaderConfiguration<I> for LocalFsReaderConfig {
             });
         reader.get_context().add_num(1);
         let files_per_executor = Arc::new(
-            MapPartitions::new(Arc::new(reader) as Arc<dyn Op<Item = _>>, read_files, fe.clone(), fd.clone()),
+            MapPartitions::new(Arc::new(reader) as Arc<dyn Op<Item = _>>, read_files),
         );
         insert_opmap(files_per_executor.get_op_id(), files_per_executor.get_op_base());
         files_per_executor.get_context().add_num(1);
-        let decoder = Mapper::new(files_per_executor, Fn!(|v| v), fe, fd);
+        let decoder = Mapper::new(files_per_executor, Fn!(|v| v));
         let decoder = SerArc::new(decoder);
         insert_opmap(decoder.get_op_id(), decoder.get_op_base());
         decoder
@@ -68,36 +62,27 @@ impl<I: Data> ReaderConfiguration<I> for LocalFsReaderConfig {
 }
 
 #[derive(Clone)]
-pub struct LocalFsReader<I, U, UE, F0, FE, FD> 
+pub struct LocalFsReader<I, U, F0> 
 where
     I: Data,
     U: Data,
-    UE: Data,
-    F0: Func(I) -> Vec<UE> + Clone,
-    FE: Func(Vec<U>) -> UE + Clone,
-    FD: Func(UE) -> Vec<U> + Clone,
+    F0: Func(I) -> Vec<ItemE> + Clone,
 {
     vals: Arc<OpVals>,
     path: PathBuf,
     sec_decoder: Option<F0>,
-    fe: FE,
-    fd: FD,
     _marker_text_data: PhantomData<I>,
     _marker_data: PhantomData<U>,
-    _marker_enc_data: PhantomData<UE>,
 }
 
-impl<I, U, UE, F0, FE, FD> LocalFsReader<I, U, UE, F0, FE, FD> 
+impl<I, U, F0> LocalFsReader<I, U, F0> 
 where
     I: Data,
     U: Data,
-    UE: Data,
-    F0: Func(I) -> Vec<UE> + Clone,
-    FE: Func(Vec<U>) -> UE + Clone,
-    FD: Func(UE) -> Vec<U> + Clone,
+    F0: Func(I) -> Vec<ItemE> + Clone,
 {
     #[track_caller]
-    fn new(config: LocalFsReaderConfig, context: Arc<Context>, sec_decoder: Option<F0>, fe: FE, fd: FD) -> Self {
+    fn new(config: LocalFsReaderConfig, context: Arc<Context>, sec_decoder: Option<F0>) -> Self {
         let LocalFsReaderConfig {
             dir_path,
             executor_partitions,
@@ -108,23 +93,17 @@ where
             vals,
             path: dir_path,
             sec_decoder,
-            fe,
-            fd,
             _marker_text_data: PhantomData,
             _marker_data: PhantomData,
-            _marker_enc_data: PhantomData,
         }
     }
 }
 
-impl<I, U, UE, F0, FE, FD> OpBase for LocalFsReader<I, U, UE, F0, FE, FD> 
+impl<I, U, F0> OpBase for LocalFsReader<I, U, F0> 
 where 
     I: Data,
     U: Data,
-    UE: Data,
-    F0: SerFunc(I) -> Vec<UE>,
-    FE: SerFunc(Vec<U>) -> UE,
-    FD: SerFunc(UE) -> Vec<U>,
+    F0: SerFunc(I) -> Vec<ItemE>,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
@@ -209,14 +188,11 @@ where
     }
 }
 
-impl<I, U, UE, F0, FE, FD> Op for LocalFsReader<I, U, UE, F0, FE, FD> 
+impl<I, U, F0> Op for LocalFsReader<I, U, F0> 
 where 
     I: Data,
     U: Data,
-    UE: Data,
-    F0: SerFunc(I) -> Vec<UE>,
-    FE: SerFunc(Vec<U>) -> UE,
-    FD: SerFunc(UE) -> Vec<U>,
+    F0: SerFunc(I) -> Vec<ItemE>,
 {
     type Item = U;
 
@@ -232,12 +208,10 @@ where
     }
 
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
-        let fd = self.get_fd();
-
-        let len = input.get_enc_data::<Vec<UE>>().len();
+        let len = input.get_enc_data::<Vec<ItemE>>().len();
         let res_iter = Box::new((0..len).map(move|i| {
-            let data = input.get_enc_data::<Vec<UE>>();
-            Box::new((fd)(data[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
+            let data = input.get_enc_data::<Vec<ItemE>>();
+            Box::new(ser_decrypt::<Vec<Self::Item>>(&data[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
         }));
         res_iter
     }
@@ -245,30 +219,6 @@ where
     fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         //suppose no shuffle will happen after this rdd
         self.narrow(call_seq, input, dep_info)
-    }
-
-}
-
-impl<I, U, UE, F0, FE, FD> OpE for LocalFsReader<I, U, UE, F0, FE, FD> 
-where 
-    I: Data,
-    U: Data,
-    UE: Data,
-    F0: SerFunc(I) -> Vec<UE>,
-    FE: SerFunc(Vec<U>) -> UE,
-    FD: SerFunc(UE) -> Vec<U>,
-{
-    type ItemE = UE;
-    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
-        Arc::new(self.clone())
-    }
-
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
-        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Self::ItemE>
-    }
-
-    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
-        Box::new(self.fd.clone()) as Box<dyn Func(Self::ItemE)->Vec<Self::Item>>
     }
 
 }

@@ -1,28 +1,20 @@
 use crate::op::*;
 use crate::utils::random::RandomSampler;
 
-pub struct PartitionwiseSampled<T, TE, FE, FD>
+pub struct PartitionwiseSampled<T>
 where
     T: Data,
-    TE: Data,
-    FE: Func(Vec<T>) -> TE + Clone,
-    FD: Func(TE) -> Vec<T> + Clone,
 {
     vals: Arc<OpVals>,
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     prev: Arc<dyn Op<Item = T>>,
     sampler: Arc<RwLock<Arc<dyn RandomSampler<T>>>>,
     preserves_partitioning: bool,
-    fe: FE,
-    fd: FD,
 }
 
-impl<T, TE, FE, FD> PartitionwiseSampled<T, TE, FE, FD> 
+impl<T> PartitionwiseSampled<T> 
 where 
     T: Data,
-    TE: Data,
-    FE: Func(Vec<T>) -> TE + Clone,
-    FD: Func(TE) -> Vec<T> + Clone,
 {
     fn clone(&self) -> Self {
         PartitionwiseSampled {
@@ -31,26 +23,19 @@ where
             prev: self.prev.clone(),
             sampler: self.sampler.clone(),
             preserves_partitioning: self.preserves_partitioning,
-            fe: self.fe.clone(),
-            fd: self.fd.clone(),
         }
     }
 }
 
-impl<T, TE, FE, FD> PartitionwiseSampled<T, TE, FE, FD> 
+impl<T> PartitionwiseSampled<T> 
 where 
     T: Data,
-    TE: Data,
-    FE: Func(Vec<T>) -> TE + Clone,
-    FD: Func(TE) -> Vec<T> + Clone,
 {
     #[track_caller]
     pub(crate) fn new(
         prev: Arc<dyn Op<Item = T>>,
         sampler: Arc<dyn RandomSampler<T>>,
         preserves_partitioning: bool,
-        fe: FE, 
-        fd: FD
     ) -> Self {
         let mut vals = OpVals::new(prev.get_context(), prev.number_of_splits());
         let cur_id = vals.id;
@@ -73,19 +58,14 @@ where
             prev,
             sampler,
             preserves_partitioning,
-            fe,
-            fd,
         }
     }
 
 }
 
-impl<T, TE, FE, FD> OpBase for PartitionwiseSampled<T, TE, FE, FD> 
+impl<T> OpBase for PartitionwiseSampled<T> 
 where
-    T: Data,
-    TE: Data,
-    FE: SerFunc(Vec<T>) -> TE,
-    FD: SerFunc(TE) -> Vec<T>, 
+    T: Data, 
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
@@ -180,24 +160,17 @@ where
 
 }
 
-impl<T, V, TE, VE, FE, FD> OpBase for PartitionwiseSampled<(T, V), (TE, VE), FE, FD> 
+impl<T, V> OpBase for PartitionwiseSampled<(T, V)> 
 where 
     T: Data,
     V: Data,
-    TE: Data,
-    VE: Data,
-    FE: SerFunc(Vec<(T, V)>) -> (TE, VE),
-    FD: SerFunc((TE, VE)) -> Vec<(T, V)>, 
 {
 
 }
 
-impl<T, TE, FE, FD> Op for PartitionwiseSampled<T, TE, FE, FD> 
+impl<T> Op for PartitionwiseSampled<T> 
 where
-    T: Data,
-    TE: Data,
-    FE: SerFunc(Vec<T>) -> TE,
-    FD: SerFunc(TE) -> Vec<T>, 
+    T: Data, 
 {
     type Item = T;
         
@@ -258,27 +231,6 @@ where
         res_iter
     }
 
-}
-
-impl<T, TE, FE, FD> OpE for PartitionwiseSampled<T, TE, FE, FD> 
-where
-    T: Data,
-    TE: Data,
-    FE: SerFunc(Vec<T>) -> TE,
-    FD: SerFunc(TE) -> Vec<T>, 
-{
-    type ItemE = TE;
-    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
-        Arc::new(self.clone())
-    }
-
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
-        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Self::ItemE>
-    }
-
-    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
-        Box::new(self.fd.clone()) as Box<dyn Func(Self::ItemE)->Vec<Self::Item>>
-    }
 }
 
 

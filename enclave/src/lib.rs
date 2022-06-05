@@ -32,6 +32,7 @@
 #![feature(vec_into_raw_parts)]
 #![feature(cell_update)]
 #![feature(slice_group_by)]
+#![feature(ordering_helpers)]
 
 #![feature(
     arbitrary_self_types,
@@ -94,7 +95,6 @@ lazy_static! {
     static ref init: Result<()> = {
         /* dijkstra */
         //dijkstra_sec_0()?;
-        //dijkstra_sec_1()?;
 
         /* map */
         //map_sec_0()?;
@@ -139,7 +139,6 @@ lazy_static! {
 
         /* kmeans */
         //kmeans_sec_0()?;
-        //kmeans_sec_1()?;
 
         /* linear regression */
         //lr_sec()?;
@@ -156,7 +155,6 @@ lazy_static! {
         /* transitive_closure */
         //transitive_closure_sec_0()?;
         //transitive_closure_sec_1()?;
-        //transitive_closure_sec_2()?;
 
         /* triangle counting */
         //triangle_counting_sec_0()?;
@@ -234,19 +232,6 @@ pub extern "C" fn secure_execute(tid: u64,
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("tid: {:?}, Cur mem: {:?}, Max mem: {:?}, secure_execute {:?} s", tid, ALLOCATOR.get_memory_usage(), ALLOCATOR.get_max_memory_usage(), dur);
     return result_ptr as usize
-}
-
-#[no_mangle]
-pub extern "C" fn pre_merge(tid: u64,
-    op_id: OpId,
-    dep_info: DepInfo, 
-    input: Input,
-) -> usize {
-    println!("pre_merge inside enclave");
-    let _init = *init;
-    let op = load_opmap().get(&op_id).unwrap();
-    let res = op.pre_merge(dep_info, tid, input);
-    res
 }
 
 #[no_mangle]
@@ -349,7 +334,6 @@ pub extern "C" fn tail_compute(input: *mut u8) -> usize {
     let tail_info = unsafe{ (input as *const TailCompInfo).as_ref() }.unwrap();
     let mut tail_info = tail_info.clone();
     kmeans_sec_0_(&mut tail_info).unwrap();
-    //kmeans_sec_1_(&mut tail_info).unwrap();
     ALLOCATOR.set_switch(true);
     let ptr = Box::into_raw(Box::new(tail_info.clone()));
     ALLOCATOR.set_switch(false);

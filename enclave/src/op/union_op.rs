@@ -1,15 +1,15 @@
 use crate::dependency::RangeDependency;
 use crate::op::*;
 
-pub struct Union<T: Data, TE: Data>
+pub struct Union<T: Data>
 {
-    ops: Vec<Arc<dyn OpE<Item = T, ItemE = TE>>>,
+    ops: Vec<Arc<dyn Op<Item = T>>>,
     vals: Arc<OpVals>,
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     part: Option<Box<dyn Partitioner>>,
 }
 
-impl<T: Data, TE: Data> Clone for Union<T, TE>
+impl<T: Data> Clone for Union<T>
 {
     fn clone(&self) -> Self {
         Union {
@@ -21,10 +21,10 @@ impl<T: Data, TE: Data> Clone for Union<T, TE>
     }
 }
 
-impl<T: Data, TE: Data> Union<T, TE>
+impl<T: Data> Union<T>
 {
     #[track_caller]
-    pub(crate) fn new(ops: &[Arc<dyn OpE<Item = T, ItemE = TE>>]) -> Self {
+    pub(crate) fn new(ops: &[Arc<dyn Op<Item = T>>]) -> Self {
         let mut vals_ = OpVals::new(ops[0].get_context(), 0);
         let cur_id = vals_.id;
         
@@ -81,7 +81,7 @@ impl<T: Data, TE: Data> Union<T, TE>
         }
     }
 
-    fn has_unique_partitioner(ops: &[Arc<dyn OpE<Item = T, ItemE = TE>>]) -> bool {
+    fn has_unique_partitioner(ops: &[Arc<dyn Op<Item = T>>]) -> bool {
         ops.iter()
             .map(|p| p.partitioner())
             .try_fold(None, |prev: Option<Box<dyn Partitioner>>, p| {
@@ -106,7 +106,7 @@ impl<T: Data, TE: Data> Union<T, TE>
 
 }
 
-impl<T: Data, TE: Data> OpBase for Union<T, TE>
+impl<T: Data> OpBase for Union<T>
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
@@ -192,7 +192,7 @@ impl<T: Data, TE: Data> OpBase for Union<T, TE>
 
 }
 
-impl<T: Data, TE: Data> Op for Union<T, TE>
+impl<T: Data> Op for Union<T>
 {
     type Item = T;
         
@@ -221,7 +221,6 @@ impl<T: Data, TE: Data> Op for Union<T, TE>
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
         let is_caching_final_rdd = call_seq.is_caching_final_rdd();
-        let fd = self.get_fd();
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
@@ -230,10 +229,10 @@ impl<T: Data, TE: Data> Op for Union<T, TE>
         }
         
         let res_iter = if call_seq.is_head() {
-            let len = input.get_enc_data::<Vec<TE>>().len();
+            let len = input.get_enc_data::<Vec<ItemE>>().len();
             Box::new((0..len).map(move|i| {
-                let data = input.get_enc_data::<Vec<TE>>();
-                Box::new((fd)(data[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
+                let data = input.get_enc_data::<Vec<ItemE>>();
+                Box::new(ser_decrypt::<Vec<Self::Item>>(&data[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
             }))
         } else {
             let opb = call_seq.get_next_op().clone();
@@ -252,22 +251,6 @@ impl<T: Data, TE: Data> Op for Union<T, TE>
         res_iter
     }
 
-}
-
-impl<T: Data, TE: Data> OpE for Union<T, TE>
-{
-    type ItemE = TE;
-    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
-        Arc::new(self.clone())
-    }
-
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
-        self.ops[0].get_fe()
-    }
-
-    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
-        self.ops[0].get_fd()
-    }
 }
 
 

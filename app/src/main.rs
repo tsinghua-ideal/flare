@@ -38,7 +38,6 @@ fn main() -> Result<()> {
     //Fn! will make the closures serializable. It is necessary. use serde_closure version 0.1.3.
     /* dijkstra */
     //dijkstra_sec_0()?;
-    //dijkstra_sec_1()?;
     //dijkstra_unsec_0()?;
 
     /* map */
@@ -95,9 +94,7 @@ fn main() -> Result<()> {
 
     /* kmeans */
     //kmeans_sec_0()?;
-    //kmeans_sec_1()?;
     //kmeans_unsec_0()?;
-    //kmeans_unsec_1()?;
 
     /* linear regression */
     //lr_sec()?;
@@ -118,7 +115,6 @@ fn main() -> Result<()> {
     /* transitive_closure */
     //transitive_closure_sec_0()?;
     //transitive_closure_sec_1()?;
-    //transitive_closure_sec_2()?;
     //transitive_closure_unsec_0()?;
     //transitive_closure_unsec_1()?;
 

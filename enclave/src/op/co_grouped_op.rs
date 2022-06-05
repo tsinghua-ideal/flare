@@ -11,47 +11,29 @@ use crate::op::*;
 use crate::partitioner::HashPartitioner;
 
 #[derive(Clone)]
-pub struct CoGrouped<K, V, W, KE, VE, WE, CE, DE, FE, FD> 
+pub struct CoGrouped<K, V, W> 
 where
     K: Data + Eq + Hash + Ord,
     V: Data,
     W: Data,
-    KE: Data + Eq + Hash + Ord,
-    VE: Data,
-    CE: Data,
-    WE: Data,
-    DE: Data,
-    FE: Func(Vec<(K, (Vec<V>, Vec<W>))>) -> (KE, (CE, DE)) + Clone, 
-    FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
 {
     pub is_for_join: bool,
     pub(crate) vals: Arc<OpVals>,
     pub(crate) next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
-    pub(crate) op0: Arc<dyn OpE<Item = (K, V), ItemE = (KE, VE)>>,
-    pub(crate) op1: Arc<dyn OpE<Item = (K, W), ItemE = (KE, WE)>>,
+    pub(crate) op0: Arc<dyn Op<Item = (K, V)>>,
+    pub(crate) op1: Arc<dyn Op<Item = (K, W)>>,
     pub(crate) part: Box<dyn Partitioner>,
-    fe: FE,
-    fd: FD,
 }
 
-impl<K, V, W, KE, VE, WE, CE, DE, FE, FD> CoGrouped<K, V, W, KE, VE, WE, CE, DE, FE, FD> 
+impl<K, V, W> CoGrouped<K, V, W> 
 where
 K: Data + Eq + Hash + Ord,
 V: Data,
 W: Data,
-KE: Data + Eq + Hash + Ord,
-VE: Data,
-CE: Data,
-WE: Data,
-DE: Data,
-FE: Func(Vec<(K, (Vec<V>, Vec<W>))>) -> (KE, (CE, DE)) + Clone, 
-FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
 {
     #[track_caller]
-    pub fn new(op0: Arc<dyn OpE<Item = (K, V), ItemE = (KE, VE)>>,
-               op1: Arc<dyn OpE<Item = (K, W), ItemE = (KE, WE)>>,
-               fe: FE,
-               fd: FD,
+    pub fn new(op0: Arc<dyn Op<Item = (K, V)>>,
+               op1: Arc<dyn Op<Item = (K, W)>>,
                part: Box<dyn Partitioner>) -> Self 
     {
         let context = op1.get_context();
@@ -75,30 +57,6 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
                 )
             );
         } else {
-            //TODO need revision if fe & fd of group_by is passed 
-            let fe = op0.get_fe();
-            let fe_wrapper = Box::new(move |v: Vec<(K, Vec<V>)>| {
-                let (x, y): (Vec<K>, Vec<Vec<V>>) = v.into_iter().unzip();
-                let mut y_padding = Vec::new();
-                y_padding.resize_with(x.len(), Default::default);
-                let (ct_x, _) = (fe)(x.into_iter()
-                    .zip(y_padding.into_iter())
-                    .collect::<Vec<_>>()
-                );
-                (ct_x, ser_encrypt(y))
-            });
-
-            let fd = op0.get_fd();
-            let fd_wrapper = Box::new(move |v: (KE, Vec<u8>)| {
-                let (x, y) = v;
-                let y_padding: VE = Default::default();
-                let (pt_x, _): (Vec<K>, Vec<V>) = (fd)((x, y_padding)).into_iter().unzip();
-                let pt_y: Vec<Vec<V>> = ser_decrypt(y);
-                pt_x.into_iter()
-                    .zip(pt_y.into_iter())
-                    .collect::<Vec<_>>()
-            });
-
             let aggr = Arc::new(Aggregator::<K, V, _>::default());
             let dep = Dependency::ShuffleDependency(
                 Arc::new(ShuffleDependency::new(
@@ -108,8 +66,6 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
                     0,
                     op0_id,
                     cur_id,
-                    fe_wrapper,
-                    fd_wrapper,
                 )) as Arc<dyn ShuffleDependencyTrait>,
             );
             deps.push(dep.clone());
@@ -133,30 +89,6 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
                 )
             ); 
         } else {
-            //TODO need revision if fe & fd of group_by is passed 
-            let fe = op1.get_fe();
-            let fe_wrapper = Box::new(move |v: Vec<(K, Vec<W>)>| {
-                let (x, y): (Vec<K>, Vec<Vec<W>>) = v.into_iter().unzip();
-                let mut y_padding = Vec::new();
-                y_padding.resize_with(x.len(), Default::default);
-                let (ct_x, _) = (fe)(x.into_iter()
-                    .zip(y_padding.into_iter())
-                    .collect::<Vec<_>>()
-                );
-                (ct_x, ser_encrypt(y))
-            });
-
-            let fd = op1.get_fd();
-            let fd_wrapper = Box::new(move |v: (KE, Vec<u8>)| {
-                let (x, y) = v;
-                let y_padding: WE = Default::default();
-                let (pt_x, _): (Vec<K>, Vec<W>) = (fd)((x, y_padding)).into_iter().unzip();
-                let pt_y: Vec<Vec<W>> = ser_decrypt(y);
-                pt_x.into_iter()
-                    .zip(pt_y.into_iter())
-                    .collect::<Vec<_>>()
-            });
-
             let aggr = Arc::new(Aggregator::<K, W, _>::default());
             let dep = Dependency::ShuffleDependency(
                 Arc::new(ShuffleDependency::new(
@@ -166,8 +98,6 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
                     1,
                     op1_id,
                     cur_id,
-                    fe_wrapper,
-                    fd_wrapper,
                 )) as Arc<dyn ShuffleDependencyTrait>,
             );
             deps.push(dep.clone());
@@ -185,180 +115,55 @@ FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
             next_deps: Arc::new(RwLock::new(HashMap::new())),
             op0,
             op1,
-            fe,
-            fd,
             part,
         }
     }
 
-    pub fn compute_inner(&self, tid: u64, input: Input) -> Vec<(KE, (CE, DE))> {
-
-
-
+    pub fn compute_inner(&self, tid: u64, input: Input) -> Vec<ItemE> {
+        let data_enc = input.get_enc_data::<Vec<ItemE>>();
+        let mut agg: Vec<(Option<K>, (Vec<V>, Vec<W>))> = Vec::new();
         let mut res = create_enc();
-
-        res
-    }
-
-    pub fn compute_inner_core(&self, parallel_num: usize, data_enc: &(Vec<Vec<(KE, VE)>>, Vec<Vec<(KE, Vec<u8>)>>, Vec<Vec<(KE, WE)>>, Vec<Vec<(KE, Vec<u8>)>>), lower: &mut Vec<usize>, upper: &mut Vec<usize>, upper_bound: &Vec<usize>, mut agg: BTreeMap<K, (Vec<V>, Vec<W>)>, sorted_max_key: &mut BTreeMap<(K, usize), usize>) -> (Vec<(KE, (CE, DE))>, BTreeMap<K, (Vec<V>, Vec<W>)>) {
-        let mut num_sub_part = vec![0, 0];
-        let mut block = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-        num_sub_part[0] += data_enc.0.len();
-        block.0.resize(data_enc.0.len(), Vec::new());
-        num_sub_part[0] += data_enc.1.len();
-        block.1.resize(data_enc.1.len(), Vec::new());
-        num_sub_part[1] += data_enc.2.len();
-        block.2.resize(data_enc.2.len(), Vec::new());
-        num_sub_part[1] += data_enc.3.len();
-        block.3.resize(data_enc.3.len(), Vec::new());
-        let deps = self.get_deps();
-        let op0 = self.op0.clone();
-        let op1 = self.op1.clone();
-
-        if sorted_max_key.is_empty() {
-            for idx in 0..(num_sub_part[0] + num_sub_part[1]) {  //init
-                if lower[idx] >= upper_bound[idx] {
-                    continue;
-                }
-                get_block(&deps, &op0, &op1, idx, &num_sub_part,
-                    lower, upper, data_enc, &mut block, sorted_max_key
-                );
-                lower[idx] += 1;
-                upper[idx] += 1;
-            }
-        }
-
-        let mut cur_memory = crate::ALLOCATOR.get_memory_usage().1;
-        while cur_memory < CACHE_LIMIT/parallel_num {
-            let entry = match sorted_max_key.first_entry() {
-                Some(entry) => entry,
-                None => break,
-            };
-            let idx = *entry.get();
-            entry.remove_entry();
-            if lower[idx] >= upper_bound[idx] {
-                continue;
-            }
-            get_block(&deps, &op0, &op1, idx, &num_sub_part,
-                lower, upper, data_enc, &mut block, sorted_max_key
-            );
-            lower[idx] += 1;
-            upper[idx] += 1;
-            cur_memory = crate::ALLOCATOR.get_memory_usage().1;
-        }
-
-        let (b0, b1, b2, b3) = block;
-        for i in b0.into_iter().flatten() { 
-            let (k, v) = i;
-            agg.entry(k)
-                .or_insert_with(|| (Vec::new(), Vec::new())).0
-                .push(v);
-        }
-        for (k, c) in b1.into_iter().flatten() { 
-            let temp = agg.entry(k)
-                .or_insert_with(|| (Vec::new(), Vec::new()));
-            for v in c {
-                temp.0.push(v);
-            }
-        }
-        for i in b2.into_iter().flatten() {
-            let (k, w) = i;
-            agg.entry(k)
-                .or_insert_with(|| (Vec::new(), Vec::new())).1
-                .push(w);
-        }
-        for (k, c) in b3.into_iter().flatten() { 
-            let temp = agg.entry(k)
-                .or_insert_with(|| (Vec::new(), Vec::new()));
-            for w in c {
-                temp.1.push(w);
-            }
-        }
-
-        let remained_a = if lower.iter().zip(upper_bound.iter()).filter(|(l, ub)| l < ub).count() > 0 {
-            let min_max_k = sorted_max_key.first_entry().unwrap();
-            agg.split_off(&min_max_k.key().0)
-        } else {
-            BTreeMap::new()
-        };
-
-        //block reshape
-        let res = if self.is_for_join {
-            let mut len = 0;
-            let agg = agg.into_iter()
-                .filter(|(k, (v, w))| v.len() != 0 && w.len() != 0)
-                .collect::<Vec<_>>()
-                .split_inclusive(|(k, (v, w))| {
-                    len += v.get_aprox_size() * w.get_aprox_size();
-                    let res = len > MAX_ENC_BL * MAX_ENC_BL;
-                    len = (!res as usize) * len;
-                    res
-                }).flat_map(|x| {
-                    let mut x = x.to_vec();
-                    let mut y = x.drain_filter(|(k, (v, w))| v.len() * w.len() > MAX_ENC_BL * 128)
-                        .flat_map(|(k, (v, w))| {
-                            let vlen = v.len();
-                            let wlen = w.len();
-                            {
-                                if vlen > wlen {
-                                    let chunk_size = (MAX_ENC_BL*128-1)/wlen+1;
-                                    let chunk_num =  (vlen-1)/chunk_size+1;
-                                    let kk = vec![k; chunk_num].into_iter();
-                                    let vv = v.chunks(chunk_size).map(|x| x.to_vec()).collect::<Vec<_>>().into_iter();
-                                    let ww = vec![w; chunk_num].into_iter();
-                                    kk.zip(vv.zip(ww))
-                                } else {
-                                    let chunk_size = (MAX_ENC_BL*128-1)/vlen+1;
-                                    let chunk_num =  (wlen-1)/chunk_size+1;
-                                    let kk = vec![k; chunk_num].into_iter();
-                                    let ww = w.chunks(chunk_size).map(|x| x.to_vec()).collect::<Vec<_>>().into_iter();
-                                    let vv = vec![v; chunk_num].into_iter();
-                                    kk.zip(vv.zip(ww))
-                                }
-                            }
-                        }).map(|x| vec![x])
-                        .collect::<Vec<_>>();
-                    y.push(x);
-                    y
+        for sub_part in data_enc {
+            let sub_part: Vec<(Option<K>, (Option<V>, Option<W>))> = ser_decrypt(&sub_part.clone());
+            for (j, group) in sub_part.group_by(|a, b| a.0 == b.0).enumerate() {
+                let k = group[0].0.clone();
+                let mut vs = group.iter().filter_map(|(_, (v, _))| {
+                    v.clone()
                 }).collect::<Vec<_>>();
-            agg
-        } else {
-            let mut len = 0;
-            let agg = agg.into_iter()
-                .filter(|(k, (v, w))| v.len() != 0 && w.len() != 0)
-                .collect::<Vec<_>>()
-                .split_inclusive(|(k, (v, w))| {
-                    len += v.len() * w.len();
-                    let res = len > MAX_ENC_BL;
-                    len = (!res as usize) * len;
-                    res
-                }).map(|x| x.to_vec())
-                .collect::<Vec<_>>();
-            agg
-        };
-
-        let mut res_enc = create_enc();
-        for res_bl in res {
-            let block_enc = self.batch_encrypt(res_bl);
-            combine_enc(&mut res_enc, block_enc);
+                let mut ws = group.iter().filter_map(|(_, (_, w))| {
+                    w.clone()
+                }).collect::<Vec<_>>();
+                if j == 0 && !agg.is_empty() {
+                    let (lk, (lv, lw)) = agg.last_mut().unwrap();
+                    if *lk == k {
+                        lv.append(&mut vs);
+                        lw.append(&mut ws);
+                    } else {
+                        agg.push((k, (vs, ws)));
+                    }
+                } else {
+                    agg.push((k, (vs, ws)));
+                }
+            }
+            let last = agg.pop().unwrap();
+            let res_bl = ser_encrypt(&agg);
+            merge_enc(&mut res, &res_bl);
+            agg = vec![last];
         }
-
-        (res_enc, remained_a)
+        // the last one will be transmit to other servers
+        if !agg.is_empty() {
+            let res_bl = ser_encrypt(&agg);
+            merge_enc(&mut res, &res_bl);
+        }
+        res
     }
 }
 
-impl<K, V, W, KE, VE, WE, CE, DE, FE, FD> OpBase for CoGrouped<K, V, W, KE, VE, WE, CE, DE, FE, FD> 
+impl<K, V, W> OpBase for CoGrouped<K, V, W> 
 where 
     K: Data + Eq + Hash + Ord,
     V: Data,
     W: Data,
-    KE: Data + Eq + Hash + Ord,
-    VE: Data,
-    CE: Data,
-    WE: Data,
-    DE: Data,
-    FE: Func(Vec<(K, (Vec<V>, Vec<W>))>) -> (KE, (CE, DE)) + Clone, 
-    FD: Func((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))> + Clone,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
@@ -381,12 +186,18 @@ where
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
                 shuf_dep.free_res_enc(res_ptr, is_enc);
             },
-            20 | 21 | 22 | 23 => {
+            20 | 21 | 22 | 23 | 25 | 26 | 27 | 28 => {
                 crate::ALLOCATOR.set_switch(true);
-                let res = unsafe { Box::from_raw(res_ptr as *mut Vec<Vec<(KE, (CE, DE))>>) };
+                let res = unsafe { Box::from_raw(res_ptr as *mut Vec<Vec<ItemE>>) };
                 drop(res);
                 crate::ALLOCATOR.set_switch(false);
             },
+            24 => {
+                crate::ALLOCATOR.set_switch(true);
+                let res = unsafe { Box::from_raw(res_ptr as *mut Vec<ItemE>) };
+                drop(res);
+                crate::ALLOCATOR.set_switch(false);
+            }
             _ => panic!("invalid is_shuffle"),
         }
     }
@@ -455,18 +266,11 @@ where
 
 }
 
-impl<K, V, W, KE, VE, WE, CE, DE, FE, FD> Op for CoGrouped<K, V, W, KE, VE, WE, CE, DE, FE, FD>
+impl<K, V, W> Op for CoGrouped<K, V, W>
 where 
     K: Data + Eq + Hash + Ord,
     V: Data,
     W: Data,
-    KE: Data + Eq + Hash + Ord,
-    VE: Data,
-    CE: Data,
-    WE: Data,
-    DE: Data,
-    FE: SerFunc(Vec<(K, (Vec<V>, Vec<W>))>) -> (KE, (CE, DE)), 
-    FD: SerFunc((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))>, 
 {
     type Item = (K, (Vec<V>, Vec<W>));  
     
@@ -491,130 +295,108 @@ where
                 to_ptr(res)
             },
             20 => {      //column sort, step 1 + step 2
-                //TODO need revision if fe & fd of group_by is passed 
                 let data_enc = input.get_enc_data::<(
-                    Vec<(KE, VE)>, 
-                    Vec<Vec<(KE, Vec<u8>)>>, 
-                    Vec<(KE, WE)>, 
-                    Vec<Vec<(KE, Vec<u8>)>>
+                    Vec<ItemE>, 
+                    Vec<Vec<ItemE>>, 
+                    Vec<ItemE>, 
+                    Vec<Vec<ItemE>>
                 )>();
-                let deps = self.get_deps();
-                let op0 = self.op0.clone();
-                let op1 = self.op1.clone();
                 // sub_parts[i][j] < sub_parts[i][j+1] in sub_parts[i]
-                let mut sub_parts = Vec::new();
+                let mut sub_parts = create_enc();
                 let mut num_prev_part = 0;
 
                 let mut max_len = 0;
-                let mut max_key = Default::default();
 
-                match &deps[0] {
-                    Dependency::NarrowDependency(_nar) => {
-                        for sub_part in &data_enc.0 {
-                            let mut sub_part = op0.batch_decrypt(vec![sub_part.clone()]);
-                            max_len = std::cmp::max(max_len, sub_part.len());
-                            unimplemented!();
-                        }
-                    },
-                    Dependency::ShuffleDependency(shuf) => {
-                        //TODO need revision if fe & fd of group_by is passed 
-                        let s = shuf.downcast_ref::<ShuffleDependency<K, V, Vec<V>, KE, Vec<u8>>>().unwrap();
-                        for part in &data_enc.1 {
-                            sub_parts.push(Vec::new());
-                            for sub_part in part {
-                                let sub_part = (s.fd)(sub_part.clone());
-                                max_len = std::cmp::max(max_len, sub_part.len());
-                                max_key = std::cmp::max(max_key, sub_part.last().unwrap().0.clone());
-                                let new_sub_part = sub_part.into_iter()
-                                    .map(|(k, v)| (k, (v, Vec::<W>::new())))
-                                    .collect::<Vec<_>>();
-                                let new_sub_part_enc = (self.fe)(new_sub_part);
-                                crate::ALLOCATOR.set_switch(true);
-                                sub_parts[num_prev_part].push(new_sub_part_enc.clone());
-                                crate::ALLOCATOR.set_switch(false);
-                            }
-                            num_prev_part += 1;
-                        }
-                    },
-                };
+                // (Option<K>, V) -> (Option<K>, (Option<V>, Option<W>))
+                for sub_part in &data_enc.0 {
+                    //not sure about the type of the fed key, Option<K> or <K>
+                    let mut sub_part: Vec<(K, V)> = ser_decrypt(&sub_part.clone());
+                    max_len = std::cmp::max(max_len, sub_part.len());
+                    unimplemented!()
+                }
+                for part in &data_enc.1 {
+                    crate::ALLOCATOR.set_switch(true);
+                    sub_parts.push(Vec::new());
+                    crate::ALLOCATOR.set_switch(false);
+                    
+                    for sub_part in part {
+                        let sub_part: Vec<(Option<K>, V)> = ser_decrypt(&sub_part.clone());
+                        max_len = std::cmp::max(max_len, sub_part.len());
+                        let new_sub_part = sub_part.into_iter()
+                            .map(|(k, v)| (k, (Some(v), None::<W>)))
+                            .collect::<Vec<_>>();
+                        let new_sub_part_enc = ser_encrypt(&new_sub_part);
+                        merge_enc(&mut sub_parts[num_prev_part], &new_sub_part_enc);
+                    }
+                    num_prev_part += 1;
+                }
 
-                match &deps[1] {
-                    Dependency::NarrowDependency(_nar) => {
-                        for sub_part in &data_enc.2 {
-                            let mut sub_part = op1.batch_decrypt(vec![sub_part.clone()]);
-                            max_len = std::cmp::max(max_len, sub_part.len());
-                            unimplemented!();
-                        }
-                    },
-                    Dependency::ShuffleDependency(shuf) => {
-                        //TODO need revision if fe & fd of group_by is passed 
-                        let s = shuf.downcast_ref::<ShuffleDependency<K, W, Vec<W>, KE, Vec<u8>>>().unwrap();
-                        for part in &data_enc.3 {
-                            sub_parts.push(Vec::new());
-                            for sub_part in part {
-                                let sub_part = (s.fd)(sub_part.clone());
-                                max_len = std::cmp::max(max_len, sub_part.len());
-                                max_key = std::cmp::max(max_key, sub_part.last().unwrap().0.clone());
-                                let new_sub_part = sub_part.into_iter()
-                                    .map(|(k, w)| (k, (Vec::<V>::new(), w)))
-                                    .collect::<Vec<_>>();
-                                let new_sub_part_enc = (self.fe)(new_sub_part);
-                                crate::ALLOCATOR.set_switch(true);
-                                sub_parts[num_prev_part].push(new_sub_part_enc.clone());
-                                crate::ALLOCATOR.set_switch(false);
-                            }
-                            num_prev_part += 1;
-                        }
-                    },
-                };
+                // (Option<K>, W) -> (Option<K>, (Option<V>, Option<W>))
+                for sub_part in &data_enc.2 {
+                    let mut sub_part: Vec<(K, W)> = ser_decrypt(&sub_part.clone());
+                    max_len = std::cmp::max(max_len, sub_part.len());
+                    unimplemented!();
+                }
 
-                let sort_helper = SortHelper::new_with(sub_parts, max_len, max_key, true, self.get_fe(), self.get_fd());
+                for part in &data_enc.3 {
+                    crate::ALLOCATOR.set_switch(true);
+                    sub_parts.push(Vec::new());
+                    crate::ALLOCATOR.set_switch(false);
+
+                    for sub_part in part {
+                        let sub_part: Vec<(Option<K>, W)> = ser_decrypt(&sub_part.clone());
+                        max_len = std::cmp::max(max_len, sub_part.len());
+                        let new_sub_part = sub_part.into_iter()
+                            .map(|(k, w)| (k, (None::<V>, Some(w))))
+                            .collect::<Vec<_>>();
+                        let new_sub_part_enc = ser_encrypt(&new_sub_part);
+                        merge_enc(&mut sub_parts[num_prev_part], &new_sub_part_enc);
+                    }
+                    num_prev_part += 1;
+                }
+
+                let mut sort_helper = SortHelper::<K, (Option<V>, Option<W>)>::new_with(sub_parts, max_len, true);
                 sort_helper.sort();
                 let (sub_parts, num_real_elem) = sort_helper.take();
                 CNT_PER_PARTITION.lock().unwrap().insert(self.get_op_id(), num_real_elem);
                 let num_output_splits = self.number_of_splits();
-                let buckets_enc = column_sort_step_2(sub_parts, max_len, num_output_splits, self.get_fe(), self.get_fd());
+                let buckets_enc = column_sort_step_2::<(Option<K>, (Option<V>, Option<W>))>(sub_parts, max_len, num_output_splits);
                 to_ptr(buckets_enc)
             },
             21 | 22 | 23 => {     //column sort, remaining steps
-                let data_enc_ref = input.get_enc_data::<Vec<Vec<(KE, (CE, DE))>>>();
-                let mut max_len = 0;
-                let mut max_key = Default::default();
-                let mut data_enc = vec![Vec::new(); data_enc_ref.len()];
-                for (i, part) in data_enc_ref.iter().enumerate() {
-                    let last_j = part.len() - 1;
-                    for (j, sub_part_enc) in part.iter().enumerate() {
-                        if j == 0 {
-                            //we can derive max_len from the first sub partition in each partition
-                            let sub_part = (self.fd)(sub_part_enc.clone());
-                            max_len = std::cmp::max(max_len, sub_part.len());
-
-                        } else if j == last_j {
-                            //we can derive max_key from the last sub partition in each partition
-                            let sub_part = (self.fd)(sub_part_enc.clone());
-                            sub_part.last().map(|x| max_key = std::cmp::max(max_key, x.0.clone()));
-                        } 
-                        crate::ALLOCATOR.set_switch(true);
-                        data_enc[i].push(sub_part_enc.clone());
-                        crate::ALLOCATOR.set_switch(false);
-                    }
-                }
-                let sort_helper = SortHelper::new_with(data_enc, max_len, max_key, true, self.get_fe(), self.get_fd());
-                sort_helper.sort();
-                let (sub_parts, num_real_elem) = sort_helper.take();
-                let cnt_per_partition = *CNT_PER_PARTITION.lock().unwrap().get(&self.get_op_id()).unwrap();
-                let num_output_splits = self.number_of_splits();
-                let buckets_enc = match dep_info.dep_type() {
-                    21 => column_sort_step_4_6_8(sub_parts, cnt_per_partition, max_len, num_real_elem, num_output_splits, self.get_fe(), self.get_fd()),
-                    22 => column_sort_step_4_6_8(sub_parts, cnt_per_partition, max_len, num_real_elem, 2, self.get_fe(), self.get_fd()),
-                    23 => {
-                        CNT_PER_PARTITION.lock().unwrap().remove(&self.get_op_id()).unwrap();
-                        column_sort_step_4_6_8(sub_parts, cnt_per_partition, max_len, num_real_elem, 2, self.get_fe(), self.get_fd())
-                    },
-                    _ => unreachable!(),
-                };
-                to_ptr(buckets_enc)
+                combined_column_sort_step_4_6_8::<K, (Option<V>, Option<W>)>(input, dep_info, self.get_op_id(), self.number_of_splits())
             },
+            24 => { //aggregate again with the agg info from other servers
+                let ser = call_seq.get_ser_captured_var().unwrap();
+                let mut sup_data: Vec<(Option<K>, (Vec<V>, Vec<W>))> = batch_decrypt(ser, false);
+                assert_eq!(sup_data.len(), 1);
+                let mut sup_data = sup_data.remove(0);
+                let agg_data_ref = input.get_enc_data::<Vec<ItemE>>();
+                let mut res = create_enc();
+                let mut agg_data: Vec<(Option<K>, (Vec<V>, Vec<W>))> = ser_decrypt(&agg_data_ref[0]);
+                
+                if !agg_data.is_empty() && agg_data[0].0 == sup_data.0 {
+                    agg_data[0].1.0.append(&mut sup_data.1.0);
+                    agg_data[0].1.1.append(&mut sup_data.1.1);
+                } else {
+                    agg_data.insert(0, sup_data);
+                }
+
+                let last = agg_data.pop().unwrap();
+                if !agg_data.is_empty() {
+                    let res_bl = ser_encrypt(&agg_data);
+                    merge_enc(&mut res, &res_bl);
+                }
+                let res_bl = ser_encrypt(&vec![last]);
+                merge_enc(&mut res, &res_bl);
+                to_ptr(res)
+            }
+            25 => {
+                combined_column_sort_step_2::<K, (Vec<V>, Vec<W>)>(input, self.get_op_id(), self.number_of_splits())
+            }
+            26 | 27 | 28 => {
+                combined_column_sort_step_4_6_8::<K, (Vec<V>, Vec<W>)>(input, dep_info, self.get_op_id(), self.number_of_splits())
+            }
             _ => panic!("Invalid is_shuffle")
         }
     }
@@ -624,7 +406,6 @@ where
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
         let is_caching_final_rdd = call_seq.is_caching_final_rdd();
-        let fd = self.get_fd();
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
@@ -632,10 +413,13 @@ where
             return self.get_and_remove_cached_data(key);
         }
         
-        let len = input.get_enc_data::<Vec<(KE, (CE, DE))>>().len();
+        let len = input.get_enc_data::<Vec<ItemE>>().len();
         let res_iter = Box::new((0..len).map(move|i| {
-            let data = input.get_enc_data::<Vec<(KE, (CE, DE))>>();
-            Box::new((fd)(data[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
+            let data = input.get_enc_data::<Vec<ItemE>>();
+            Box::new(ser_decrypt::<Vec<(Option<K>, (Vec<V>, Vec<W>))>>(&data[i].clone()).into_iter()
+                .filter(|(k, c)| k.is_some())
+                .map(|(k, c)| (k.unwrap(), c))
+            ) as Box<dyn Iterator<Item = _>>
         }));
         
         let key = call_seq.get_caching_doublet();
@@ -648,32 +432,4 @@ where
         }
         res_iter
     }
-}
-
-impl<K, V, W, KE, VE, WE, CE, DE, FE, FD> OpE for CoGrouped<K, V, W, KE, VE, WE, CE, DE, FE, FD> 
-where 
-    K: Data + Eq + Hash + Ord,
-    V: Data,
-    W: Data,
-    KE: Data + Eq + Hash + Ord,
-    VE: Data,
-    CE: Data,
-    WE: Data,
-    DE: Data,
-    FE: SerFunc(Vec<(K, (Vec<V>, Vec<W>))>) -> (KE, (CE, DE)), 
-    FD: SerFunc((KE, (CE, DE))) -> Vec<(K, (Vec<V>, Vec<W>))>,
-{
-    type ItemE = (KE, (CE, DE));
-    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
-        Arc::new(self.clone())
-    }
-
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
-        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Self::ItemE>
-    }
-
-    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
-        Box::new(self.fd.clone()) as Box<dyn Func(Self::ItemE)->Vec<Self::Item>>
-    }
-
 }

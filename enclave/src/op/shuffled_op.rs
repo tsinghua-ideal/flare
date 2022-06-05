@@ -1,42 +1,29 @@
 use std::collections::BTreeMap;
 use std::hash::Hash;
 
+use crate::CNT_PER_PARTITION;
 use crate::aggregator::Aggregator;
 use crate::dependency::ShuffleDependency;
 use crate::op::*;
 
-pub struct Shuffled<K, V, C, KE, KE2, VE, CE, FE, FD> 
+pub struct Shuffled<K, V, C>
 where
     K: Data + Eq + Hash + Ord,
     V: Data, 
     C: Data,
-    KE: Data,
-    KE2: Data,
-    VE: Data,
-    CE: Data,
-    FE: Func(Vec<(K, C)>) -> (KE2, CE) + Clone,
-    FD: Func((KE2, CE)) -> Vec<(K, C)> + Clone,
 {
     vals: Arc<OpVals>,
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
-    parent: Arc<dyn OpE<Item = (K, V), ItemE = (KE, VE)>>,
+    parent: Arc<dyn Op<Item = (K, V)>>,
     aggregator: Arc<Aggregator<K, V, C>>,
     part: Box<dyn Partitioner>,
-    fe: FE,
-    fd: FD,
 }
 
-impl<K, V, C, KE, KE2, VE, CE, FE, FD> Clone for Shuffled<K, V, C, KE, KE2, VE, CE, FE, FD> 
+impl<K, V, C> Clone for Shuffled<K, V, C> 
 where 
     K: Data + Eq + Hash + Ord,
     V: Data, 
     C: Data,
-    KE: Data,
-    KE2: Data,
-    VE: Data,
-    CE: Data,
-    FE: Func(Vec<(K, C)>) -> (KE2, CE) + Clone,
-    FD: Func((KE2, CE)) -> Vec<(K, C)> + Clone,
 {
     fn clone(&self) -> Self {
         Shuffled {
@@ -45,31 +32,21 @@ where
             parent: self.parent.clone(),
             aggregator: self.aggregator.clone(),
             part: self.part.clone(),
-            fe: self.fe.clone(),
-            fd: self.fd.clone(),
         }
     }
 }
 
-impl<K, V, C, KE, KE2, VE, CE, FE, FD> Shuffled<K, V, C, KE, KE2, VE, CE, FE, FD> 
+impl<K, V, C> Shuffled<K, V, C> 
 where 
     K: Data + Eq + Hash + Ord,
     V: Data, 
     C: Data,
-    KE: Data,
-    KE2: Data,
-    VE: Data,
-    CE: Data,
-    FE: Func(Vec<(K, C)>) -> (KE2, CE) + Clone,
-    FD: Func((KE2, CE)) -> Vec<(K, C)> + Clone,
 {
     #[track_caller]
     pub(crate) fn new(
-        parent: Arc<dyn OpE<Item = (K, V), ItemE = (KE, VE)>>,
+        parent: Arc<dyn Op<Item = (K, V)>>,
         aggregator: Arc<Aggregator<K, V, C>>,
         part: Box<dyn Partitioner>,
-        fe: FE,
-        fd: FD,
     ) -> Self {
         let ctx = parent.get_context();
         let mut vals = OpVals::new(ctx, part.get_num_of_partitions());
@@ -83,10 +60,6 @@ where
                 0,
                 prev_id,
                 cur_id,
-                Box::new(fe.clone()),
-                Box::new(fd.clone()),
-                Box::new(parent.get_fe()),
-                Box::new(parent.get_fd()),
             ),
         ));
 
@@ -99,130 +72,85 @@ where
             parent,
             aggregator,
             part,
-            fe,
-            fd,
         }
     }
 
-    pub fn compute_inner(&self, tid: u64, input: Input) -> Vec<(KE2, CE)> {
-        let buckets_enc = input.get_enc_data::<Vec<Vec<(KE2, CE)>>>();
-        let mut combiners: BTreeMap<K, Option<C>> = BTreeMap::new();
-        let mut sorted_max_key: BTreeMap<(K, usize), usize> = BTreeMap::new();
-        
-        let num_sub_part = buckets_enc.len();
-        let mut lower = vec![0; num_sub_part];
-        let mut upper = vec![1; num_sub_part];
-        let upper_bound = buckets_enc
-            .iter()
-            .map(|sub_part| sub_part.len())
-            .collect::<Vec<_>>();
-        
+    pub fn compute_inner(&self, tid: u64, input: Input) -> Vec<ItemE> {
+        let data_enc = input.get_enc_data::<Vec<ItemE>>();
         let mut res = create_enc();
-        while lower
-            .iter()
-            .zip(upper_bound.iter())
-            .filter(|(l, ub)| l < ub)
-            .count()
-            > 0
-        {
-            upper = upper
-                .iter()
-                .zip(upper_bound.iter())
-                .map(|(l, ub)| std::cmp::min(*l, *ub))
-                .collect::<Vec<_>>();
-            let (res_bl, remained_c) = self.compute_inner_core(input.get_parallel(), buckets_enc, &mut lower, &mut upper, &upper_bound, combiners, &mut sorted_max_key);
-            combine_enc(&mut res, res_bl);
-            combiners = remained_c;
-            lower = lower
-                .iter()
-                .zip(upper_bound.iter())
-                .map(|(l, ub)| std::cmp::min(*l, *ub))
-                .collect::<Vec<_>>();
+        let aggregator = self.aggregator.clone(); 
+        if aggregator.is_default {
+            //group by is not obliviously implemented
+            let mut sub_part_kc: Vec<(Option<K>, C)> = Vec::new();
+            for sub_part in data_enc {
+                let sub_part: Vec<(Option<K>, V)> = ser_decrypt(&sub_part.clone());
+                for (j, group) in sub_part.group_by(|x, y| x.0 == y.0).enumerate() {
+                    let k = group[0].0.clone(); //the type is consistent with aggregate
+                    let mut iter = group.iter();
+                    let init_v = iter.next().unwrap().1.clone();
+                    let c = iter.fold((aggregator.create_combiner)(init_v), |acc, v| (aggregator.merge_value)((acc, v.1.clone())));
+                    if j == 0 && !sub_part_kc.is_empty() {
+                        let (lk, lc) = sub_part_kc.last_mut().unwrap();
+                        if *lk == k {
+                            *lc = (aggregator.merge_combiners)((std::mem::take(lc), c));
+                        } else {
+                            sub_part_kc.push((k, c));
+                        }
+                    } else {
+                        sub_part_kc.push((k, c));
+                    }
+                };
+                let last = sub_part_kc.pop().unwrap();
+                let res_bl = ser_encrypt(&sub_part_kc);
+                merge_enc(&mut res, &res_bl);
+                sub_part_kc = vec![last];
+            }
+            if !sub_part_kc.is_empty() {
+                let res_bl = ser_encrypt(&sub_part_kc);
+                merge_enc(&mut res, &res_bl);
+            }
+        } else {
+            //assume others are min, max, avg, add, etc.
+            //they can be implemented obliviously
+            let mut last_k = None;
+            let mut last_c = Default::default();
+            let mut last_kc: Option<(Option<K>, C)> = None;
+            for sub_part in data_enc {
+                let sub_part: Vec<(Option<K>, V)> = ser_decrypt(&sub_part.clone());
+                let mut sub_part_kc: Vec<(Option<K>, C)> = Vec::with_capacity(sub_part.len());
+                if let Some(last_kc) = last_kc {
+                    sub_part_kc.push(last_kc);
+                }
+                for (k, v) in sub_part {
+                    if last_k == k {
+                        last_c = (aggregator.merge_value)((last_c, v));
+                        if let Some(last_kc) = sub_part_kc.last_mut() {
+                            last_kc.0 = None;
+                        }
+                    } else {
+                        last_k = k.clone();
+                        last_c = (aggregator.create_combiner)(v);
+                    }
+                    sub_part_kc.push((k, last_c.clone()));
+                }
+                last_kc = sub_part_kc.pop();
+                let res_bl = ser_encrypt(&sub_part_kc);
+                merge_enc(&mut res, &res_bl);
+            }
+            if last_kc.is_some() {
+                let res_bl = ser_encrypt(&vec![last_kc.unwrap()]);
+                merge_enc(&mut res, &res_bl);
+            }
         }
         res
     }
-    pub fn compute_inner_core(&self, parallel_num: usize, buckets_enc: &Vec<Vec<(KE2, CE)>>, lower: &mut Vec<usize>, upper: &mut Vec<usize>, upper_bound: &Vec<usize>, mut combiners: BTreeMap<K, Option<C>>, sorted_max_key: &mut BTreeMap<(K, usize), usize>) -> (Vec<(KE2, CE)>, BTreeMap<K, Option<C>>) {
-        fn combine<K, V, C>(combiners: &mut BTreeMap<K, Option<C>>, aggregator: &Arc<Aggregator<K, V, C>>, block: Vec<(K, C)>)
-        where
-            K: Data + Eq + Hash + Ord,
-            V: Data, 
-            C: Data,
-        {
-            for (k, c) in block.into_iter() {
-                if let Some(old_c) = combiners.get_mut(&k) {
-                    let old = old_c.take().unwrap();
-                    let input = ((old, c),);
-                    let output = aggregator.merge_combiners.call(input);
-                    *old_c = Some(output);
-                } else {
-                    combiners.insert(k, Some(c));
-                }
-            }
-        }
-        let aggregator = self.aggregator.clone(); 
-        if sorted_max_key.is_empty() {
-            *sorted_max_key = buckets_enc.iter()
-                .enumerate()
-                .filter_map(|(idx, sub_part)| {
-                    let l = &mut lower[idx];
-                    let u = &mut upper[idx];
-                    let ub = upper_bound[idx];
-                    match *l < ub {
-                        true => {
-                            let block = self.batch_decrypt(sub_part[*l..*u].to_vec());
-                            *l += 1;
-                            *u += 1;
-                            let r = ((block.last().unwrap().0.clone(), idx), idx);
-                            combine(&mut combiners, &aggregator, block);
-                            Some(r)
-                        },
-                        false => None,
-                    }
-                }).collect::<BTreeMap<_, _>>();
-        }
-
-        let mut cur_memory = crate::ALLOCATOR.get_memory_usage().1;
-        while cur_memory < CACHE_LIMIT/parallel_num {
-            let entry = match sorted_max_key.first_entry() {
-                Some(entry) => entry,
-                None => break,
-            };
-            let idx = *entry.get();
-            entry.remove_entry();
-            if lower[idx] >= upper_bound[idx] {
-                continue;
-            }
-            let block = self.batch_decrypt(buckets_enc[idx][lower[idx]..upper[idx]].to_vec());
-            sorted_max_key.insert((block.last().unwrap().0.clone(), idx), idx);
-            combine(&mut combiners, &aggregator, block);
-            lower[idx] += 1;
-            upper[idx] += 1;
-            cur_memory = crate::ALLOCATOR.get_memory_usage().1;
-        }
-
-        let remained_c = if lower.iter().zip(upper_bound.iter()).filter(|(l, ub)| l < ub).count() > 0 {
-            let min_max_k = sorted_max_key.first_entry().unwrap();
-            combiners.split_off(&min_max_k.key().0)
-        } else {
-            BTreeMap::new()
-        };
-
-        let result = combiners.into_iter().map(|(k, v)| (k, v.unwrap())).collect::<Vec<_>>();
-        (self.batch_encrypt(result), remained_c)
-    }
 }
 
-impl<K, V, C, KE, KE2, VE, CE, FE, FD> OpBase for Shuffled<K, V, C, KE, KE2, VE, CE, FE, FD>
+impl<K, V, C> OpBase for Shuffled<K, V, C> 
 where 
     K: Data + Eq + Hash + Ord,
     V: Data, 
     C: Data,
-    KE: Data,
-    KE2: Data,
-    VE: Data,
-    CE: Data,
-    FE: SerFunc(Vec<(K, C)>) -> (KE2, CE),
-    FD: SerFunc((KE2, CE)) -> Vec<(K, C)>,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
@@ -245,6 +173,21 @@ where
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
                 shuf_dep.free_res_enc(res_ptr, is_enc);
             },
+            20 => {
+                unreachable!();
+            }
+            21 | 22 | 23 | 25 | 26 | 27 | 28 => {
+                crate::ALLOCATOR.set_switch(true);
+                let res = unsafe { Box::from_raw(res_ptr as *mut Vec<Vec<ItemE>>) };
+                drop(res);
+                crate::ALLOCATOR.set_switch(false);
+            },
+            24 => {
+                crate::ALLOCATOR.set_switch(true);
+                let res = unsafe { Box::from_raw(res_ptr as *mut Vec<ItemE>) };
+                drop(res);
+                crate::ALLOCATOR.set_switch(false);
+            }
             _ => panic!("invalid is_shuffle"),
         }
     }
@@ -311,17 +254,11 @@ where
     }
 }
 
-impl<K, V, C, KE, KE2, VE, CE, FE, FD> Op for Shuffled<K, V, C, KE, KE2, VE, CE, FE, FD>
+impl<K, V, C> Op for Shuffled<K, V, C>
 where
     K: Data + Eq + Hash + Ord,
     V: Data, 
-    C: Data,
-    KE: Data,
-    KE2: Data,
-    VE: Data,
-    CE: Data,
-    FE: SerFunc(Vec<(K, C)>) -> (KE2, CE),
-    FD: SerFunc((KE2, CE)) -> Vec<(K, C)>,
+    C: Data, 
 {
     type Item = (K, C);
 
@@ -345,6 +282,57 @@ where
                 let result = self.compute_inner(call_seq.tid, input);
                 to_ptr(result)
             }
+            20 => {
+                let mut num_real_elem = 0;
+                let data_enc = input.get_enc_data::<Vec<Vec<ItemE>>>();
+                for part in data_enc {
+                    for sub_part in part {
+                        let sub_part: Vec<(Option<K>, V)> = ser_decrypt(&sub_part.clone());
+                        num_real_elem += sub_part.len();
+                    }
+                }
+                CNT_PER_PARTITION.lock().unwrap().insert(self.get_op_id(), num_real_elem);
+                0 as *mut u8
+            }
+            21 | 22 | 23 => {
+                combined_column_sort_step_4_6_8::<K, V>(input, dep_info, self.get_op_id(), self.number_of_splits())
+            },
+            24 => { //aggregate again with the agg info from other servers
+                let ser = call_seq.get_ser_captured_var().unwrap();
+                let mut sup_data: Vec<(Option<K>, C)> = batch_decrypt(ser, false);
+                assert_eq!(sup_data.len(), 1);
+                let mut last_kc = sup_data.remove(0);
+                let agg_data_ref = input.get_enc_data::<Vec<ItemE>>();
+                let mut res = create_enc();
+                let aggregator = self.aggregator.clone(); 
+
+                for sub_part_enc in agg_data_ref {
+                    let mut sub_part: Vec<(Option<K>, C)> = vec![last_kc];
+                    sub_part.append(&mut ser_decrypt(&sub_part_enc.clone()));
+                    for j in 1..sub_part.len() {
+                        if sub_part[j].0.is_none() {
+                            sub_part.swap(j-1, j);
+                        } else if sub_part[j].0 == sub_part[j-1].0 {
+                            sub_part[j].1 = (aggregator.merge_combiners)((std::mem::take(&mut sub_part[j-1].1), std::mem::take(&mut sub_part[j].1)));
+                            sub_part[j-1].0 = None;
+                        }
+                    }
+                    last_kc = sub_part.pop().unwrap();
+                    let res_bl = ser_encrypt(&sub_part);
+                    merge_enc(&mut res, &res_bl);
+                }
+                // the last one will be transmit to other servers
+                let res_bl = ser_encrypt(&vec![last_kc]);
+                merge_enc(&mut res, &res_bl);
+                
+                to_ptr(res)
+            }
+            25 => {
+                combined_column_sort_step_2::<K, C>(input, self.get_op_id(), self.number_of_splits())
+            }
+            26 | 27 | 28 => {
+                combined_column_sort_step_4_6_8::<K, C>(input, dep_info, self.get_op_id(), self.number_of_splits())
+            }
             _ => panic!("Invalid is_shuffle"),
         }
     }
@@ -354,7 +342,6 @@ where
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
         let is_caching_final_rdd = call_seq.is_caching_final_rdd();
-        let fd = self.get_fd();
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
@@ -362,10 +349,13 @@ where
             return self.get_and_remove_cached_data(key);
         }
 
-        let len = input.get_enc_data::<Vec<(KE2, CE)>>().len();
+        let len = input.get_enc_data::<Vec<ItemE>>().len();
         let res_iter = Box::new((0..len).map(move|i| {
-            let data = input.get_enc_data::<Vec<(KE2, CE)>>();
-            Box::new((fd)(data[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
+            let data = input.get_enc_data::<Vec<ItemE>>();
+            Box::new(ser_decrypt::<Vec<(Option<K>, C)>>(&data[i].clone()).into_iter()
+                .filter(|(k, c)| k.is_some())
+                .map(|(k, c)| (k.unwrap(), c))
+            ) as Box<dyn Iterator<Item = _>>
         }));
 
         let key = call_seq.get_caching_doublet();
@@ -377,31 +367,5 @@ where
             )
         }
         res_iter
-    }
-}
-
-impl<K, V, C, KE, KE2, VE, CE, FE, FD> OpE for Shuffled<K, V, C, KE, KE2, VE, CE, FE, FD>
-where
-    K: Data + Eq + Hash + Ord,
-    V: Data, 
-    C: Data,
-    KE: Data,
-    KE2: Data,
-    VE: Data,
-    CE: Data,
-    FE: SerFunc(Vec<(K, C)>) -> (KE2, CE),
-    FD: SerFunc((KE2, CE)) -> Vec<(K, C)>,
-{
-    type ItemE = (KE2, CE);
-    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
-        Arc::new(self.clone())
-    }
-
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
-        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Self::ItemE>
-    }
-
-    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
-        Box::new(self.fd.clone()) as Box<dyn Func(Self::ItemE)->Vec<Self::Item>>
     }
 }

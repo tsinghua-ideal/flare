@@ -7,37 +7,25 @@ use crate::dependency::{
 use crate::op::*;
 
 #[derive(Clone)]
-pub struct Zipped<T, U, TE, UE, FE, FD> 
+pub struct Zipped<T, U> 
 where
     T: Data, 
     U: Data, 
-    TE: Data, 
-    UE: Data,
-    FE: Func(Vec<(T, U)>) -> (TE, UE) + Clone,
-    FD: Func((TE, UE)) -> Vec<(T, U)> + Clone,
 {
     pub(crate) vals: Arc<OpVals>,
     pub(crate) next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
-    pub(crate) first: Arc<dyn OpE<Item = T, ItemE = TE>>,
-    pub(crate) second: Arc<dyn OpE<Item = U, ItemE = UE>>,
-    fe: FE,
-    fd: FD,
+    pub(crate) first: Arc<dyn Op<Item = T>>,
+    pub(crate) second: Arc<dyn Op<Item = U>>,
 }
 
-impl<T, U, TE, UE, FE, FD> Zipped<T, U, TE, UE, FE, FD> 
+impl<T, U> Zipped<T, U> 
 where
     T: Data, 
     U: Data, 
-    TE: Data, 
-    UE: Data,
-    FE: Func(Vec<(T, U)>) -> (TE, UE) + Clone,
-    FD: Func((TE, UE)) -> Vec<(T, U)> + Clone,
 {
     #[track_caller]
-    pub fn new(first: Arc<dyn OpE<Item = T, ItemE = TE>>, 
-        second: Arc<dyn OpE<Item = U, ItemE = UE>>, 
-        fe: FE, 
-        fd: FD) -> Self 
+    pub fn new(first: Arc<dyn Op<Item = T>>, 
+        second: Arc<dyn Op<Item = U>>) -> Self 
     {
         let mut vals = OpVals::new(first.get_context(), std::cmp::min(first.number_of_splits(), second.number_of_splits()));
         let cur_id = vals.id;
@@ -71,20 +59,14 @@ where
             next_deps: Arc::new(RwLock::new(HashMap::new())),
             first,
             second,
-            fe,
-            fd,
         }
     }
 }
 
-impl<T, U, TE, UE, FE, FD> OpBase for Zipped<T, U, TE, UE, FE, FD> 
+impl<T, U> OpBase for Zipped<T, U> 
 where 
     T: Data, 
     U: Data, 
-    TE: Data, 
-    UE: Data,
-    FE: SerFunc(Vec<(T, U)>) -> (TE, UE),
-    FD: SerFunc((TE, UE)) -> Vec<(T, U)>,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
@@ -170,14 +152,10 @@ where
 
 }
 
-impl<T, U, TE, UE, FE, FD> Op for Zipped<T, U, TE, UE, FE, FD> 
+impl<T, U> Op for Zipped<T, U> 
 where 
     T: Data, 
     U: Data, 
-    TE: Data, 
-    UE: Data,
-    FE: SerFunc(Vec<(T, U)>) -> (TE, UE),
-    FD: SerFunc((TE, UE)) -> Vec<(T, U)>,
 {
     type Item = (T, U);  
     
@@ -199,11 +177,9 @@ where
             },
             2 => {       //zip
                 println!("secure_zip ");
-                let (first, second) = input.get_enc_data::<(Vec<TE>, Vec<UE>)>();
+                let (first, second) = input.get_enc_data::<(Vec<ItemE>, Vec<ItemE>)>();
                 let mut cur_f = 0; 
                 let mut cur_s = 0;
-                let fd_f = self.first.get_fd();
-                let fd_s = self.second.get_fd();
 
                 let mut acc = create_enc();
                 let mut r_f = Vec::new();
@@ -213,15 +189,15 @@ where
                     let mut s = Vec::new();
                     std::mem::swap(&mut f, &mut r_f);
                     std::mem::swap(&mut s, &mut r_s);
-                    f.append(&mut fd_f(first[cur_f].clone()));
-                    s.append(&mut fd_s(second[cur_s].clone()));
+                    f.append(&mut ser_decrypt::<Vec<T>>(&first[cur_f].clone()));
+                    s.append(&mut ser_decrypt::<Vec<U>>(&second[cur_s].clone()));
                     if f.len() > s.len() {
                         r_f = f.split_off(s.len());
                     } else {
                         r_s = s.split_off(f.len());
                     }
                     let block = f.into_iter().zip(s.into_iter()).collect::<Vec<_>>();
-                    merge_enc(&mut acc, &(self.fe)(block));
+                    merge_enc(&mut acc, &ser_encrypt(&block));
                     cur_f += 1;
                     cur_s += 1;
                 }
@@ -236,7 +212,6 @@ where
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
         let is_caching_final_rdd = call_seq.is_caching_final_rdd();
-        let fd = self.get_fd();
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
@@ -244,10 +219,10 @@ where
             return self.get_and_remove_cached_data(key);
         }
         
-        let len = input.get_enc_data::<Vec<(TE, UE)>>().len();
+        let len = input.get_enc_data::<Vec<ItemE>>().len();
         let res_iter = Box::new((0..len).map(move|i| {
-            let data = input.get_enc_data::<Vec<(TE, UE)>>();
-            Box::new((fd)(data[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
+            let data = input.get_enc_data::<Vec<ItemE>>();
+            Box::new(ser_decrypt::<Vec<Self::Item>>(&data[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
         }));
         
         let key = call_seq.get_caching_doublet();
@@ -260,28 +235,4 @@ where
         }
         res_iter
     }
-}
-
-impl<T, U, TE, UE, FE, FD> OpE for Zipped<T, U, TE, UE, FE, FD> 
-where 
-    T: Data, 
-    U: Data, 
-    TE: Data, 
-    UE: Data,
-    FE: SerFunc(Vec<(T, U)>) -> (TE, UE),
-    FD: SerFunc((TE, UE)) -> Vec<(T, U)>,
-{
-    type ItemE = (TE, UE);
-    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
-        Arc::new(self.clone())
-    }
-
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
-        Box::new(self.fe.clone()) as Box<dyn Func(Vec<Self::Item>)->Self::ItemE>
-    }
-
-    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
-        Box::new(self.fd.clone()) as Box<dyn Func(Self::ItemE)->Vec<Self::Item>>
-    }
-
 }

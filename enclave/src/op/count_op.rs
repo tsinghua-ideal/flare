@@ -1,18 +1,16 @@
 use crate::op::*;
 
-pub struct Count<T, TE>
+pub struct Count<T>
 where
     T: Data, 
-    TE: Data, 
 {
     vals: Arc<OpVals>,
-    prev: Arc<dyn OpE<Item = T, ItemE = TE>>,
+    prev: Arc<dyn Op<Item = T>>,
 }
 
-impl<T, TE> Clone for Count<T, TE>
+impl<T> Clone for Count<T>
 where
     T: Data, 
-    TE: Data,
 {
     fn clone(&self) -> Self {
         Count {
@@ -22,13 +20,12 @@ where
     }
 }
 
-impl<T, TE> Count<T, TE>
+impl<T> Count<T>
 where
     T: Data, 
-    TE: Data,
 {
     #[track_caller]
-    pub(crate) fn new(prev: Arc<dyn OpE<Item = T, ItemE = TE>>) -> Self {
+    pub(crate) fn new(prev: Arc<dyn Op<Item = T>>) -> Self {
         let vals = Arc::new(OpVals::new(prev.get_context(), usize::MAX));
         /*
         prev.get_next_deps().lock().unwrap().push(
@@ -44,10 +41,9 @@ where
     }
 }
 
-impl<T, TE> OpBase for Count<T, TE>
+impl<T> OpBase for Count<T>
 where
     T: Data, 
-    TE: Data,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
@@ -65,7 +61,12 @@ where
 
     fn call_free_res_enc(&self, res_ptr: *mut u8, is_enc: bool, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            4 => self.free_res_enc(res_ptr, is_enc),
+            4 => {
+                crate::ALLOCATOR.set_switch(true);
+                let res = unsafe { Box::from_raw(res_ptr as *mut Vec<u64>) };
+                drop(res);
+                crate::ALLOCATOR.set_switch(false);
+            },
             _ => unreachable!(),
         };
     }
@@ -82,16 +83,11 @@ where
         
 		self.compute_start(call_seq, input, dep_info)
     }
-
-    fn pre_merge(&self, dep_info: DepInfo, tid: u64, input: Input) -> usize {
-        unreachable!()
-    }
 }
 
-impl<T, TE> Op for Count<T, TE>
+impl<T> Op for Count<T>
 where
     T: Data, 
-    TE: Data,
 {
     type Item = u64;
     
@@ -110,11 +106,11 @@ where
             //because it does not compute on ciphertext
             unreachable!()
         } else if dep_info.dep_type() == 4 {
-            let data_enc = input.get_enc_data::<Vec<TE>>();
+            let data_enc = input.get_enc_data::<Vec<ItemE>>();
             let len = data_enc.len();
             let mut count = 0;
             for i in 0..len {
-                let block = self.prev.get_fd()(data_enc[i].clone());
+                let block = ser_decrypt::<Vec<T>>(&data_enc[i].clone());
                 count += block.len(); 
             }
             let res = vec![count as u64];
@@ -134,23 +130,4 @@ where
         unreachable!()
     }
 
-}
-
-impl<T, TE> OpE for Count<T, TE>
-where
-    T: Data, 
-    TE: Data,
-{
-    type ItemE = u64;
-    fn get_ope(&self) -> Arc<dyn OpE<Item = Self::Item, ItemE = Self::ItemE>> {
-        Arc::new(self.clone())
-    }
-
-    fn get_fe(&self) -> Box<dyn Func(Vec<Self::Item>)->Self::ItemE> {
-        unreachable!()
-    }
-
-    fn get_fd(&self) -> Box<dyn Func(Self::ItemE)->Vec<Self::Item>> {
-        unreachable!()
-    }
 }
