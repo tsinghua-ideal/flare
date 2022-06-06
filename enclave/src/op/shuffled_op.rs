@@ -101,8 +101,10 @@ where
                     }
                 };
                 let last = sub_part_kc.pop().unwrap();
-                let res_bl = ser_encrypt(&sub_part_kc);
-                merge_enc(&mut res, &res_bl);
+                if !sub_part_kc.is_empty() {
+                    let res_bl = ser_encrypt(&sub_part_kc);
+                    merge_enc(&mut res, &res_bl);
+                }
                 sub_part_kc = vec![last];
             }
             if !sub_part_kc.is_empty() {
@@ -134,8 +136,10 @@ where
                     sub_part_kc.push((k, last_c.clone()));
                 }
                 last_kc = sub_part_kc.pop();
-                let res_bl = ser_encrypt(&sub_part_kc);
-                merge_enc(&mut res, &res_bl);
+                if !sub_part_kc.is_empty() {
+                    let res_bl = ser_encrypt(&sub_part_kc);
+                    merge_enc(&mut res, &res_bl);
+                }
             }
             if last_kc.is_some() {
                 let res_bl = ser_encrypt(&vec![last_kc.unwrap()]);
@@ -291,11 +295,11 @@ where
                         num_real_elem += sub_part.len();
                     }
                 }
-                CNT_PER_PARTITION.lock().unwrap().insert(self.get_op_id(), num_real_elem);
+                assert!(CNT_PER_PARTITION.lock().unwrap().insert((self.get_op_id(), call_seq.get_part_id()), num_real_elem).is_none());
                 0 as *mut u8
             }
             21 | 22 | 23 => {
-                combined_column_sort_step_4_6_8::<K, V>(input, dep_info, self.get_op_id(), self.number_of_splits())
+                combined_column_sort_step_4_6_8::<K, V>(call_seq.tid, input, dep_info, self.get_op_id(), call_seq.get_part_id(), self.number_of_splits())
             },
             24 => { //aggregate again with the agg info from other servers
                 let ser = call_seq.get_ser_captured_var().unwrap();
@@ -318,20 +322,23 @@ where
                         }
                     }
                     last_kc = sub_part.pop().unwrap();
-                    let res_bl = ser_encrypt(&sub_part);
-                    merge_enc(&mut res, &res_bl);
+                    if !sub_part.is_empty() {
+                        let res_bl = ser_encrypt(&sub_part);
+                        merge_enc(&mut res, &res_bl);
+                    }
                 }
                 // the last one will be transmit to other servers
-                let res_bl = ser_encrypt(&vec![last_kc]);
+                let sub_part = vec![last_kc];
+                let res_bl = ser_encrypt(&sub_part);
                 merge_enc(&mut res, &res_bl);
                 
                 to_ptr(res)
             }
             25 => {
-                combined_column_sort_step_2::<K, C>(input, self.get_op_id(), self.number_of_splits())
+                combined_column_sort_step_2::<K, C>(call_seq.tid, input, self.get_op_id(), call_seq.get_part_id(), self.number_of_splits())
             }
             26 | 27 | 28 => {
-                combined_column_sort_step_4_6_8::<K, C>(input, dep_info, self.get_op_id(), self.number_of_splits())
+                combined_column_sort_step_4_6_8::<K, C>(call_seq.tid, input, dep_info, self.get_op_id(), call_seq.get_part_id(), self.number_of_splits())
             }
             _ => panic!("Invalid is_shuffle"),
         }

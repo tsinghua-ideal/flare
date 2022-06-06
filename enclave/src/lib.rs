@@ -18,21 +18,22 @@
 #![crate_type = "staticlib"]
 
 #![feature(box_syntax)]
+#![feature(cell_update)]
+#![feature(cmp_min_max_by)]
 #![feature(coerce_unsized)]
 #![feature(drain_filter)]
 #![feature(fn_traits)]
 #![feature(is_sorted)]
 #![feature(map_first_last)]
 #![feature(once_cell)]
+#![feature(ordering_helpers)]
 #![feature(raw)]
+#![feature(slice_group_by)]
 #![feature(specialization)]
 #![feature(type_ascription)]
 #![feature(unboxed_closures)]
 #![feature(unsize)]
 #![feature(vec_into_raw_parts)]
-#![feature(cell_update)]
-#![feature(slice_group_by)]
-#![feature(ordering_helpers)]
 
 #![feature(
     arbitrary_self_types,
@@ -90,7 +91,7 @@ static immediate_cout: bool = true;
 
 lazy_static! {
     static ref CACHE: OpCache = OpCache::new();
-    static ref CNT_PER_PARTITION: Arc<Mutex<HashMap<OpId, usize>>> = Arc::new(Mutex::new(HashMap::new()));
+    static ref CNT_PER_PARTITION: Arc<Mutex<HashMap<(OpId, usize), usize>>> = Arc::new(Mutex::new(HashMap::new()));
     static ref OP_MAP: AtomicPtrWrapper<BTreeMap<OpId, Arc<dyn OpBase>>> = AtomicPtrWrapper::new(Box::into_raw(Box::new(BTreeMap::new()))); 
     static ref init: Result<()> = {
         /* dijkstra */
@@ -223,7 +224,7 @@ pub extern "C" fn secure_execute(tid: u64,
     let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();
     let part_ids = unsafe { (part_ids as *const Vec<usize>).as_ref() }.unwrap();
     let captured_vars = unsafe { (captured_vars as *const HashMap<usize, Vec<Vec<u8>>>).as_ref() }.unwrap();
-    println!("tid: {:?}, rdd ids = {:?}, op ids = {:?}, dep_info = {:?}, cache_meta = {:?}", tid, rdd_ids, op_ids, dep_info, cache_meta);
+    println!("tid: {:?}, rdd ids = {:?}, op ids = {:?}, part_ids = {:?}, dep_info = {:?}, cache_meta = {:?}", tid, rdd_ids, op_ids, part_ids, dep_info, cache_meta);
     
     let now = Instant::now();
     let mut call_seq = NextOpId::new(tid, rdd_ids, op_ids, part_ids, cache_meta.clone(), captured_vars.clone(), &dep_info);
@@ -235,13 +236,13 @@ pub extern "C" fn secure_execute(tid: u64,
 }
 
 #[no_mangle]
-pub extern "C" fn get_cnt_per_partition(op_id: OpId) -> usize {
-    CNT_PER_PARTITION.lock().unwrap().remove(&op_id).unwrap()
+pub extern "C" fn get_cnt_per_partition(op_id: OpId, part_id: usize) -> usize {
+    CNT_PER_PARTITION.lock().unwrap().remove(&(op_id, part_id)).unwrap()
 }
 
 #[no_mangle]
-pub extern "C" fn set_cnt_per_partition(op_id: OpId, cnt_per_partition: usize) {
-    CNT_PER_PARTITION.lock().unwrap().insert(op_id, cnt_per_partition);
+pub extern "C" fn set_cnt_per_partition(op_id: OpId, part_id: usize, cnt_per_partition: usize) {
+    CNT_PER_PARTITION.lock().unwrap().insert((op_id, part_id), cnt_per_partition);
 }
 
 #[no_mangle]

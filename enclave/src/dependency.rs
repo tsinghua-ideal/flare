@@ -231,7 +231,7 @@ where
             crate::ALLOCATOR.set_switch(false);
             buckets_enc
         } else {
-            column_sort_step_2::<(Option<K>, V)>(sub_parts, max_len, num_output_splits)
+            column_sort_step_2::<(Option<K>, V)>(tid, sub_parts, max_len, num_output_splits)
         };
         to_ptr(buckets_enc)
     }

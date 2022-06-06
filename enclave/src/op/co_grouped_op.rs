@@ -146,8 +146,10 @@ W: Data,
                 }
             }
             let last = agg.pop().unwrap();
-            let res_bl = ser_encrypt(&agg);
-            merge_enc(&mut res, &res_bl);
+            if !agg.is_empty() {
+                let res_bl = ser_encrypt(&agg);
+                merge_enc(&mut res, &res_bl);
+            }
             agg = vec![last];
         }
         // the last one will be transmit to other servers
@@ -295,76 +297,98 @@ where
                 to_ptr(res)
             },
             20 => {      //column sort, step 1 + step 2
-                let data_enc = input.get_enc_data::<(
+                let data_enc_ref = input.get_enc_data::<(
                     Vec<ItemE>, 
                     Vec<Vec<ItemE>>, 
                     Vec<ItemE>, 
                     Vec<Vec<ItemE>>
                 )>();
                 // sub_parts[i][j] < sub_parts[i][j+1] in sub_parts[i]
-                let mut sub_parts = create_enc();
-                let mut num_prev_part = 0;
-
+                let mut data_enc = create_enc();
                 let mut max_len = 0;
 
                 // (Option<K>, V) -> (Option<K>, (Option<V>, Option<W>))
-                for sub_part in &data_enc.0 {
+                for sub_part in &data_enc_ref.0 {
                     //not sure about the type of the fed key, Option<K> or <K>
                     let mut sub_part: Vec<(K, V)> = ser_decrypt(&sub_part.clone());
                     max_len = std::cmp::max(max_len, sub_part.len());
                     unimplemented!()
                 }
-                for part in &data_enc.1 {
-                    crate::ALLOCATOR.set_switch(true);
-                    sub_parts.push(Vec::new());
-                    crate::ALLOCATOR.set_switch(false);
-                    
+                for part in &data_enc_ref.1 {
+                    let mut part_enc = create_enc();
                     for sub_part in part {
                         let sub_part: Vec<(Option<K>, V)> = ser_decrypt(&sub_part.clone());
+                        if sub_part.is_empty() {
+                            continue;
+                        }
                         max_len = std::cmp::max(max_len, sub_part.len());
                         let new_sub_part = sub_part.into_iter()
                             .map(|(k, v)| (k, (Some(v), None::<W>)))
                             .collect::<Vec<_>>();
                         let new_sub_part_enc = ser_encrypt(&new_sub_part);
-                        merge_enc(&mut sub_parts[num_prev_part], &new_sub_part_enc);
+                        merge_enc(&mut part_enc, &new_sub_part_enc);
                     }
-                    num_prev_part += 1;
+                    if part_enc.is_empty() {
+                        crate::ALLOCATOR.set_switch(true);
+                        drop(part_enc);
+                        crate::ALLOCATOR.set_switch(false);
+                    } else {
+                        crate::ALLOCATOR.set_switch(true);
+                        data_enc.push(part_enc);
+                        crate::ALLOCATOR.set_switch(false);
+                    }
                 }
 
                 // (Option<K>, W) -> (Option<K>, (Option<V>, Option<W>))
-                for sub_part in &data_enc.2 {
+                for sub_part in &data_enc_ref.2 {
                     let mut sub_part: Vec<(K, W)> = ser_decrypt(&sub_part.clone());
                     max_len = std::cmp::max(max_len, sub_part.len());
                     unimplemented!();
                 }
 
-                for part in &data_enc.3 {
-                    crate::ALLOCATOR.set_switch(true);
-                    sub_parts.push(Vec::new());
-                    crate::ALLOCATOR.set_switch(false);
-
+                for part in &data_enc_ref.3 {
+                    let mut part_enc = create_enc();
                     for sub_part in part {
                         let sub_part: Vec<(Option<K>, W)> = ser_decrypt(&sub_part.clone());
+                        if sub_part.is_empty() {
+                            continue;
+                        }
                         max_len = std::cmp::max(max_len, sub_part.len());
                         let new_sub_part = sub_part.into_iter()
                             .map(|(k, w)| (k, (None::<V>, Some(w))))
                             .collect::<Vec<_>>();
                         let new_sub_part_enc = ser_encrypt(&new_sub_part);
-                        merge_enc(&mut sub_parts[num_prev_part], &new_sub_part_enc);
+                        merge_enc(&mut part_enc, &new_sub_part_enc);
                     }
-                    num_prev_part += 1;
+                    if part_enc.is_empty() {
+                        crate::ALLOCATOR.set_switch(true);
+                        drop(part_enc);
+                        crate::ALLOCATOR.set_switch(false);
+                    } else {
+                        crate::ALLOCATOR.set_switch(true);
+                        data_enc.push(part_enc);
+                        crate::ALLOCATOR.set_switch(false);
+                    }
                 }
-
-                let mut sort_helper = SortHelper::<K, (Option<V>, Option<W>)>::new_with(sub_parts, max_len, true);
-                sort_helper.sort();
-                let (sub_parts, num_real_elem) = sort_helper.take();
-                CNT_PER_PARTITION.lock().unwrap().insert(self.get_op_id(), num_real_elem);
-                let num_output_splits = self.number_of_splits();
-                let buckets_enc = column_sort_step_2::<(Option<K>, (Option<V>, Option<W>))>(sub_parts, max_len, num_output_splits);
-                to_ptr(buckets_enc)
+                let op_id = self.get_op_id();
+                if max_len == 0 {
+                    crate::ALLOCATOR.set_switch(true);
+                    drop(data_enc);
+                    crate::ALLOCATOR.set_switch(false);
+                    assert!(CNT_PER_PARTITION.lock().unwrap().insert((op_id, call_seq.get_part_id()), 0).is_none());
+                    res_enc_to_ptr(Vec::<Vec<ItemE>>::new())
+                } else {
+                    let mut sort_helper = SortHelper::<K, (Option<V>, Option<W>)>::new_with(data_enc, max_len, true);
+                    sort_helper.sort();
+                    let (sub_parts, num_real_elem) = sort_helper.take();
+                    assert!(CNT_PER_PARTITION.lock().unwrap().insert((op_id, call_seq.get_part_id()), num_real_elem).is_none());
+                    let num_output_splits = self.number_of_splits();
+                    let buckets_enc = column_sort_step_2::<(Option<K>, (Option<V>, Option<W>))>(call_seq.tid, sub_parts, max_len, num_output_splits);
+                    to_ptr(buckets_enc)
+                }
             },
             21 | 22 | 23 => {     //column sort, remaining steps
-                combined_column_sort_step_4_6_8::<K, (Option<V>, Option<W>)>(input, dep_info, self.get_op_id(), self.number_of_splits())
+                combined_column_sort_step_4_6_8::<K, (Option<V>, Option<W>)>(call_seq.tid, input, dep_info, self.get_op_id(), call_seq.get_part_id(), self.number_of_splits())
             },
             24 => { //aggregate again with the agg info from other servers
                 let ser = call_seq.get_ser_captured_var().unwrap();
@@ -392,10 +416,10 @@ where
                 to_ptr(res)
             }
             25 => {
-                combined_column_sort_step_2::<K, (Vec<V>, Vec<W>)>(input, self.get_op_id(), self.number_of_splits())
+                combined_column_sort_step_2::<K, (Vec<V>, Vec<W>)>(call_seq.tid, input, self.get_op_id(), call_seq.get_part_id(), self.number_of_splits())
             }
             26 | 27 | 28 => {
-                combined_column_sort_step_4_6_8::<K, (Vec<V>, Vec<W>)>(input, dep_info, self.get_op_id(), self.number_of_splits())
+                combined_column_sort_step_4_6_8::<K, (Vec<V>, Vec<W>)>(call_seq.tid, input, dep_info, self.get_op_id(), call_seq.get_part_id(), self.number_of_splits())
             }
             _ => panic!("Invalid is_shuffle")
         }
