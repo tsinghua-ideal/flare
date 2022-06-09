@@ -6,8 +6,8 @@ edition = "2018"
 build = "build.rs"
 
 [dependencies]
-sgx_types = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
-sgx_urts = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
+sgx_types = { path = "../incubator-teaclave-sgx-sdk/sgx_types" }
+sgx_urts = { path = "../incubator-teaclave-sgx-sdk/sgx_urts" }
 
 vega = { path = "../Submodule-of-SecureSpark" }
 

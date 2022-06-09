@@ -32,11 +32,11 @@ git merge remotes/upstream/master
 
 Please refer to https://www.rust-lang.org/tools/install. It's recommended to use `rustup` for management. 
 
-And it's necessary to install `nightly` version using `rustup`. You can run `rustup toolchain list` to see which version you have. After installation, you need to switch to `nightly` toolchain. One of the methods is running `rustup override set nightly-x86_64-unknown-linux-gnu` in the top dir of this project.
-
 ### Install Intel SGX toolchain
 
-Suppose tasks are not allowed to run on the master node, and all the tasks run on slave nodes. So, SGX toolchain (Driver, PSW, SDK) needs to be installed on slave nodes, while SDK needs to be installed on the master node for compiling the code. All are installed in `/opt/intel/`.
+We require Intel SGX SDK 2.14.
+
+Tasks will not run on the master node, and all the tasks run on slave nodes. So, SGX toolchain (Driver, PSW, SDK) needs to be installed on slave nodes, while SDK needs to be installed on the master node for compiling the code. All are installed in `/opt/intel/`.
 
 ### Config for Spark
 
@@ -46,4 +46,4 @@ Please refer to https://rajasekarv.github.io/vega/ for `Getting started` part an
 
 ## Usage
 
-You can write you Spark App in `./app/src/main.rs`. It supports `map` and `group_by` now. And the you need to revise the correspond part in './enclave/src/lib.rs', I mark `TODO` for it. In nutshell, user only needs to revise app and enclave now.
+You can write you Spark App in `./app/src/main.rs`. And the you need to revise the correspond part in './enclave/src/lib.rs'.

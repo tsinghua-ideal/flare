@@ -12,15 +12,15 @@ crate-type = ["staticlib"]
 default = []
 
 [target.'cfg(not(target_env = "sgx"))'.dependencies]
-sgx_types = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
-sgx_tstd = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
-sgx_tcrypto = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
-sgx_trts = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
-sgx_tseal = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
-sgx_serialize = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
-sgx_alloc = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
-sgx_libc = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
-sgx_signal = { git = "https://github.com/apache/teaclave-sgx-sdk.git" }
+sgx_alloc = { path = "../incubator-teaclave-sgx-sdk/sgx_alloc" }
+sgx_libc = { path = "../incubator-teaclave-sgx-sdk/sgx_libc" }
+sgx_serialize = { path = "../incubator-teaclave-sgx-sdk/sgx_serialize" }
+sgx_signal = { path = "../incubator-teaclave-sgx-sdk/sgx_signal" }
+sgx_tcrypto = { path = "../incubator-teaclave-sgx-sdk/sgx_tcrypto" }
+sgx_trts = { path = "../incubator-teaclave-sgx-sdk/sgx_trts" }
+sgx_tseal = { path = "../incubator-teaclave-sgx-sdk/sgx_tseal" }
+sgx_tstd = { path = "../incubator-teaclave-sgx-sdk/sgx_tstd" }
+sgx_types = { path = "../incubator-teaclave-sgx-sdk/sgx_types" }
 
 [dependencies]
 aes-gcm = "0.8.0"
