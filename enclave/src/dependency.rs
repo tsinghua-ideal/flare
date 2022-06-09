@@ -175,7 +175,7 @@ where
         let aggregator = self.aggregator.clone();
         //sub partition sort, for each vector in sub_parts, it is sorted
         let mut sub_part = Vec::new();
-        let mut sub_parts = create_enc();
+        let mut sub_parts = Vec::new();
 
         let mut max_len = 0;
         
@@ -184,54 +184,35 @@ where
                 .unwrap().into_iter().map(|(k, v)| (Some(k), v)).collect::<Vec<_>>();
             sub_part.append(&mut block);
 
-            let cur_memory = crate::ALLOCATOR.get_max_memory_usage().0;
-            if cur_memory > CACHE_LIMIT/parallel_num {
-                // -
+            if sub_part.get_size() > CACHE_LIMIT/parallel_num {
                 sub_part.sort_unstable_by(|a, b| a.0.cmp(&b.0));
                 max_len = std::cmp::max(max_len, sub_part.len());
-                // we encrypt a sub partition fitting in the cache as a whole
-                // instead of encrypt a block
-                let sub_part_enc = ser_encrypt(&sub_part);
-                merge_enc(&mut sub_parts, &sub_part_enc);
-                // -
+                sub_parts.push(sub_part);
                 sub_part = Vec::new();
-                crate::ALLOCATOR.reset_max_memory_usage();
             }
         }
         
         if !sub_part.is_empty() {
-            // -
             sub_part.sort_unstable_by(|a, b| a.0.cmp(&b.0));
             max_len = std::cmp::max(max_len, sub_part.len());
-            let sub_part_enc = ser_encrypt(&sub_part);
-            merge_enc(&mut sub_parts, &sub_part_enc);
-            // -
+            sub_parts.push(sub_part);
         }
 
         //partition sort (local sort), and pad so that each sub partition should have the same number of (K, V)
         let mut sort_helper = SortHelper::<K, V>::new(sub_parts, max_len, true);
         sort_helper.sort();
-        //note that sub_parts stay outside enclave
-        let (sub_parts, num_real_elem) = sort_helper.take();
+        let (sorted_data, num_real_elem) = sort_helper.take();
         let num_output_splits = self.partitioner.read().unwrap().get_num_of_partitions();
         let chunk_size = num_real_elem.saturating_sub(1) / num_output_splits + 1;
         let buckets_enc = if self.is_cogroup {
-            let mut cnt = 0;
-            let mut i = 0;
-            crate::ALLOCATOR.set_switch(true);
-            let mut buckets_enc = vec![Vec::new(); num_output_splits];
-            for sub_part in sub_parts {
-                cnt += max_len;
-                buckets_enc[i].push(sub_part);
-                if cnt >= chunk_size {
-                    cnt = 0;
-                    i += 1;
-                }
+            let mut buckets_enc = create_enc();
+            for bucket in sorted_data.chunks(chunk_size) {
+                merge_enc(&mut buckets_enc, &batch_encrypt(bucket, false));
             }
-            crate::ALLOCATOR.set_switch(false);
             buckets_enc
         } else {
-            column_sort_step_2::<(Option<K>, V)>(tid, sub_parts, max_len, num_output_splits)
+            //TODO: 
+            column_sort_step_2::<(Option<K>, V)>(tid, sorted_data, max_len, num_output_splits)
         };
         to_ptr(buckets_enc)
     }

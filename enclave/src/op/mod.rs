@@ -214,119 +214,45 @@ fn get_text_loc_id() -> u64 {
 }
 
 // prepare for column step 2, shuffle (transpose)
-// sub_parts and buckets_enc stay outside enclave
-pub fn column_sort_step_2<T>(tid: u64, sub_parts: Vec<ItemE>, max_len: usize, num_output_splits: usize) -> Vec<Vec<ItemE>>
+pub fn column_sort_step_2<T>(tid: u64, sorted_data: Vec<T>, max_len: usize, num_output_splits: usize) -> Vec<Vec<ItemE>>
 where
     T: Data
 {
-    //TODO: can be optimized to avoid unneccessary copy, as column_sort_step_4 shows
-    crate::ALLOCATOR.set_switch(true);
-    let mut buckets_enc = vec![Vec::new(); num_output_splits];
-    crate::ALLOCATOR.set_switch(false);
+    let mut buckets_enc = create_enc();
 
     let mut i = 0;
-    for sub_part in sub_parts.iter() {
-        let mut buckets = vec![Vec::with_capacity(max_len.saturating_sub(1) / num_output_splits + 1); num_output_splits];
-        let sub_part: Vec<T> = ser_decrypt(&sub_part.clone());
-        for kc in sub_part {
-            buckets[i % num_output_splits].push(kc);
-            i += 1;
-        }
+    let mut buckets = vec![Vec::with_capacity(sorted_data.len().saturating_sub(1) / num_output_splits + 1); num_output_splits];
 
-        for (j, bucket_enc) in buckets.into_iter().map(|x| ser_encrypt(&x)).enumerate() {
-            crate::ALLOCATOR.set_switch(true);
-            buckets_enc[j].push(bucket_enc.clone());
-            crate::ALLOCATOR.set_switch(false);
-        }
+    for kc in sorted_data {
+        buckets[i % num_output_splits].push(kc);
+        i += 1;
     }
-    crate::ALLOCATOR.set_switch(true);
-    drop(sub_parts);
-    crate::ALLOCATOR.set_switch(false);
+
+    for bucket in buckets {
+        let bucket_enc = batch_encrypt(&bucket, true);
+        crate::ALLOCATOR.set_switch(true);
+        buckets_enc.push(bucket_enc);
+        crate::ALLOCATOR.set_switch(false);
+    }
     buckets_enc
 }
 
-// sub_parts and buckets_enc stay outside enclave
-pub fn column_sort_step_4_6_8<T>(tid: u64, sub_parts: Vec<ItemE>, cnt_per_partition: usize, max_len: usize, n: usize, num_output_splits: usize) -> Vec<Vec<ItemE>>
+pub fn column_sort_step_4_6_8<T>(tid: u64, sorted_data: Vec<T>, cnt_per_partition: usize, max_len: usize, n: usize, num_output_splits: usize) -> Vec<Vec<ItemE>>
 where
     T: Data
 {
-    let n_last = n - (sub_parts.len() - 1) * max_len;
-    let chunk_size = cnt_per_partition / num_output_splits;
-    let mut next_i = 0;
-    let mut n_acc = 0;
-    let last_j = sub_parts.len() - 1;
-    let mut r: Vec<T> = Vec::new();
+    let chunk_size = cnt_per_partition.saturating_sub(1) / num_output_splits + 1;
 
     crate::ALLOCATOR.set_switch(true);
     let mut buckets_enc = vec![Vec::new(); num_output_splits];
-    let mut iter = sub_parts.into_iter();
-    let mut iter_cur = iter.next();
     crate::ALLOCATOR.set_switch(false);
-    let mut j = 0;
 
-    while iter_cur.is_some() {
+    for (i, bucket) in sorted_data.chunks(chunk_size).enumerate() {
+        let bucket_enc = batch_encrypt(bucket, true);
         crate::ALLOCATOR.set_switch(true);
-        let sub_part_enc = iter_cur.unwrap();
-        crate::ALLOCATOR.set_switch(false);
-
-        let n_cur = if j == last_j {
-            n_last
-        } else {
-            max_len
-        };
-        if n_acc + n_cur >= chunk_size {
-            //form a chunk
-            if n_acc + n_cur > chunk_size {
-                //need to split
-                let mut sub_part = r;
-                sub_part.append(&mut ser_decrypt(&sub_part_enc.clone()));
-                r = sub_part.split_off(chunk_size - n_acc);
-                let new_sub_part_enc = ser_encrypt(&sub_part);
-                merge_enc(&mut buckets_enc[next_i], &new_sub_part_enc);
-                crate::ALLOCATOR.set_switch(true);
-                drop(sub_part_enc);
-                crate::ALLOCATOR.set_switch(false);
-            } else {
-                if r.len() > 0 {
-                    let r_enc = ser_encrypt(&r);
-                    r = Vec::new();
-                    merge_enc(&mut buckets_enc[next_i], &r_enc);
-                }
-                crate::ALLOCATOR.set_switch(true);
-                buckets_enc[next_i].push(sub_part_enc);
-                crate::ALLOCATOR.set_switch(false);
-            }
-            next_i += 1;
-            n_acc = r.len();
-        } else {
-            if r.len() > 0 {
-                let r_enc = ser_encrypt(&r);
-                r = Vec::new();
-                merge_enc(&mut buckets_enc[next_i], &r_enc);
-            }
-            crate::ALLOCATOR.set_switch(true);
-            buckets_enc[next_i].push(sub_part_enc);
-            crate::ALLOCATOR.set_switch(false);
-            n_acc += n_cur;
-        };
-
-        crate::ALLOCATOR.set_switch(true);
-        iter_cur = iter.next();
-        crate::ALLOCATOR.set_switch(false);
-        j += 1;
-    }
-
-    if r.len() > 0 {
-        let r_enc = ser_encrypt(&r);
-        crate::ALLOCATOR.set_switch(true);
-        buckets_enc[next_i].push(r_enc.clone());
+        buckets_enc[i] = bucket_enc;
         crate::ALLOCATOR.set_switch(false);
     }
-    
-    crate::ALLOCATOR.set_switch(true);
-    drop(iter_cur);
-    drop(iter);
-    crate::ALLOCATOR.set_switch(false);
     buckets_enc
 }
 
@@ -336,32 +262,39 @@ where
     V: Data
 {
     let data_enc = input.get_enc_data::<Vec<ItemE>>();
-    let mut sub_parts = create_enc();
+
+    let mut data = Vec::new();
     let mut max_len = 0;
-    for sub_part in data_enc {
-        let mut sub_part: Vec<(Option<K>, V)> = ser_decrypt(&sub_part.clone());
-        if sub_part.is_empty() {
-            continue;
+
+    let mut sub_part: Vec<(Option<K>, V)> = Vec::new();
+    for block_enc in data_enc {
+        sub_part.append(&mut ser_decrypt(&block_enc.clone()));
+        if sub_part.get_size() > CACHE_LIMIT/input.get_parallel() {
+            sub_part.sort_unstable_by(cmp_f);
+            max_len = std::cmp::max(max_len, sub_part.len());
+            data.push(sub_part);
+            sub_part = Vec::new();
         }
-        max_len = std::cmp::max(max_len, sub_part.len());
-        sub_part.sort_unstable_by(cmp_f);
-        let sub_part_enc = ser_encrypt(&sub_part);
-        merge_enc(&mut sub_parts, &sub_part_enc);
     }
+    if !sub_part.is_empty() {
+        sub_part.sort_unstable_by(cmp_f);
+        max_len = std::cmp::max(max_len, sub_part.len());
+        data.push(sub_part);
+    }
+
     if max_len == 0 {
         assert!(CNT_PER_PARTITION.lock().unwrap().insert((op_id, part_id), 0).is_none());
         //although the type is incorrect, it is ok because it is empty.
         crate::ALLOCATOR.set_switch(true);
-        drop(sub_parts);
         let buckets_enc: Vec<Vec<ItemE>> = Vec::new();
         crate::ALLOCATOR.set_switch(false);
         to_ptr(buckets_enc)
     } else {
-        let mut sort_helper = SortHelper::<K, V>::new(sub_parts, max_len, true);
+        let mut sort_helper = SortHelper::<K, V>::new(data, max_len, true);
         sort_helper.sort();
-        let (sub_parts, num_real_elem) = sort_helper.take();
+        let (sorted_data, num_real_elem) = sort_helper.take();
         assert!(CNT_PER_PARTITION.lock().unwrap().insert((op_id, part_id), num_real_elem).is_none());
-        let buckets_enc = column_sort_step_2::<(Option<K>, V)>(tid, sub_parts, max_len, num_output_splits);
+        let buckets_enc = column_sort_step_2::<(Option<K>, V)>(tid, sorted_data, max_len, num_output_splits);
         to_ptr(buckets_enc)
     }
 }
@@ -373,57 +306,42 @@ where
 {
     let data_enc_ref = input.get_enc_data::<Vec<Vec<ItemE>>>();
     let mut max_len = 0;
-    let mut data_enc = create_enc();
-    //TODO: re encrypt the sub part because in step 2, the size of sub part is shrinked by num_of_splits
-    for part in data_enc_ref {
-        let mut part_enc = create_enc();
-        let mut sub_part: Vec<(Option<K>, V)> = vec![];
-        for sub_part_enc in part.iter() {
+
+    let mut data = Vec::with_capacity(data_enc_ref.len());
+    for part_enc in data_enc_ref {
+        let mut part = Vec::new();
+        let mut sub_part: Vec<(Option<K>, V)> = Vec::new();
+        for block_enc in part_enc.iter() {
             //we can derive max_len from the first sub partition in each partition
-            sub_part.append(&mut ser_decrypt(&sub_part_enc.clone()));
-            let cur_memory = crate::ALLOCATOR.get_max_memory_usage().0;
-            if cur_memory > CACHE_LIMIT/input.get_parallel() {
+            sub_part.append(&mut ser_decrypt(&block_enc.clone()));
+            if sub_part.get_size() > CACHE_LIMIT/input.get_parallel() {
                 max_len = std::cmp::max(max_len, sub_part.len());
-                let sub_part_enc = ser_encrypt(&sub_part);
-                merge_enc(&mut part_enc, &sub_part_enc);
+                part.push(sub_part);
                 sub_part = Vec::new();
-                crate::ALLOCATOR.reset_max_memory_usage();
             }
         }
         if !sub_part.is_empty() {
             max_len = std::cmp::max(max_len, sub_part.len());
-            let sub_part_enc = ser_encrypt(&sub_part);
-            merge_enc(&mut part_enc, &sub_part_enc);
+            part.push(sub_part);
         }
-        if part_enc.is_empty() {
-            crate::ALLOCATOR.set_switch(true);
-            drop(part_enc);
-            crate::ALLOCATOR.set_switch(false);
-        } else {
-            crate::ALLOCATOR.set_switch(true);
-            data_enc.push(part_enc);
-            crate::ALLOCATOR.set_switch(false);
-        }
+        data.push(part);
     }
     if max_len == 0 {
-        crate::ALLOCATOR.set_switch(true);
-        drop(data_enc);
-        crate::ALLOCATOR.set_switch(false);
         if dep_info.dep_type() == 23 || dep_info.dep_type() == 28 {
             CNT_PER_PARTITION.lock().unwrap().remove(&(op_id, part_id)).unwrap();
         }
         res_enc_to_ptr(Vec::<Vec<ItemE>>::new())
     } else {
-        let mut sort_helper = SortHelper::<K, V>::new_with(data_enc, max_len, true);
+        let mut sort_helper = SortHelper::<K, V>::new_with(data, max_len, true);
         sort_helper.sort();
-        let (sub_parts, num_real_elem) = sort_helper.take();
+        let (sorted_data, num_real_elem) = sort_helper.take();
         let cnt_per_partition = *CNT_PER_PARTITION.lock().unwrap().get(&(op_id, part_id)).unwrap();
         let buckets_enc = match dep_info.dep_type() {
-            21 | 26 => column_sort_step_4_6_8::<(Option<K>, V)>(tid, sub_parts, cnt_per_partition, max_len, num_real_elem, num_output_splits),
-            22 | 27 => column_sort_step_4_6_8::<(Option<K>, V)>(tid, sub_parts, cnt_per_partition, max_len, num_real_elem, 2),
+            21 | 26 => column_sort_step_4_6_8::<(Option<K>, V)>(tid, sorted_data, cnt_per_partition, max_len, num_real_elem, num_output_splits),
+            22 | 27 => column_sort_step_4_6_8::<(Option<K>, V)>(tid, sorted_data, cnt_per_partition, max_len, num_real_elem, 2),
             23 | 28 => {
                 CNT_PER_PARTITION.lock().unwrap().remove(&(op_id, part_id)).unwrap();
-                column_sort_step_4_6_8::<(Option<K>, V)>(tid, sub_parts, cnt_per_partition, max_len, num_real_elem, 2)
+                column_sort_step_4_6_8::<(Option<K>, V)>(tid, sorted_data, cnt_per_partition, max_len, num_real_elem, 2)
             },
             _ => unreachable!(),
         };
@@ -450,14 +368,12 @@ where
     K: Data + Ord,
     V: Data,
 {
-    data: Vec<Arc<Mutex<ItemE>>>,
+    data: Vec<Arc<Mutex<Vec<(Option<K>, V)>>>>,
     max_len: usize,
     num_padding: Arc<AtomicUsize>,
     ascending: bool,
     dist: Option<Vec<usize>>,
     dist_use_map: Option<HashMap<usize, AtomicBool>>,
-    _marker_k: PhantomData<K>,
-    _marker_v: PhantomData<V>,
 }
 
 impl<K, V> SortHelper<K, V>
@@ -465,21 +381,18 @@ where
     K: Data + Ord,
     V: Data,
 {
-    pub fn new(data: Vec<ItemE>, max_len: usize, ascending: bool) -> Self {
-        crate::ALLOCATOR.set_switch(true);
+    pub fn new(data: Vec<Vec<(Option<K>, V)>>, max_len: usize, ascending: bool) -> Self {
         let data = {
             data
                 .into_iter()
                 .map(|x| Arc::new(Mutex::new(x)))
                 .collect::<Vec<_>>()
         };
-        crate::ALLOCATOR.set_switch(false);
-        //note that data is outside enclave
-        SortHelper { data, max_len, num_padding: Arc::new(AtomicUsize::new(0)), ascending, dist: None, dist_use_map: None, _marker_k: PhantomData, _marker_v: PhantomData}
+        SortHelper { data, max_len, num_padding: Arc::new(AtomicUsize::new(0)), ascending, dist: None, dist_use_map: None}
     }
 
     //optimize for merging sorted arrays
-    pub fn new_with(data: Vec<Vec<ItemE>>, max_len: usize, ascending: bool) -> Self {
+    pub fn new_with(data: Vec<Vec<Vec<(Option<K>, V)>>>, max_len: usize, ascending: bool) -> Self {
         let dist = Some(data.iter()
             .map(|p| p.len())
             .scan(0usize, |acc, x| {
@@ -488,13 +401,10 @@ where
             }).collect::<Vec<_>>());
         // true means the array is sorted originally, never touched in the following algorithm
         let dist_use_map = dist.as_ref().map(|dist| dist.iter().map(|k| (*k, AtomicBool::new(true))).collect::<HashMap<_, _>>());
-        crate::ALLOCATOR.set_switch(true);
         let data = {
             data.into_iter().map(|p| p.into_iter().map(|x|Arc::new(Mutex::new(x)))).flatten().collect::<Vec<_>>()
         };
-        crate::ALLOCATOR.set_switch(false);
-        //note that data is outside enclave
-        SortHelper { data, max_len, num_padding: Arc::new(AtomicUsize::new(0)), ascending, dist, dist_use_map, _marker_k: PhantomData, _marker_v: PhantomData}
+        SortHelper { data, max_len, num_padding: Arc::new(AtomicUsize::new(0)), ascending, dist, dist_use_map}
     }
 
     pub fn sort(&self) {
@@ -553,15 +463,13 @@ where
                 let mut first_d = None;
                 let mut last_d = None;
                 for i in lo..(lo + n) {
-                    let d: Vec<(Option<K>, V)> = ser_decrypt(&self.get_data(i));
-                    if let Some(x) = d.first() {
+                    if let Some(x) = self.data[i].lock().unwrap().first() {
                         first_d = Some(x.clone());
                         break;
                     }
                 }
                 for i in (lo..(lo + n)).rev() {
-                    let d: Vec<(Option<K>, V)> = ser_decrypt(&self.get_data(i));
-                    if let Some(x) = d.last() {
+                    if let Some(x) = self.data[i].lock().unwrap().first() {
                         last_d = Some(x.clone());
                         break;
                     }
@@ -579,15 +487,14 @@ where
                     let mut d_i: Vec<(Option<K>, V)> = Vec::new();
                     let mut cnt = lo;
                     for i in lo..(lo + n) {
-                        d_i.append(&mut ser_decrypt(&self.get_data(i)));
+                        d_i.append(&mut *self.data[i].lock().unwrap());
                         if d_i.len() >= max_len {
                             let mut r = d_i.split_off(max_len);
                             std::mem::swap(&mut r, &mut d_i);
                             if should_reverse {
                                 r.reverse();
                             }
-                            let new_d_i = ser_encrypt(&r);
-                            self.set_data(cnt, &new_d_i);
+                            *self.data[cnt].lock().unwrap() = r;
                             cnt += 1;
                         }
                     }
@@ -598,8 +505,7 @@ where
                         if should_reverse {
                             d_i.reverse();
                         }
-                        let new_d_i = ser_encrypt(&d_i);
-                        self.set_data(cnt, &new_d_i);
+                        *self.data[cnt].lock().unwrap() = d_i;
                         d_i = Vec::new();
                         cnt += 1;
                     }
@@ -609,10 +515,10 @@ where
                     let mut cur_len = 0;
                     let mut cnt = lo + n - 1;
                     for i in (lo..(lo + n)).rev() {
-                        let mut v: Vec<(Option<K>, V)> = ser_decrypt(&self.get_data(i));
+                        let v = &mut *self.data[i].lock().unwrap();
                         let v_len = v.len();
                         if v_len < max_len - cur_len {
-                            (&mut d_i[max_len-cur_len-v_len..max_len-cur_len]).clone_from_slice(&v);
+                            (&mut d_i[max_len-cur_len-v_len..max_len-cur_len]).clone_from_slice(v);
                             cur_len += v_len;
                         } else {
                             let r = v.split_off(v_len - (max_len - cur_len));
@@ -620,11 +526,11 @@ where
                             if should_reverse {
                                 d_i.reverse();
                             }
-                            let new_d_i = ser_encrypt(&d_i);
-                            self.set_data(cnt, &new_d_i);
+                            *self.data[cnt].lock().unwrap() = d_i;
                             cnt = cnt.wrapping_sub(1);
                             cur_len = v.len();
-                            (&mut d_i[max_len-cur_len..max_len]).clone_from_slice(&v);
+                            d_i = vec![Default::default(); max_len];
+                            (&mut d_i[max_len-cur_len..max_len]).clone_from_slice(v);
                         }
                     }
                     let mut add_num_padding = 0;
@@ -637,23 +543,17 @@ where
                         if should_reverse {
                             d_i.reverse();
                         }
-                        let new_d_i = ser_encrypt(&d_i);
-                        self.set_data(cnt, &new_d_i);
+                        *self.data[cnt].lock().unwrap() = d_i;
                         cnt = cnt.wrapping_sub(1);
                         cur_len = 0;
+                        d_i = vec![Default::default(); max_len];
                     }
                     num_padding.fetch_add(add_num_padding, atomic::Ordering::SeqCst);
                 }
                 if should_reverse {
                     for i in lo..(lo + n / 2) {
                         let l = 2 * lo + n - 1 - i;
-                        crate::ALLOCATOR.set_switch(true);
-                        {
-                            let mut data_i = self.data[i].lock().unwrap();
-                            let mut data_l = self.data[l].lock().unwrap();
-                            std::mem::swap(&mut *data_i, &mut *data_l);
-                        }
-                        crate::ALLOCATOR.set_switch(false);
+                        std::mem::swap(&mut *self.data[i].lock().unwrap(), &mut *self.data[l].lock().unwrap());
                     }
                 }
             } else {
@@ -661,8 +561,8 @@ where
                 for i in lo..(lo + n - m) {
                     let l = i + m;
                     //merge
-                    let d_i: Vec<(Option<K>, V)> = ser_decrypt(&self.get_data(i));
-                    let d_l: Vec<(Option<K>, V)> = ser_decrypt(&self.get_data(l));
+                    let d_i: Vec<(Option<K>, V)> = std::mem::take(&mut *self.data[i].lock().unwrap());
+                    let d_l: Vec<(Option<K>, V)> = std::mem::take(&mut *self.data[l].lock().unwrap());
     
                     let real_len = d_i.len() + d_l.len();
                     let dummy_len = max_len * 2 - real_len;
@@ -719,11 +619,9 @@ where
                         new_d_i.resize(max_len, (None, Default::default()));
                         new_d_l.resize(max_len, (None, Default::default()));
                     }
-    
-                    let new_d_i = ser_encrypt(&new_d_i);
-                    let new_d_l = ser_encrypt(&new_d_l);
-                    self.set_data(i, &new_d_i);
-                    self.set_data(l, &new_d_l);
+
+                    *self.data[i].lock().unwrap() = new_d_i;
+                    *self.data[l].lock().unwrap() = new_d_l;
                 }
     
                 self.bitonic_merge_arbitrary(lo, m, dir);
@@ -732,59 +630,21 @@ where
         }
     }
 
-    pub fn get_data(&self, i: usize) -> ItemE {
-        crate::ALLOCATOR.set_switch(true);
-        let l = self.data[i].lock().unwrap();
-        let tmp = &*l;
-        crate::ALLOCATOR.set_switch(false);
-        let r = tmp.clone();
-        crate::ALLOCATOR.set_switch(true);
-        drop(l);
-        crate::ALLOCATOR.set_switch(false);
-        r
-    }
-
-    pub fn set_data(&self, i: usize, v: &ItemE) {
-        crate::ALLOCATOR.set_switch(true);
-        *self.data[i].lock().unwrap() = v.clone();
-        crate::ALLOCATOR.set_switch(false);
-    } 
-
-    pub fn take(&mut self) -> (Vec<ItemE>, usize) {
+    pub fn take(&mut self) -> (Vec<(Option<K>, V)>, usize) {
         let num_padding = self.num_padding.load(atomic::Ordering::SeqCst);
         let num_real_elem = self.data.len() * self.max_len - num_padding;
         let num_real_sub_part = self.data.len() - num_padding / self.max_len;
         let num_padding_remaining = num_real_sub_part * self.max_len - num_real_elem;
 
-        // if core dump, check this
-        crate::ALLOCATOR.set_switch(true);
         let mut data = std::mem::take(&mut self.data);
         //remove dummy elements
-        let dummy_sub_parts = data.split_off(num_real_sub_part);
-        drop(dummy_sub_parts);
-        let mut res = Vec::with_capacity(data.len());
-        for x in data.into_iter() {
-            let x = Arc::try_unwrap(x).unwrap().into_inner().unwrap();
-            res.push(x);
+        data.truncate(num_real_sub_part);
+        if let Some(last) = data.last_mut() {
+            let mut last = last.lock().unwrap();
+            assert!(last.get(self.max_len - num_padding_remaining).map_or(true, |x| x.0.is_none()));
+            last.truncate(self.max_len - num_padding_remaining);
         }
-        crate::ALLOCATOR.set_switch(false);
-
-        let last = res.last_mut();
-        if last.is_some() {
-            let last = last.unwrap();
-            let mut sub_part: Vec<(Option<K>, V)> = ser_decrypt(&last.clone());
-            // assert!(sub_part[self.max_len - num_padding_remaining - 1].0.is_some()
-            //     && sub_part.get(self.max_len - num_padding_remaining).map_or(true, |x| x.0.is_none()));
-            assert!(sub_part.get(self.max_len - num_padding_remaining).map_or(true, |x| x.0.is_none()));
-            sub_part.truncate(self.max_len - num_padding_remaining);
-            let sub_part_enc = ser_encrypt(&sub_part);
-            crate::ALLOCATOR.set_switch(true);
-            let t = std::mem::take(last);
-            drop(t);
-            *last = sub_part_enc.clone();
-            crate::ALLOCATOR.set_switch(false);
-        }
-
+        let res = data.into_iter().flat_map(|x| Arc::try_unwrap(x).unwrap().into_inner().unwrap()).collect::<Vec<_>>();
         (res, num_real_elem)
     }
 }
