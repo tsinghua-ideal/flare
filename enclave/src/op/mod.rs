@@ -469,7 +469,7 @@ where
                     }
                 }
                 for i in (lo..(lo + n)).rev() {
-                    if let Some(x) = self.data[i].lock().unwrap().first() {
+                    if let Some(x) = self.data[i].lock().unwrap().last() {
                         last_d = Some(x.clone());
                         break;
                     }
