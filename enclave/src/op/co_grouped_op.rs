@@ -120,43 +120,50 @@ W: Data,
     }
 
     pub fn compute_inner(&self, tid: u64, input: Input) -> Vec<ItemE> {
-        let data_enc = input.get_enc_data::<Vec<ItemE>>();
-        let mut agg: Vec<(Option<K>, (Vec<V>, Vec<W>))> = Vec::new();
-        let mut res = create_enc();
-        for sub_part in data_enc {
-            let sub_part: Vec<(Option<K>, (Option<V>, Option<W>))> = ser_decrypt(&sub_part.clone());
-            for (j, group) in sub_part.group_by(|a, b| a.0 == b.0).enumerate() {
-                let k = group[0].0.clone();
-                let mut vs = group.iter().filter_map(|(_, (v, _))| {
-                    v.clone()
-                }).collect::<Vec<_>>();
-                let mut ws = group.iter().filter_map(|(_, (_, w))| {
-                    w.clone()
-                }).collect::<Vec<_>>();
-                if j == 0 && !agg.is_empty() {
-                    let (lk, (lv, lw)) = agg.last_mut().unwrap();
-                    if *lk == k {
-                        lv.append(&mut vs);
-                        lw.append(&mut ws);
-                    } else {
-                        agg.push((k, (vs, ws)));
+        let builder = std::thread::Builder::new();
+        let handler = builder
+            .spawn(move || {
+                set_thread_affinity(true);
+                let data_enc = input.get_enc_data::<Vec<ItemE>>();
+                let mut agg: Vec<(Option<K>, (Vec<V>, Vec<W>))> = Vec::new();
+                let mut res = create_enc();
+                for sub_part in data_enc {
+                    let sub_part: Vec<(Option<K>, (Option<V>, Option<W>))> = ser_decrypt(&sub_part.clone());
+                    for (j, group) in sub_part.group_by(|a, b| a.0 == b.0).enumerate() {
+                        let k = group[0].0.clone();
+                        let mut vs = group.iter().filter_map(|(_, (v, _))| {
+                            v.clone()
+                        }).collect::<Vec<_>>();
+                        let mut ws = group.iter().filter_map(|(_, (_, w))| {
+                            w.clone()
+                        }).collect::<Vec<_>>();
+                        if j == 0 && !agg.is_empty() {
+                            let (lk, (lv, lw)) = agg.last_mut().unwrap();
+                            if *lk == k {
+                                lv.append(&mut vs);
+                                lw.append(&mut ws);
+                            } else {
+                                agg.push((k, (vs, ws)));
+                            }
+                        } else {
+                            agg.push((k, (vs, ws)));
+                        }
                     }
-                } else {
-                    agg.push((k, (vs, ws)));
+                    let last = agg.pop().unwrap();
+                    if !agg.is_empty() {
+                        let res_bl = ser_encrypt(&agg);
+                        merge_enc(&mut res, &res_bl);
+                    }
+                    agg = vec![last];
                 }
-            }
-            let last = agg.pop().unwrap();
-            if !agg.is_empty() {
-                let res_bl = ser_encrypt(&agg);
-                merge_enc(&mut res, &res_bl);
-            }
-            agg = vec![last];
-        }
-        // the last one will be transmit to other servers
-        if !agg.is_empty() {
-            let res_bl = ser_encrypt(&agg);
-            merge_enc(&mut res, &res_bl);
-        }
+                // the last one will be transmit to other servers
+                if !agg.is_empty() {
+                    let res_bl = ser_encrypt(&agg);
+                    merge_enc(&mut res, &res_bl);
+                }
+                res
+            }).unwrap();
+        let res = handler.join().unwrap();
         res
     }
 }
@@ -237,7 +244,7 @@ where
         self.vals.in_loop
     }
     
-    fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8{
+    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8{
         
 		self.compute_start(call_seq, input, dep_info)
     }
@@ -284,7 +291,7 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {       //narrow
                 self.narrow(call_seq, input, dep_info)
@@ -297,6 +304,9 @@ where
                 to_ptr(res)
             },
             20 => {      //column sort, step 1 + step 2
+                //current thread is a parent thread
+                //it should not shrink the cpu set
+
                 let data_enc_ref = input.get_enc_data::<(
                     Vec<ItemE>, 
                     Vec<Vec<ItemE>>, 
@@ -365,7 +375,7 @@ where
                     assert!(CNT_PER_PARTITION.lock().unwrap().insert((op_id, call_seq.get_part_id()), 0).is_none());
                     res_enc_to_ptr(Vec::<Vec<ItemE>>::new())
                 } else {
-                    let mut sort_helper = SortHelper::<K, (Option<V>, Option<W>)>::new_with(data, max_len, true);
+                    let mut sort_helper = BlockSortHelper::<K, (Option<V>, Option<W>)>::new_with(data, max_len, true);
                     sort_helper.sort();
                     let (sorted_data, num_real_elem) = sort_helper.take();
                     assert!(CNT_PER_PARTITION.lock().unwrap().insert((op_id, call_seq.get_part_id()), num_real_elem).is_none());
@@ -378,28 +388,35 @@ where
                 combined_column_sort_step_4_6_8::<K, (Option<V>, Option<W>)>(call_seq.tid, input, dep_info, self.get_op_id(), call_seq.get_part_id(), self.number_of_splits())
             },
             24 => { //aggregate again with the agg info from other servers
-                let ser = call_seq.get_ser_captured_var().unwrap();
-                let mut sup_data: Vec<(Option<K>, (Vec<V>, Vec<W>))> = batch_decrypt(ser, false);
-                assert_eq!(sup_data.len(), 1);
-                let mut sup_data = sup_data.remove(0);
-                let agg_data_ref = input.get_enc_data::<Vec<ItemE>>();
-                let mut res = create_enc();
-                let mut agg_data: Vec<(Option<K>, (Vec<V>, Vec<W>))> = ser_decrypt(&agg_data_ref[0]);
-                
-                if !agg_data.is_empty() && agg_data[0].0 == sup_data.0 {
-                    agg_data[0].1.0.append(&mut sup_data.1.0);
-                    agg_data[0].1.1.append(&mut sup_data.1.1);
-                } else {
-                    agg_data.insert(0, sup_data);
-                }
-
-                let last = agg_data.pop().unwrap();
-                if !agg_data.is_empty() {
-                    let res_bl = ser_encrypt(&agg_data);
-                    merge_enc(&mut res, &res_bl);
-                }
-                let res_bl = ser_encrypt(&vec![last]);
-                merge_enc(&mut res, &res_bl);
+                let builder = std::thread::Builder::new();
+                let handler = builder
+                    .spawn(move || {
+                        set_thread_affinity(true);
+                        let ser = call_seq.get_ser_captured_var().unwrap();
+                        let mut sup_data: Vec<(Option<K>, (Vec<V>, Vec<W>))> = batch_decrypt(ser, false);
+                        assert_eq!(sup_data.len(), 1);
+                        let mut sup_data = sup_data.remove(0);
+                        let agg_data_ref = input.get_enc_data::<Vec<ItemE>>();
+                        let mut res = create_enc();
+                        let mut agg_data: Vec<(Option<K>, (Vec<V>, Vec<W>))> = ser_decrypt(&agg_data_ref[0]);
+                        
+                        if !agg_data.is_empty() && agg_data[0].0 == sup_data.0 {
+                            agg_data[0].1.0.append(&mut sup_data.1.0);
+                            agg_data[0].1.1.append(&mut sup_data.1.1);
+                        } else {
+                            agg_data.insert(0, sup_data);
+                        }
+        
+                        let last = agg_data.pop().unwrap();
+                        if !agg_data.is_empty() {
+                            let res_bl = ser_encrypt(&agg_data);
+                            merge_enc(&mut res, &res_bl);
+                        }
+                        let res_bl = ser_encrypt(&vec![last]);
+                        merge_enc(&mut res, &res_bl);
+                        res
+                    }).unwrap();
+                let res = handler.join().unwrap();
                 to_ptr(res)
             }
             25 => {

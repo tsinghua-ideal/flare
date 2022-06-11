@@ -19,7 +19,7 @@ sgx_signal = { path = "../incubator-teaclave-sgx-sdk/sgx_signal" }
 sgx_tcrypto = { path = "../incubator-teaclave-sgx-sdk/sgx_tcrypto" }
 sgx_trts = { path = "../incubator-teaclave-sgx-sdk/sgx_trts" }
 sgx_tseal = { path = "../incubator-teaclave-sgx-sdk/sgx_tseal" }
-sgx_tstd = { path = "../incubator-teaclave-sgx-sdk/sgx_tstd" }
+sgx_tstd = { path = "../incubator-teaclave-sgx-sdk/sgx_tstd", features = ["thread"] }
 sgx_types = { path = "../incubator-teaclave-sgx-sdk/sgx_types" }
 
 [dependencies]

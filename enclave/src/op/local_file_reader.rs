@@ -166,7 +166,7 @@ where
         self.take_(input ,should_take, have_take)
     }
 
-    fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
             
         self.compute_start(call_seq, input, dep_info)
     }
@@ -216,7 +216,7 @@ where
         res_iter
     }
 
-    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         //suppose no shuffle will happen after this rdd
         self.narrow(call_seq, input, dep_info)
     }

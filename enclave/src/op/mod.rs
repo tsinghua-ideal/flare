@@ -2,7 +2,7 @@ use core::marker::PhantomData;
 use core::panic::Location;
 use std::any::{Any, TypeId};
 use std::boxed::Box;
-use std::collections::{btree_map::BTreeMap, hash_map::DefaultHasher, HashMap, HashSet};
+use std::collections::{VecDeque, btree_map::BTreeMap, hash_map::DefaultHasher, HashMap, HashSet};
 use std::cmp::{min, Ordering, Reverse};
 use std::hash::{Hash, Hasher};
 use std::mem::forget;
@@ -11,8 +11,9 @@ use std::raw::TraitObject;
 use std::string::ToString;
 use std::sync::{
     atomic::{self, AtomicBool, AtomicU32, AtomicUsize},
-    Arc, SgxMutex as Mutex, SgxRwLock as RwLock, Weak,
+    Arc, SgxCondvar as Condvar, SgxMutex as Mutex, SgxRwLock as RwLock, Weak,
 };
+use std::thread::JoinHandle;
 use std::time::Instant;
 use std::untrusted::time::InstantEx;
 use std::vec::Vec;
@@ -67,6 +68,7 @@ type ResIter<T> = Box<dyn Iterator<Item = Box<dyn Iterator<Item = T>>>>;
 
 pub const MAX_ENC_BL: usize = 1024;
 pub const CACHE_LIMIT: usize = 4_000_000;
+pub const NUM_OM_THREAD: usize = 1;
 pub type Result<T> = std::result::Result<T, &'static str>;
 
 extern "C" {
@@ -75,11 +77,50 @@ extern "C" {
         part_id: usize,
         data_ptr: usize,
     ) -> sgx_status_t;
-
     pub fn ocall_cache_from_outside(ret_val: *mut usize,  //ptr outside enclave
         rdd_id: usize,
         part_id: usize,
     ) -> sgx_status_t;
+    pub fn ocall_set_thread_affinity(
+        ret_val: *mut usize, 
+        is_for_om: u8,
+    ) -> sgx_status_t;
+    pub fn ocall_get_thread_affinity(
+        ret_val: *mut usize, 
+        cores: *mut usize, 
+        cores_len: usize,
+    ) -> sgx_status_t;
+}
+
+pub fn set_thread_affinity(is_for_om: bool) -> usize {
+    let mut num_cores = 0;
+    let sgx_status = unsafe {
+        ocall_set_thread_affinity(&mut num_cores, is_for_om as u8)
+    };
+    match sgx_status {
+        sgx_status_t::SGX_SUCCESS => {}
+        _ => {
+            panic!("[-] OCALL Enclave Failed {}!", sgx_status.as_str());
+        }
+    };
+    num_cores
+}
+
+pub fn get_thread_affinity() -> Vec<usize> {
+    let mut num_cores = 0;
+    const NUM_CORE_LIMIT: usize = 1024; 
+    let mut cores = vec![0usize; 1024];
+    let sgx_status = unsafe {
+        ocall_get_thread_affinity(&mut num_cores, cores.as_mut_ptr(), cores.len())
+    };
+    match sgx_status {
+        sgx_status_t::SGX_SUCCESS => {}
+        _ => {
+            panic!("[-] OCALL Enclave Failed {}!", sgx_status.as_str());
+        }
+    };
+    cores.truncate(num_cores);
+    cores
 }
 
 pub fn default_hash<T: Hash>(t: &T) -> u64 {
@@ -261,27 +302,47 @@ where
     K: Data + Ord,
     V: Data
 {
-    let data_enc = input.get_enc_data::<Vec<ItemE>>();
+    let max_len = Arc::new(AtomicUsize::new(0));
+    let cores = get_thread_affinity();
+    let num_cores = cores.len();
 
-    let mut data = Vec::new();
-    let mut max_len = 0;
-
-    let mut sub_part: Vec<(Option<K>, V)> = Vec::new();
-    for block_enc in data_enc {
-        sub_part.append(&mut ser_decrypt(&block_enc.clone()));
-        if sub_part.get_size() > CACHE_LIMIT/input.get_parallel() {
-            sub_part.sort_unstable_by(cmp_f);
-            max_len = std::cmp::max(max_len, sub_part.len());
-            data.push(sub_part);
-            sub_part = Vec::new();
-        }
-    }
-    if !sub_part.is_empty() {
-        sub_part.sort_unstable_by(cmp_f);
-        max_len = std::cmp::max(max_len, sub_part.len());
-        data.push(sub_part);
+    let pair = Arc::new((Mutex::new(VecDeque::<Vec<(Option<K>, V)>>::new()), Condvar::new()));
+    let mut handlers = Vec::with_capacity(num_cores);
+    //we can launch another num_cores-1 threads
+    for i in 0..num_cores - 1 {
+        let pair_c = pair.clone();
+        let max_len = max_len.clone();
+        let is_for_om = i < NUM_OM_THREAD;
+        let handler = hybrid_individual_sort(is_for_om, pair_c, max_len, input.get_parallel());
+        handlers.push(handler);
     }
 
+    {
+        let builder = std::thread::Builder::new();
+        let handler_nar = builder
+            .spawn(move || {
+                set_thread_affinity(false);
+                let data_enc = input.get_enc_data::<Vec<ItemE>>();
+                let (buf_lock, cvar) = &*pair;
+                for block_enc in data_enc {
+                    let block: Vec<(Option<K>, V)> = ser_decrypt(&block_enc.clone());
+                    if !block.is_empty() {
+                        buf_lock.lock().unwrap().push_back(block);
+                        cvar.notify_one();
+                    }
+                }
+                buf_lock.lock().unwrap().push_back(Vec::new());
+                cvar.notify_all();
+            }).unwrap();
+        handler_nar.join().unwrap();
+    }
+
+    //current thread can be either more OM thread or less OM thread
+    //and it is for miscs 
+    //it should not shrink the cpu set here, otherwise it will affect the child threads in sort helper
+
+    let sub_parts = handlers.into_iter().map(|handler| handler.join().unwrap().into_iter()).flatten().collect::<Vec<_>>();
+    let max_len = max_len.load(atomic::Ordering::SeqCst);
     if max_len == 0 {
         assert!(CNT_PER_PARTITION.lock().unwrap().insert((op_id, part_id), 0).is_none());
         //although the type is incorrect, it is ok because it is empty.
@@ -290,7 +351,7 @@ where
         crate::ALLOCATOR.set_switch(false);
         to_ptr(buckets_enc)
     } else {
-        let mut sort_helper = SortHelper::<K, V>::new(data, max_len, true);
+        let mut sort_helper = BlockSortHelper::<K, V>::new(sub_parts, max_len, true);
         sort_helper.sort();
         let (sorted_data, num_real_elem) = sort_helper.take();
         assert!(CNT_PER_PARTITION.lock().unwrap().insert((op_id, part_id), num_real_elem).is_none());
@@ -304,6 +365,8 @@ where
     K: Data + Ord,
     V: Data
 {
+    //current thread is a parent thread
+    //it should not shrink the cpu set
     let data_enc_ref = input.get_enc_data::<Vec<Vec<ItemE>>>();
     let mut max_len = 0;
 
@@ -332,7 +395,7 @@ where
         }
         res_enc_to_ptr(Vec::<Vec<ItemE>>::new())
     } else {
-        let mut sort_helper = SortHelper::<K, V>::new_with(data, max_len, true);
+        let mut sort_helper = BlockSortHelper::<K, V>::new_with(data, max_len, true);
         sort_helper.sort();
         let (sorted_data, num_real_elem) = sort_helper.take();
         let cnt_per_partition = *CNT_PER_PARTITION.lock().unwrap().get(&(op_id, part_id)).unwrap();
@@ -362,37 +425,87 @@ where
     }
 }
 
-//require each vec (ItemE) is sorted
-pub struct SortHelper<K, V>
-where
-    K: Data + Ord,
-    V: Data,
-{
-    data: Vec<Arc<Mutex<Vec<(Option<K>, V)>>>>,
-    max_len: usize,
-    num_padding: Arc<AtomicUsize>,
-    ascending: bool,
-    dist: Option<Vec<usize>>,
-    dist_use_map: Option<HashMap<usize, AtomicBool>>,
+fn get_block<T: Data>(buf_lock: &Mutex<VecDeque<Vec<T>>>, cvar: &Condvar) -> Vec<T> {
+    let mut buf = buf_lock.lock().unwrap();
+    while buf.is_empty() {
+        buf = cvar.wait(buf).unwrap();
+    }
+    if !buf.front().unwrap().is_empty() {
+        buf.pop_front().unwrap()
+    } else {
+        Vec::new()
+    }
 }
 
-impl<K, V> SortHelper<K, V>
+pub fn hybrid_individual_sort<K: Data + Ord, V: Data>(is_for_om: bool, pair: Arc<(Mutex<VecDeque<Vec<(Option<K>, V)>>>, Condvar)>, max_len: Arc<AtomicUsize>, parallel_num: usize) -> JoinHandle<Vec<Vec<(Option<K>, V)>>> {
+    let builder = std::thread::Builder::new();
+    let handler = builder
+        .spawn(move || {
+            set_thread_affinity(is_for_om);
+            let mut sub_parts = Vec::new();
+            let mut sub_part = Vec::new();
+            
+            let (buf_lock, cvar) = &*pair;
+            let mut block = get_block(buf_lock, cvar);
+
+            while !block.is_empty() {
+                sub_part.append(&mut block);
+                //TODO: the limitation should depend on the num of thread
+                if sub_part.get_size() > CACHE_LIMIT/parallel_num {
+                    if is_for_om {
+                        sub_part.sort_unstable_by(cmp_f);
+                    } else {
+                        let mut sort_helper = ElemSortHelper::<K, V>::new(sub_part, true);
+                        sort_helper.sort();
+                        sub_part = sort_helper.take();
+                    }
+                    max_len.fetch_max(sub_part.len(), atomic::Ordering::SeqCst);
+                    sub_parts.push(sub_part);
+                    sub_part = Vec::new();
+                }
+                block = get_block(buf_lock, cvar);
+            }
+
+            if !sub_part.is_empty() {
+                if is_for_om {
+                    sub_part.sort_unstable_by(cmp_f);
+                } else {
+                    let mut sort_helper = ElemSortHelper::<K, V>::new(sub_part, true);
+                    sort_helper.sort();
+                    sub_part = sort_helper.take();
+                }
+                max_len.fetch_max(sub_part.len(), atomic::Ordering::SeqCst);
+                sub_parts.push(sub_part);
+            }
+            sub_parts
+        })
+        .unwrap();
+    handler
+}
+
+
+//it cannot be parallelized
+pub struct ElemSortHelper<K, V>
 where
     K: Data + Ord,
     V: Data,
 {
-    pub fn new(data: Vec<Vec<(Option<K>, V)>>, max_len: usize, ascending: bool) -> Self {
-        let data = {
-            data
-                .into_iter()
-                .map(|x| Arc::new(Mutex::new(x)))
-                .collect::<Vec<_>>()
-        };
-        SortHelper { data, max_len, num_padding: Arc::new(AtomicUsize::new(0)), ascending, dist: None, dist_use_map: None}
+    data: Vec<(Option<K>, V)>,
+    ascending: bool,
+    dist: Option<Vec<usize>>,
+    dist_use_map: Option<HashMap<usize, bool>>,
+}
+
+impl<K, V> ElemSortHelper<K, V>
+where
+    K: Data + Ord,
+    V: Data,
+{
+    pub fn new(data: Vec<(Option<K>, V)>, ascending: bool) -> Self {
+        ElemSortHelper { data, ascending, dist: None, dist_use_map: None }
     }
 
-    //optimize for merging sorted arrays
-    pub fn new_with(data: Vec<Vec<Vec<(Option<K>, V)>>>, max_len: usize, ascending: bool) -> Self {
+    pub fn new_with(data: Vec<Vec<(Option<K>, V)>>, ascending: bool) -> Self {
         let dist = Some(data.iter()
             .map(|p| p.len())
             .scan(0usize, |acc, x| {
@@ -400,19 +513,16 @@ where
                 Some(*acc)
             }).collect::<Vec<_>>());
         // true means the array is sorted originally, never touched in the following algorithm
-        let dist_use_map = dist.as_ref().map(|dist| dist.iter().map(|k| (*k, AtomicBool::new(true))).collect::<HashMap<_, _>>());
-        let data = {
-            data.into_iter().map(|p| p.into_iter().map(|x|Arc::new(Mutex::new(x)))).flatten().collect::<Vec<_>>()
-        };
-        SortHelper { data, max_len, num_padding: Arc::new(AtomicUsize::new(0)), ascending, dist, dist_use_map}
+        let dist_use_map = dist.as_ref().map(|dist| dist.iter().map(|k| (*k, true)).collect::<HashMap<_, _>>());
+        ElemSortHelper { data: data.into_iter().flatten().collect::<Vec<_>>(), ascending, dist, dist_use_map}
     }
 
-    pub fn sort(&self) {
+    pub fn sort(&mut self) {
         let n = self.data.len();
         self.bitonic_sort_arbitrary(0, n, self.ascending);
     }
 
-    fn bitonic_sort_arbitrary(&self, lo: usize, n: usize, dir: bool) {
+    fn bitonic_sort_arbitrary(&mut self, lo: usize, n: usize, dir: bool) {
         if n > 1 {
             match &self.dist {
                 Some(dist) => {
@@ -437,16 +547,162 @@ where
             };
         }
     }
+    
+    fn bitonic_merge_arbitrary(&mut self, lo: usize, n: usize, dir: bool) {
+        if n > 1 {
+            let mut is_sorted = self.dist.as_ref().map_or(false, |dist| {
+                dist.binary_search(&(lo + n)).map_or(false, |idx| 
+                    idx == 0 || dist[idx - 1] == lo 
+                )
+            });
+            is_sorted = is_sorted && self.dist_use_map.as_mut().map_or(false, |dist_use_map| {
+                let v = dist_use_map.get_mut(&(lo+n)).unwrap();
+                let ret = *v;
+                *v = false;
+                ret
+            });
+            if is_sorted {
+                let first_d = self.data[lo].clone();
+                let last_d = self.data[lo+n-1].clone();
 
-    fn bitonic_merge_arbitrary(&self, lo: usize, n: usize, dir: bool) {
-        fn is_inconsistent_dir<K: Data + Ord, V: Data>(d: &Vec<(Option<K>, V)>, dir: bool) -> bool {
-            d
-                .first()
-                .zip(d.last())
-                .map(|(x, y)| cmp_f(x, y).is_lt() != dir)
-                .unwrap_or(false)
+                let ori_dir = cmp_f(&first_d, &last_d).is_lt();
+                let should_reverse = ori_dir != dir;
+                if should_reverse {
+                    for i in lo..(lo + n / 2) {
+                        let l = 2 * lo + n - 1 - i;
+                        self.data.swap(i, l);
+                    }
+                }
+            } else {
+                let m = n.next_power_of_two() >> 1;
+                for i in lo..(lo + n - m) {
+                    let l = i + m;
+                    if dir == cmp_f(&self.data[i], &self.data[l]).is_gt() {
+                        self.data.swap(i, l);
+                    }
+                }
+    
+                self.bitonic_merge_arbitrary(lo, m, dir);
+                self.bitonic_merge_arbitrary(lo + m, n - m, dir);
+            }
         }
-        
+    }
+
+    pub fn take(&mut self) -> Vec<(Option<K>, V)> {
+        std::mem::take(&mut self.data)
+    }
+
+}
+
+
+//require each vec (ItemE) is sorted
+//it is parallelizable
+pub struct BlockSortHelper<K, V>
+where
+    K: Data + Ord,
+    V: Data,
+{
+    data: Vec<Arc<Mutex<Vec<(Option<K>, V)>>>>,
+    max_len: usize,
+    num_padding: Arc<AtomicUsize>,
+    ascending: bool,
+    dist: Option<Vec<usize>>,
+    dist_use_map: Option<HashMap<usize, AtomicBool>>,
+    num_om_thread: AtomicUsize,
+    num_bito_thread: AtomicUsize,
+    num_cores: usize,
+}
+
+impl<K, V> BlockSortHelper<K, V>
+where
+    K: Data + Ord,
+    V: Data,
+{
+    pub fn new(data: Vec<Vec<(Option<K>, V)>>, max_len: usize, ascending: bool) -> Self {
+        let data = {
+            data
+                .into_iter()
+                .map(|x| Arc::new(Mutex::new(x)))
+                .collect::<Vec<_>>()
+        };
+        BlockSortHelper { data, max_len, num_padding: Arc::new(AtomicUsize::new(0)), ascending, dist: None, dist_use_map: None, num_om_thread: AtomicUsize::new(0), num_bito_thread: AtomicUsize::new(0), num_cores: get_thread_affinity().len()}
+    }
+
+    //optimize for merging sorted arrays
+    pub fn new_with(data: Vec<Vec<Vec<(Option<K>, V)>>>, max_len: usize, ascending: bool) -> Self {
+        let dist = Some(data.iter()
+            .map(|p| p.len())
+            .scan(0usize, |acc, x| {
+                *acc = *acc + x;
+                Some(*acc)
+            }).collect::<Vec<_>>());
+        // true means the array is sorted originally, never touched in the following algorithm
+        let dist_use_map = dist.as_ref().map(|dist| dist.iter().map(|k| (*k, AtomicBool::new(true))).collect::<HashMap<_, _>>());
+        let data = {
+            data.into_iter().map(|p| p.into_iter().map(|x|Arc::new(Mutex::new(x)))).flatten().collect::<Vec<_>>()
+        };
+        BlockSortHelper { data, max_len, num_padding: Arc::new(AtomicUsize::new(0)), ascending, dist, dist_use_map, num_om_thread: AtomicUsize::new(0), num_bito_thread: AtomicUsize::new(0), num_cores: get_thread_affinity().len()}
+    }
+
+    pub fn sort(&self) {
+        let n = self.data.len();
+        let handlers = self.bitonic_sort_arbitrary(0, n, self.ascending);
+        for handler in handlers {
+            let is_om_thread = handler.join().unwrap();
+            if is_om_thread {
+                self.num_om_thread.fetch_sub(1, atomic::Ordering::SeqCst);
+            } else {
+                self.num_bito_thread.fetch_sub(1, atomic::Ordering::SeqCst);
+            }
+        }
+    }
+
+    fn bitonic_sort_arbitrary(&self, lo: usize, n: usize, dir: bool) -> Vec<JoinHandle<bool>> {
+        if n > 1 {
+            match &self.dist {
+                Some(dist) => {
+                    let m = match dist.binary_search(&(lo + n / 2)) {
+                        Ok(idx) => dist[idx] - lo,
+                        Err(idx) => dist[idx] - lo,
+                    };
+                    let mut handlers = Vec::new();
+                    if m < n {
+                        handlers.append(&mut self.bitonic_sort_arbitrary(lo, m, !dir));
+                    }
+                    if m > 0 {
+                        handlers.append(&mut self.bitonic_sort_arbitrary(lo + m, n - m, dir));
+                    }
+                    for handler in handlers {
+                        let is_om_thread = handler.join().unwrap();
+                        if is_om_thread {
+                            self.num_om_thread.fetch_sub(1, atomic::Ordering::SeqCst);
+                        } else {
+                            self.num_bito_thread.fetch_sub(1, atomic::Ordering::SeqCst);
+                        }
+                    }
+                    self.bitonic_merge_arbitrary(lo, n, dir)
+                },
+                None => {
+                    let m = n / 2;
+                    let mut handlers = self.bitonic_sort_arbitrary(lo, m, !dir);
+                    handlers.append(&mut self.bitonic_sort_arbitrary(lo + m, n - m, dir));
+                    for handler in handlers {
+                        let is_om_thread = handler.join().unwrap();
+                        if is_om_thread {
+                            self.num_om_thread.fetch_sub(1, atomic::Ordering::SeqCst);
+                        } else {
+                            self.num_bito_thread.fetch_sub(1, atomic::Ordering::SeqCst);
+                        }
+                    }
+                    self.bitonic_merge_arbitrary(lo, n, dir)
+                }
+            }
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn bitonic_merge_arbitrary(&self, lo: usize, n: usize, dir: bool) -> Vec<JoinHandle<bool>> {
         if n > 1 {
             let max_len = self.max_len;
             let num_padding = self.num_padding.clone();
@@ -556,78 +812,158 @@ where
                         std::mem::swap(&mut *self.data[i].lock().unwrap(), &mut *self.data[l].lock().unwrap());
                     }
                 }
+                Vec::new()
             } else {
                 let m = n.next_power_of_two() >> 1;
+                let mut handlers = Vec::new();
                 for i in lo..(lo + n - m) {
                     let l = i + m;
                     //merge
-                    let d_i: Vec<(Option<K>, V)> = std::mem::take(&mut *self.data[i].lock().unwrap());
-                    let d_l: Vec<(Option<K>, V)> = std::mem::take(&mut *self.data[l].lock().unwrap());
-    
-                    let real_len = d_i.len() + d_l.len();
-                    let dummy_len = max_len * 2 - real_len;
-                    if real_len < max_len * 2 {
-                        num_padding.fetch_add(dummy_len, atomic::Ordering::SeqCst);
-                    }
-    
-                    let mut new_d_i = Vec::with_capacity(max_len);
-                    let mut new_d_l = Vec::with_capacity(max_len);
-                    //desending, append dummy elements first
-                    if !dir {
-                        new_d_i.append(&mut vec![(None, Default::default()); std::cmp::min(dummy_len, max_len)]);
-                        new_d_l.append(&mut vec![(None, Default::default()); dummy_len.saturating_sub(max_len)]);
-                    }
-    
-                    let mut iter_i = if is_inconsistent_dir(&d_i, dir) {
-                        Box::new(d_i.into_iter().rev()) as Box<dyn Iterator<Item = (Option<K>, V)>>
+                    let data_i = self.data[i].clone();
+                    let data_l = self.data[l].clone();
+                    let num_padding = self.num_padding.clone();
+                    let num_om_thread = self.num_om_thread.fetch_add(1, atomic::Ordering::SeqCst);
+                    if num_om_thread < NUM_OM_THREAD {
+                        let builder = std::thread::Builder::new();
+                        let handler = builder
+                            .spawn(move || {
+                                set_thread_affinity(true);
+                                BlockSortHelper::merge_om(data_i, data_l, num_padding, max_len, dir);
+                                true
+                            }).unwrap();
+                        handlers.push(handler);
                     } else {
-                        Box::new(d_i.into_iter()) as Box<dyn Iterator<Item = (Option<K>, V)>>
-                    };
-    
-                    let mut iter_l = if is_inconsistent_dir(&d_l, dir) {
-                        Box::new(d_l.into_iter().rev()) as Box<dyn Iterator<Item = (Option<K>, V)>>
-                    } else {
-                        Box::new(d_l.into_iter()) as Box<dyn Iterator<Item = (Option<K>, V)>>
-                    };
-    
-                    let mut cur_i = iter_i.next();
-                    let mut cur_l = iter_l.next();
-    
-                    while cur_i.is_some() || cur_l.is_some() {
-                        let should_puti = cur_l.is_none()
-                            || cur_i.is_some()
-                                &&  cmp_f(cur_i.as_ref().unwrap(), cur_l.as_ref().unwrap()).is_lt() == dir;
-                        let kv = if should_puti {
-                            let t = cur_i.unwrap();
-                            cur_i = iter_i.next();
-                            t
+                        self.num_om_thread.fetch_sub(1, atomic::Ordering::SeqCst);
+                        let num_bito_thread = self.num_bito_thread.fetch_add(1, atomic::Ordering::SeqCst);
+                        if num_bito_thread < self.num_cores - 1 - NUM_OM_THREAD {
+                            let builder = std::thread::Builder::new();
+                            let handler = builder
+                                .spawn(move || {
+                                    set_thread_affinity(false);
+                                    BlockSortHelper::merge_bitonic(data_i, data_l, num_padding, max_len, dir);
+                                    false
+                                }).unwrap();
+                            handlers.push(handler);
                         } else {
-                            let t = cur_l.unwrap();
-                            cur_l = iter_l.next();
-                            t
-                        };
-    
-                        if new_d_i.len() < max_len {
-                            new_d_i.push(kv);
-                        } else {
-                            new_d_l.push(kv);
+                            self.num_bito_thread.fetch_sub(1, atomic::Ordering::SeqCst);
+                            BlockSortHelper::merge_om(data_i, data_l, num_padding, max_len, dir);
                         }
                     }
-    
-                    //ascending, append dummy elements finally
-                    if dir {
-                        new_d_i.resize(max_len, (None, Default::default()));
-                        new_d_l.resize(max_len, (None, Default::default()));
-                    }
-
-                    *self.data[i].lock().unwrap() = new_d_i;
-                    *self.data[l].lock().unwrap() = new_d_l;
                 }
-    
-                self.bitonic_merge_arbitrary(lo, m, dir);
-                self.bitonic_merge_arbitrary(lo + m, n - m, dir);
+
+                for handler in handlers {
+                    let is_om_thread = handler.join().unwrap();
+                    if is_om_thread {
+                        self.num_om_thread.fetch_sub(1, atomic::Ordering::SeqCst);
+                    } else {
+                        self.num_bito_thread.fetch_sub(1, atomic::Ordering::SeqCst);
+                    }
+                }
+                
+                let mut handlers = self.bitonic_merge_arbitrary(lo, m, dir);
+                handlers.append(&mut self.bitonic_merge_arbitrary(lo + m, n - m, dir));
+                handlers
+            }
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub fn merge_om(data_i: Arc<Mutex<Vec<(Option<K>, V)>>>, data_l: Arc<Mutex<Vec<(Option<K>, V)>>>, num_padding: Arc<AtomicUsize>, max_len: usize, dir: bool) {
+        fn is_inconsistent_dir<K: Data + Ord, V: Data>(d: &Vec<(Option<K>, V)>, dir: bool) -> bool {
+            d
+                .first()
+                .zip(d.last())
+                .map(|(x, y)| cmp_f(x, y).is_lt() != dir)
+                .unwrap_or(false)
+        }
+        let d_i: Vec<(Option<K>, V)> = std::mem::take(&mut *data_i.lock().unwrap());
+        let d_l: Vec<(Option<K>, V)> = std::mem::take(&mut *data_l.lock().unwrap());
+
+        let real_len = d_i.len() + d_l.len();
+        let dummy_len = max_len * 2 - real_len;
+        if real_len < max_len * 2 {
+            num_padding.fetch_add(dummy_len, atomic::Ordering::SeqCst);
+        }
+
+        let mut new_d_i = Vec::with_capacity(max_len);
+        let mut new_d_l = Vec::with_capacity(max_len);
+        //desending, append dummy elements first
+        if !dir {
+            new_d_i.append(&mut vec![(None, Default::default()); std::cmp::min(dummy_len, max_len)]);
+            new_d_l.append(&mut vec![(None, Default::default()); dummy_len.saturating_sub(max_len)]);
+        }
+
+        let mut iter_i = if is_inconsistent_dir(&d_i, dir) {
+            Box::new(d_i.into_iter().rev()) as Box<dyn Iterator<Item = (Option<K>, V)>>
+        } else {
+            Box::new(d_i.into_iter()) as Box<dyn Iterator<Item = (Option<K>, V)>>
+        };
+
+        let mut iter_l = if is_inconsistent_dir(&d_l, dir) {
+            Box::new(d_l.into_iter().rev()) as Box<dyn Iterator<Item = (Option<K>, V)>>
+        } else {
+            Box::new(d_l.into_iter()) as Box<dyn Iterator<Item = (Option<K>, V)>>
+        };
+
+        let mut cur_i = iter_i.next();
+        let mut cur_l = iter_l.next();
+
+        while cur_i.is_some() || cur_l.is_some() {
+            let should_puti = cur_l.is_none()
+                || cur_i.is_some()
+                    &&  cmp_f(cur_i.as_ref().unwrap(), cur_l.as_ref().unwrap()).is_lt() == dir;
+            let kv = if should_puti {
+                let t = cur_i.unwrap();
+                cur_i = iter_i.next();
+                t
+            } else {
+                let t = cur_l.unwrap();
+                cur_l = iter_l.next();
+                t
+            };
+
+            if new_d_i.len() < max_len {
+                new_d_i.push(kv);
+            } else {
+                new_d_l.push(kv);
             }
         }
+
+        //ascending, append dummy elements finally
+        if dir {
+            new_d_i.resize(max_len, (None, Default::default()));
+            new_d_l.resize(max_len, (None, Default::default()));
+        }
+
+        *data_i.lock().unwrap() = new_d_i;
+        *data_l.lock().unwrap() = new_d_l;
+    }
+
+    pub fn merge_bitonic(data_i: Arc<Mutex<Vec<(Option<K>, V)>>>, data_l: Arc<Mutex<Vec<(Option<K>, V)>>>, num_padding: Arc<AtomicUsize>, max_len: usize, dir: bool) {
+        let d_i: Vec<(Option<K>, V)> = std::mem::take(&mut *data_i.lock().unwrap());
+        let d_l: Vec<(Option<K>, V)> = std::mem::take(&mut *data_l.lock().unwrap());
+
+        let real_len = d_i.len() + d_l.len();
+        let dummy_len = max_len * 2 - real_len;
+        if real_len < max_len * 2 {
+            num_padding.fetch_add(dummy_len, atomic::Ordering::SeqCst);
+        }
+
+        let data = vec![d_i, d_l];
+        let mut sort_helper = ElemSortHelper::new_with(data, dir);
+        sort_helper.sort();
+        //desending, append dummy elements first
+        let mut new_data = Vec::with_capacity(2 * max_len);
+        if !dir {
+            new_data.append(&mut vec![(None, Default::default()); dummy_len]);
+        }
+        new_data.append(&mut sort_helper.take());
+        if dir {
+            new_data.resize(2 * max_len, (None, Default::default()));
+        }
+        *data_l.lock().unwrap() = new_data.split_off(max_len);
+        *data_i.lock().unwrap() = new_data;
     }
 
     pub fn take(&mut self) -> (Vec<(Option<K>, V)>, usize) {
@@ -1049,22 +1385,22 @@ impl OpId {
     }
 }
 
-pub struct NextOpId<'a> {
+pub struct NextOpId {
     tid: u64,
-    rdd_ids: &'a Vec<usize>,
-    op_ids: &'a Vec<OpId>,
-    part_ids: &'a Vec<usize>,
+    rdd_ids: Vec<usize>,
+    op_ids: Vec<OpId>,
+    part_ids: Vec<usize>,
     cur_idx: usize,
     cache_meta: CacheMeta,
     captured_vars: HashMap<usize, Vec<Vec<u8>>>,
     is_shuffle: bool,
 }
 
-impl<'a> NextOpId<'a> {
+impl NextOpId {
     pub fn new(tid: u64, 
-        rdd_ids: &'a Vec<usize>, 
-        op_ids: &'a Vec<OpId>, 
-        part_ids: &'a Vec<usize>, 
+        rdd_ids: Vec<usize>, 
+        op_ids: Vec<OpId>, 
+        part_ids: Vec<usize>, 
         cache_meta: CacheMeta, 
         captured_vars: HashMap<usize, Vec<Vec<u8>>>, 
         dep_info: &DepInfo,
@@ -1355,7 +1691,7 @@ pub trait OpBase: Send + Sync {
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
         None
     }
-    fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8;
+    fn iterator_start(&self, call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8;
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
         unreachable!()
     }
@@ -1435,7 +1771,7 @@ impl<I: Op + ?Sized> OpBase for SerArc<I> {
     fn number_of_splits(&self) -> usize {
         (**self).get_op_base().number_of_splits()
     }
-    fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         (**self).get_op_base().iterator_start(call_seq, input, dep_info)
     }
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
@@ -1460,7 +1796,7 @@ impl<I: Op + ?Sized> Op for SerArc<I> {
     fn get_op_base(&self) -> Arc<dyn OpBase> {
         (**self).get_op_base()
     }
-    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         (**self).compute_start(call_seq, input, dep_info)
     }
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
@@ -1476,7 +1812,7 @@ pub trait Op: OpBase + 'static {
     type Item: Data;
     fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>>;
     fn get_op_base(&self) -> Arc<dyn OpBase>;
-    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8;
+    fn compute_start(&self, call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8;
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item>;
     fn cache(&self, data: Vec<Self::Item>) {
         ()
@@ -1645,9 +1981,9 @@ pub trait Op: OpBase + 'static {
         }
     }
 
-    fn narrow(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn narrow(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         println!("regular narrow");
-        let result_iter = self.compute(call_seq, input);
+        let result_iter = self.compute(&mut call_seq, input);
         //acc stays outside enclave
         let mut acc = create_enc();
         for result in result_iter {
@@ -1664,17 +2000,16 @@ pub trait Op: OpBase + 'static {
         to_ptr(acc)
     } 
 
-    fn shuffle(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn shuffle(&self, call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
         let tid = call_seq.tid;
         let now = Instant::now();
 
-        let result_iter = Box::new(self.compute(call_seq, input)
-            .map(|x| Box::new(x.collect::<Vec<_>>()) as Box<dyn Any>)) as Box<dyn Iterator<Item = Box<dyn Any>>>;
-        let result_ptr = shuf_dep.do_shuffle_task(tid, result_iter, input.get_parallel());
+        let opb = self.get_op_base();
+        let result_ptr = shuf_dep.do_shuffle_task(tid, opb, call_seq, input);
 
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("tid: {:?}, shuffle write: {:?}s, cur mem: {:?}B", call_seq.tid, dur, crate::ALLOCATOR.get_memory_usage());
+        println!("tid: {:?}, shuffle write: {:?}s, cur mem: {:?}B", tid, dur, crate::ALLOCATOR.get_memory_usage());
         //let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
         result_ptr
     }

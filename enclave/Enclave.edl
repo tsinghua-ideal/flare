@@ -21,6 +21,7 @@ enclave {
     from "sgx_backtrace.edl" import *;
     from "sgx_tstdc.edl" import *;
     from "sgx_pthread.edl" import *;
+    from "sgx_sys.edl" import *;
     
     struct op_id_t {
         uint64_t h;
@@ -105,6 +106,8 @@ enclave {
         size_t ocall_cache_from_outside(size_t rdd_id,
             size_t part_id);
         void* sbrk_o(size_t size);  
+        size_t ocall_set_thread_affinity(uint8_t is_for_om);
+        size_t ocall_get_thread_affinity([out, count=cores_len] size_t* cores, size_t cores_len);
     };
 
 };

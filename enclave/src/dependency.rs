@@ -1,14 +1,15 @@
 use std::any::Any;
 use std::boxed::Box;
+use std::collections::VecDeque;
 use std::hash::Hash;
 use std::mem::forget;
-use std::sync::{Arc, SgxRwLock as RwLock, atomic::{self, AtomicBool}};
+use std::sync::{Arc, SgxCondvar as Condvar, SgxMutex as Mutex, SgxRwLock as RwLock, atomic::{self, AtomicUsize, AtomicBool}};
 use std::time::Instant;
 use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
 use crate::basic::{AnyData, Data, Func};
-use crate::op::{res_enc_to_ptr, to_ptr, ser_encrypt, ser_decrypt, batch_encrypt, batch_decrypt, create_enc, combine_enc, ItemE, CACHE_LIMIT, Input, OpId, SortHelper, column_sort_step_2, merge_enc};
+use crate::op::{get_thread_affinity, set_thread_affinity, hybrid_individual_sort, res_enc_to_ptr, to_ptr, ser_encrypt, ser_decrypt, batch_encrypt, batch_decrypt, create_enc, combine_enc, ItemE, CACHE_LIMIT, NUM_OM_THREAD, Input, NextOpId, OpId, OpBase, Op, ElemSortHelper, BlockSortHelper, column_sort_step_2, merge_enc};
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use downcast_rs::DowncastSync;
@@ -104,7 +105,7 @@ impl NarrowDependencyTrait for RangeDependency {
 
 pub trait ShuffleDependencyTrait: DowncastSync + Send + Sync  { 
     fn change_partitioner(&self, reduce_num: usize);
-    fn do_shuffle_task(&self, tid: u64, iter: Box<dyn Iterator<Item = Box<dyn Any>>>, parallel_num: usize) -> *mut u8;
+    fn do_shuffle_task(&self, tid: u64, opb: Arc<dyn OpBase>, call_seq: NextOpId, input: Input) -> *mut u8;
     fn send_sketch(&self, buf: &mut SizeBuf, p_data_enc: *mut u8);
     fn send_enc_data(&self, p_out: usize, p_data_enc: *mut u8);
     fn free_res_enc(&self, res_ptr: *mut u8, is_enc: bool);
@@ -171,40 +172,57 @@ where
         }
     }
 
-    fn do_shuffle_task(&self, tid: u64, iter: Box<dyn Iterator<Item = Box<dyn Any>>>, parallel_num: usize) -> *mut u8 {
-        let aggregator = self.aggregator.clone();
-        //sub partition sort, for each vector in sub_parts, it is sorted
-        let mut sub_part = Vec::new();
-        let mut sub_parts = Vec::new();
+    fn do_shuffle_task(&self, tid: u64, opb: Arc<dyn OpBase>, mut call_seq: NextOpId, input: Input) -> *mut u8 {        
+        let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
+        let num_output_splits = self.partitioner.read().unwrap().get_num_of_partitions();
+        let is_cogroup = self.is_cogroup;
+        let max_len = Arc::new(AtomicUsize::new(0));
+        let cores = get_thread_affinity();
+        let num_cores = cores.len();
 
-        let mut max_len = 0;
-        
-        for block in iter {
-            let mut block = block.downcast::<Vec<(K, V)>>()
-                .unwrap().into_iter().map(|(k, v)| (Some(k), v)).collect::<Vec<_>>();
-            sub_part.append(&mut block);
-
-            if sub_part.get_size() > CACHE_LIMIT/parallel_num {
-                sub_part.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-                max_len = std::cmp::max(max_len, sub_part.len());
-                sub_parts.push(sub_part);
-                sub_part = Vec::new();
-            }
-        }
-        
-        if !sub_part.is_empty() {
-            sub_part.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-            max_len = std::cmp::max(max_len, sub_part.len());
-            sub_parts.push(sub_part);
+        let pair = Arc::new((Mutex::new(VecDeque::<Vec<(Option<K>, V)>>::new()), Condvar::new()));
+        let mut handlers = Vec::with_capacity(num_cores);
+        //we can launch another num_cores-1 threads
+        for i in 0..num_cores - 1 {
+            let pair_c = pair.clone();
+            let max_len = max_len.clone();
+            let is_for_om = i < NUM_OM_THREAD;
+            let handler = hybrid_individual_sort(is_for_om, pair_c, max_len, input.get_parallel());
+            handlers.push(handler);
         }
 
+        //a thread for narrow dependency
+        {
+            let builder = std::thread::Builder::new();
+            let handler_nar = builder
+                .spawn(move || {
+                    set_thread_affinity(false);
+                    let result_iter = Box::new(op.compute(&mut call_seq, input)
+                        .map(|x| x.collect::<Vec<_>>()));
+                    let (buf_lock, cvar) = &*pair;
+                    for block in result_iter {
+                        let block = block.into_iter().map(|(k, v)| (Some(k), v)).collect::<Vec<_>>();
+                        if !block.is_empty() {
+                            buf_lock.lock().unwrap().push_back(block);
+                            cvar.notify_one();
+                        }
+                    }
+                    buf_lock.lock().unwrap().push_back(Vec::new());
+                    cvar.notify_all();
+                }).unwrap();
+            handler_nar.join().unwrap();
+        }
+        //current thread can be either more OM thread or less OM thread
+        //and it is for miscs 
+        //it should not shrink the cpu set here, otherwise it will affect the child threads in sort helper
+        let sub_parts = handlers.into_iter().map(|handler| handler.join().unwrap().into_iter()).flatten().collect::<Vec<_>>();
+        let max_len = max_len.load(atomic::Ordering::SeqCst);
         //partition sort (local sort), and pad so that each sub partition should have the same number of (K, V)
-        let mut sort_helper = SortHelper::<K, V>::new(sub_parts, max_len, true);
+        let mut sort_helper = BlockSortHelper::<K, V>::new(sub_parts, max_len, true);
         sort_helper.sort();
         let (sorted_data, num_real_elem) = sort_helper.take();
-        let num_output_splits = self.partitioner.read().unwrap().get_num_of_partitions();
         let chunk_size = num_real_elem.saturating_sub(1) / num_output_splits + 1;
-        let buckets_enc = if self.is_cogroup {
+        let buckets_enc = if is_cogroup {
             let mut buckets_enc = create_enc();
             for bucket in sorted_data.chunks(chunk_size) {
                 merge_enc(&mut buckets_enc, &batch_encrypt(bucket, false));
@@ -214,6 +232,7 @@ where
             //TODO: 
             column_sort_step_2::<(Option<K>, V)>(tid, sorted_data, max_len, num_output_splits)
         };
+
         to_ptr(buckets_enc)
     }
 

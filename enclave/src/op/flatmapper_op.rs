@@ -110,7 +110,7 @@ where
         self.vals.split_num.load(atomic::Ordering::SeqCst)
     }
 
-    fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
 		self.compute_start(call_seq, input, dep_info)
     }
 
@@ -153,7 +153,7 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
   
-    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {   //narrow
                 self.narrow(call_seq, input, dep_info)
