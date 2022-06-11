@@ -1707,20 +1707,19 @@ pub trait Op: OpBase + 'static {
         let num_inside = 1;
 
         Box::new(res_iter.enumerate().map(move |(idx, iter)| {
-            let res = iter.collect::<Vec<_>>();
-            //cache inside enclave
-            if idx >= esti_bound.saturating_sub(num_inside) {
-                let mut data = CACHE.remove(key).map_or(vec![], |x| *unsafe{Box::from_raw(x.0 as *mut u8 as *mut Vec<Self::Item>)});
-                data.append(&mut res.clone());
-                CACHE.insert(key, Box::into_raw(Box::new(data)) as *mut u8 as usize, op_id);
-                CACHE.insert_bid(key.0, key.1, idx, idx+1);
-            }
-            //println!("After cache inside enclave, memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
-
             //cache outside enclave
             if is_caching_final_rdd {
-                Box::new(res.into_iter()) as Box<dyn Iterator<Item = _>>
+                iter
             } else {
+                let res = iter.collect::<Vec<_>>();
+                //cache inside enclave
+                if idx >= esti_bound.saturating_sub(num_inside) {
+                    let mut data = CACHE.remove(key).map_or(vec![], |x| *unsafe{Box::from_raw(x.0 as *mut u8 as *mut Vec<Self::Item>)});
+                    data.append(&mut res.clone());
+                    CACHE.insert(key, Box::into_raw(Box::new(data)) as *mut u8 as usize, op_id);
+                    CACHE.insert_bid(key.0, key.1, idx, idx+1);
+                }
+                //println!("After cache inside enclave, memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
                 let _handle = ope.cache_to_outside(key, res.clone());
                 //println!("After launch encryption thread, memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
                 Box::new(res.into_iter()) as Box<dyn Iterator<Item = _>>
