@@ -480,8 +480,8 @@ where
 
     //optimize for merging sorted arrays
     pub fn new_with(data: Vec<Vec<ItemE>>, max_len: usize, ascending: bool) -> Self {
-        let dist = Some(data.iter()
-            .map(|p| p.len())
+        let dist = Some(vec![0].into_iter().chain(data.iter()
+            .map(|p| p.len()))
             .scan(0usize, |acc, x| {
                 *acc = *acc + x;
                 Some(*acc)
@@ -506,14 +506,11 @@ where
         if n > 1 {
             match &self.dist {
                 Some(dist) => {
-                    let m = match dist.binary_search(&(lo + n / 2)) {
-                        Ok(idx) => dist[idx] - lo,
-                        Err(idx) => dist[idx] - lo,
-                    };
-                    if m < n {
+                    let r_idx = dist.binary_search(&(lo+n)).unwrap();
+                    let l_idx = dist.binary_search(&lo).unwrap();
+                    if r_idx - l_idx > 1 {
+                        let m = dist[(l_idx + r_idx)/2] - lo;
                         self.bitonic_sort_arbitrary(lo, m, !dir);
-                    }
-                    if m > 0 {
                         self.bitonic_sort_arbitrary(lo + m, n - m, dir);
                     }
                     self.bitonic_merge_arbitrary(lo, n, dir);
@@ -543,7 +540,7 @@ where
 
             let mut is_sorted = self.dist.as_ref().map_or(false, |dist| {
                 dist.binary_search(&(lo + n)).map_or(false, |idx| 
-                    idx == 0 || dist[idx - 1] == lo 
+                    dist[idx - 1] == lo 
                 )
             });
             is_sorted = is_sorted && self.dist_use_map.as_ref().map_or(false, |dist_use_map| {
