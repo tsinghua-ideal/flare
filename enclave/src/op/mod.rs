@@ -68,7 +68,7 @@ type ResIter<T> = Box<dyn Iterator<Item = Box<dyn Iterator<Item = T>>>>;
 
 pub const MAX_ENC_BL: usize = 1024;
 pub const CACHE_LIMIT: usize = 4_000_000;
-pub const NUM_OM_THREAD: usize = 1;
+pub const MAX_OM_THREAD: usize = 10;
 pub type Result<T> = std::result::Result<T, &'static str>;
 
 extern "C" {
@@ -109,7 +109,7 @@ pub fn set_thread_affinity(is_for_om: bool) -> usize {
 pub fn get_thread_affinity() -> Vec<usize> {
     let mut num_cores = 0;
     const NUM_CORE_LIMIT: usize = 1024; 
-    let mut cores = vec![0usize; 1024];
+    let mut cores = vec![0usize; NUM_CORE_LIMIT];
     let sgx_status = unsafe {
         ocall_get_thread_affinity(&mut num_cores, cores.as_mut_ptr(), cores.len())
     };
@@ -312,7 +312,7 @@ where
     for i in 0..num_cores - 1 {
         let pair_c = pair.clone();
         let max_len = max_len.clone();
-        let is_for_om = i < NUM_OM_THREAD;
+        let is_for_om = i < MAX_OM_THREAD;
         let handler = hybrid_individual_sort(is_for_om, pair_c, max_len, input.get_parallel());
         handlers.push(handler);
     }
@@ -377,7 +377,7 @@ where
         for block_enc in part_enc.iter() {
             //we can derive max_len from the first sub partition in each partition
             sub_part.append(&mut ser_decrypt(&block_enc.clone()));
-            if sub_part.get_size() > CACHE_LIMIT/input.get_parallel() {
+            if sub_part.get_size() > CACHE_LIMIT/MAX_OM_THREAD/input.get_parallel() {
                 max_len = std::cmp::max(max_len, sub_part.len());
                 part.push(sub_part);
                 sub_part = Vec::new();
@@ -451,7 +451,7 @@ pub fn hybrid_individual_sort<K: Data + Ord, V: Data>(is_for_om: bool, pair: Arc
             while !block.is_empty() {
                 sub_part.append(&mut block);
                 //TODO: the limitation should depend on the num of thread
-                if sub_part.get_size() > CACHE_LIMIT/parallel_num {
+                if sub_part.get_size() > CACHE_LIMIT/MAX_OM_THREAD/parallel_num {
                     if is_for_om {
                         sub_part.sort_unstable_by(cmp_f);
                     } else {
@@ -506,8 +506,8 @@ where
     }
 
     pub fn new_with(data: Vec<Vec<(Option<K>, V)>>, ascending: bool) -> Self {
-        let dist = Some(data.iter()
-            .map(|p| p.len())
+        let dist = Some(vec![0].into_iter().chain(data.iter()
+            .map(|p| p.len()))
             .scan(0usize, |acc, x| {
                 *acc = *acc + x;
                 Some(*acc)
@@ -526,14 +526,11 @@ where
         if n > 1 {
             match &self.dist {
                 Some(dist) => {
-                    let m = match dist.binary_search(&(lo + n / 2)) {
-                        Ok(idx) => dist[idx] - lo,
-                        Err(idx) => dist[idx] - lo,
-                    };
-                    if m < n {
+                    let r_idx = dist.binary_search(&(lo+n)).unwrap();
+                    let l_idx = dist.binary_search(&lo).unwrap();
+                    if r_idx - l_idx > 1 {
+                        let m = dist[(l_idx + r_idx)/2] - lo;
                         self.bitonic_sort_arbitrary(lo, m, !dir);
-                    }
-                    if m > 0 {
                         self.bitonic_sort_arbitrary(lo + m, n - m, dir);
                     }
                     self.bitonic_merge_arbitrary(lo, n, dir);
@@ -552,7 +549,7 @@ where
         if n > 1 {
             let mut is_sorted = self.dist.as_ref().map_or(false, |dist| {
                 dist.binary_search(&(lo + n)).map_or(false, |idx| 
-                    idx == 0 || dist[idx - 1] == lo 
+                    dist[idx - 1] == lo 
                 )
             });
             is_sorted = is_sorted && self.dist_use_map.as_mut().map_or(false, |dist_use_map| {
@@ -630,8 +627,8 @@ where
 
     //optimize for merging sorted arrays
     pub fn new_with(data: Vec<Vec<Vec<(Option<K>, V)>>>, max_len: usize, ascending: bool) -> Self {
-        let dist = Some(data.iter()
-            .map(|p| p.len())
+        let dist = Some(vec![0].into_iter().chain(data.iter()
+            .map(|p| p.len()))
             .scan(0usize, |acc, x| {
                 *acc = *acc + x;
                 Some(*acc)
@@ -661,23 +658,20 @@ where
         if n > 1 {
             match &self.dist {
                 Some(dist) => {
-                    let m = match dist.binary_search(&(lo + n / 2)) {
-                        Ok(idx) => dist[idx] - lo,
-                        Err(idx) => dist[idx] - lo,
-                    };
-                    let mut handlers = Vec::new();
-                    if m < n {
+                    let r_idx = dist.binary_search(&(lo+n)).unwrap();
+                    let l_idx = dist.binary_search(&lo).unwrap();
+                    if r_idx - l_idx > 1 {
+                        let mut handlers = Vec::new();
+                        let m = dist[(l_idx + r_idx)/2] - lo;
                         handlers.append(&mut self.bitonic_sort_arbitrary(lo, m, !dir));
-                    }
-                    if m > 0 {
                         handlers.append(&mut self.bitonic_sort_arbitrary(lo + m, n - m, dir));
-                    }
-                    for handler in handlers {
-                        let is_om_thread = handler.join().unwrap();
-                        if is_om_thread {
-                            self.num_om_thread.fetch_sub(1, atomic::Ordering::SeqCst);
-                        } else {
-                            self.num_bito_thread.fetch_sub(1, atomic::Ordering::SeqCst);
+                        for handler in handlers {
+                            let is_om_thread = handler.join().unwrap();
+                            if is_om_thread {
+                                self.num_om_thread.fetch_sub(1, atomic::Ordering::SeqCst);
+                            } else {
+                                self.num_bito_thread.fetch_sub(1, atomic::Ordering::SeqCst);
+                            }
                         }
                     }
                     self.bitonic_merge_arbitrary(lo, n, dir)
@@ -705,114 +699,47 @@ where
     fn bitonic_merge_arbitrary(&self, lo: usize, n: usize, dir: bool) -> Vec<JoinHandle<bool>> {
         if n > 1 {
             let max_len = self.max_len;
-            let num_padding = self.num_padding.clone();
-
             let mut is_sorted = self.dist.as_ref().map_or(false, |dist| {
                 dist.binary_search(&(lo + n)).map_or(false, |idx| 
-                    idx == 0 || dist[idx - 1] == lo 
+                    dist[idx - 1] == lo 
                 )
             });
             is_sorted = is_sorted && self.dist_use_map.as_ref().map_or(false, |dist_use_map| {
                 dist_use_map.get(&(lo+n)).unwrap().fetch_and(false, atomic::Ordering::SeqCst)
             });
             if is_sorted {
-                let mut first_d = None;
-                let mut last_d = None;
-                for i in lo..(lo + n) {
-                    if let Some(x) = self.data[i].lock().unwrap().first() {
-                        first_d = Some(x.clone());
-                        break;
+                //from the security perspective, it does not need to fit in the cache 
+                //but from the performance perspective, it may need to be;
+                let mut handlers = Vec::new();
+                let builder = std::thread::Builder::new();
+                let data = self.data.iter().map(|x| x.clone()).collect::<Vec<_>>();
+                let num_padding = self.num_padding.clone();
+                let num_om_thread = self.num_om_thread.fetch_add(1, atomic::Ordering::SeqCst);
+                if num_om_thread < MAX_OM_THREAD {
+                    let handler = builder
+                        .spawn(move || {
+                            set_thread_affinity(true);
+                            BlockSortHelper::pad_sorted_arr(data, num_padding, max_len, lo, n, dir);
+                            true
+                        }).unwrap();
+                    handlers.push(handler);
+                } else {
+                    self.num_om_thread.fetch_sub(1, atomic::Ordering::SeqCst);
+                    let num_bito_thread = self.num_bito_thread.fetch_add(1, atomic::Ordering::SeqCst);
+                    if num_bito_thread < self.num_cores - 1 - MAX_OM_THREAD {
+                        let handler = builder
+                            .spawn(move || {
+                                set_thread_affinity(false);
+                                BlockSortHelper::pad_sorted_arr(data, num_padding, max_len, lo, n, dir);
+                                false
+                            }).unwrap();
+                        handlers.push(handler);
+                    } else {
+                        self.num_bito_thread.fetch_sub(1, atomic::Ordering::SeqCst);
+                        BlockSortHelper::pad_sorted_arr(data, num_padding, max_len, lo, n, dir);
                     }
                 }
-                for i in (lo..(lo + n)).rev() {
-                    if let Some(x) = self.data[i].lock().unwrap().last() {
-                        last_d = Some(x.clone());
-                        break;
-                    }
-                }
-
-                let (ori_dir, should_reverse) = first_d.as_ref()
-                    .zip(last_d.as_ref())
-                    .map(|(x, y)| {
-                        let ori_dir = cmp_f(x, y).is_lt();
-                        (ori_dir, ori_dir != dir)
-                    }).unwrap_or((true, false));
-
-                //originally ascending
-                if ori_dir {
-                    let mut d_i: Vec<(Option<K>, V)> = Vec::new();
-                    let mut cnt = lo;
-                    for i in lo..(lo + n) {
-                        d_i.append(&mut *self.data[i].lock().unwrap());
-                        if d_i.len() >= max_len {
-                            let mut r = d_i.split_off(max_len);
-                            std::mem::swap(&mut r, &mut d_i);
-                            if should_reverse {
-                                r.reverse();
-                            }
-                            *self.data[cnt].lock().unwrap() = r;
-                            cnt += 1;
-                        }
-                    }
-                    let mut add_num_padding = 0;
-                    while cnt < lo + n {
-                        add_num_padding += max_len - d_i.len();
-                        d_i.resize(max_len, (None, Default::default()));
-                        if should_reverse {
-                            d_i.reverse();
-                        }
-                        *self.data[cnt].lock().unwrap() = d_i;
-                        d_i = Vec::new();
-                        cnt += 1;
-                    }
-                    num_padding.fetch_add(add_num_padding, atomic::Ordering::SeqCst);
-                } else {  //originally desending
-                    let mut d_i: Vec<(Option<K>, V)> = vec![Default::default(); max_len];
-                    let mut cur_len = 0;
-                    let mut cnt = lo + n - 1;
-                    for i in (lo..(lo + n)).rev() {
-                        let v = &mut *self.data[i].lock().unwrap();
-                        let v_len = v.len();
-                        if v_len < max_len - cur_len {
-                            (&mut d_i[max_len-cur_len-v_len..max_len-cur_len]).clone_from_slice(v);
-                            cur_len += v_len;
-                        } else {
-                            let r = v.split_off(v_len - (max_len - cur_len));
-                            (&mut d_i[..max_len-cur_len]).clone_from_slice(&r);
-                            if should_reverse {
-                                d_i.reverse();
-                            }
-                            *self.data[cnt].lock().unwrap() = d_i;
-                            cnt = cnt.wrapping_sub(1);
-                            cur_len = v.len();
-                            d_i = vec![Default::default(); max_len];
-                            (&mut d_i[max_len-cur_len..max_len]).clone_from_slice(v);
-                        }
-                    }
-                    let mut add_num_padding = 0;
-                    while cnt >= lo && cnt != usize::MAX { 
-                        add_num_padding += max_len - cur_len;
-                        for elem in &mut d_i[..max_len-cur_len] {
-                            elem.0 = None;
-                            elem.1 = Default::default();
-                        }
-                        if should_reverse {
-                            d_i.reverse();
-                        }
-                        *self.data[cnt].lock().unwrap() = d_i;
-                        cnt = cnt.wrapping_sub(1);
-                        cur_len = 0;
-                        d_i = vec![Default::default(); max_len];
-                    }
-                    num_padding.fetch_add(add_num_padding, atomic::Ordering::SeqCst);
-                }
-                if should_reverse {
-                    for i in lo..(lo + n / 2) {
-                        let l = 2 * lo + n - 1 - i;
-                        std::mem::swap(&mut *self.data[i].lock().unwrap(), &mut *self.data[l].lock().unwrap());
-                    }
-                }
-                Vec::new()
+                handlers
             } else {
                 let m = n.next_power_of_two() >> 1;
                 let mut handlers = Vec::new();
@@ -823,7 +750,7 @@ where
                     let data_l = self.data[l].clone();
                     let num_padding = self.num_padding.clone();
                     let num_om_thread = self.num_om_thread.fetch_add(1, atomic::Ordering::SeqCst);
-                    if num_om_thread < NUM_OM_THREAD {
+                    if num_om_thread < MAX_OM_THREAD {
                         let builder = std::thread::Builder::new();
                         let handler = builder
                             .spawn(move || {
@@ -835,7 +762,7 @@ where
                     } else {
                         self.num_om_thread.fetch_sub(1, atomic::Ordering::SeqCst);
                         let num_bito_thread = self.num_bito_thread.fetch_add(1, atomic::Ordering::SeqCst);
-                        if num_bito_thread < self.num_cores - 1 - NUM_OM_THREAD {
+                        if num_bito_thread < self.num_cores - 1 - MAX_OM_THREAD {
                             let builder = std::thread::Builder::new();
                             let handler = builder
                                 .spawn(move || {
@@ -866,6 +793,105 @@ where
             }
         } else {
             Vec::new()
+        }
+    }
+
+    pub fn pad_sorted_arr(data: Vec<Arc<Mutex<Vec<(Option<K>, V)>>>>, num_padding: Arc<AtomicUsize>, max_len: usize, lo: usize, n: usize, dir: bool) {
+        let mut first_d = None;
+        let mut last_d = None;
+        for i in lo..(lo + n) {
+            if let Some(x) = data[i].lock().unwrap().first() {
+                first_d = Some(x.clone());
+                break;
+            }
+        }
+        for i in (lo..(lo + n)).rev() {
+            if let Some(x) = data[i].lock().unwrap().last() {
+                last_d = Some(x.clone());
+                break;
+            }
+        }
+
+        let (ori_dir, should_reverse) = first_d.as_ref()
+            .zip(last_d.as_ref())
+            .map(|(x, y)| {
+                let ori_dir = cmp_f(x, y).is_lt();
+                (ori_dir, ori_dir != dir)
+            }).unwrap_or((true, false));
+
+        //originally ascending
+        if ori_dir {
+            let mut d_i: Vec<(Option<K>, V)> = Vec::new();
+            let mut cnt = lo;
+            for i in lo..(lo + n) {
+                d_i.append(&mut *data[i].lock().unwrap());
+                if d_i.len() >= max_len {
+                    let mut r = d_i.split_off(max_len);
+                    std::mem::swap(&mut r, &mut d_i);
+                    if should_reverse {
+                        r.reverse();
+                    }
+                    *data[cnt].lock().unwrap() = r;
+                    cnt += 1;
+                }
+            }
+            let mut add_num_padding = 0;
+            while cnt < lo + n {
+                add_num_padding += max_len - d_i.len();
+                d_i.resize(max_len, (None, Default::default()));
+                if should_reverse {
+                    d_i.reverse();
+                }
+                *data[cnt].lock().unwrap() = d_i;
+                d_i = Vec::new();
+                cnt += 1;
+            }
+            num_padding.fetch_add(add_num_padding, atomic::Ordering::SeqCst);
+        } else {  //originally desending
+            let mut d_i: Vec<(Option<K>, V)> = vec![Default::default(); max_len];
+            let mut cur_len = 0;
+            let mut cnt = lo + n - 1;
+            for i in (lo..(lo + n)).rev() {
+                let v = &mut *data[i].lock().unwrap();
+                let v_len = v.len();
+                if v_len < max_len - cur_len {
+                    (&mut d_i[max_len-cur_len-v_len..max_len-cur_len]).clone_from_slice(v);
+                    cur_len += v_len;
+                } else {
+                    let r = v.split_off(v_len - (max_len - cur_len));
+                    (&mut d_i[..max_len-cur_len]).clone_from_slice(&r);
+                    if should_reverse {
+                        d_i.reverse();
+                    }
+                    *data[cnt].lock().unwrap() = d_i;
+                    cnt = cnt.wrapping_sub(1);
+                    cur_len = v.len();
+                    d_i = vec![Default::default(); max_len];
+                    (&mut d_i[max_len-cur_len..max_len]).clone_from_slice(v);
+                }
+            }
+            let mut add_num_padding = 0;
+            while cnt >= lo && cnt != usize::MAX { 
+                add_num_padding += max_len - cur_len;
+                for elem in &mut d_i[..max_len-cur_len] {
+                    elem.0 = None;
+                    elem.1 = Default::default();
+                }
+                if should_reverse {
+                    d_i.reverse();
+                }
+                *data[cnt].lock().unwrap() = d_i;
+                cnt = cnt.wrapping_sub(1);
+                cur_len = 0;
+                d_i = vec![Default::default(); max_len];
+            }
+            num_padding.fetch_add(add_num_padding, atomic::Ordering::SeqCst);
+        }
+        if should_reverse {
+            for i in lo..(lo + n / 2) {
+                let l = 2 * lo + n - 1 - i;
+                std::mem::swap(&mut *data[i].lock().unwrap(), &mut *data[l].lock().unwrap());
+            }
         }
     }
 

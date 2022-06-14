@@ -331,7 +331,7 @@ where
                         sub_part.append(&mut ser_decrypt::<Vec<(Option<K>, V)>>(&block_enc.clone()).into_iter()
                             .map(|(k, v)| (k, (Some(v), None::<W>)))
                             .collect::<Vec<_>>());
-                        if sub_part.get_size() > CACHE_LIMIT/input.get_parallel() {
+                        if sub_part.get_size() > CACHE_LIMIT/MAX_OM_THREAD/input.get_parallel() {
                             max_len = std::cmp::max(max_len, sub_part.len());
                             part.push(sub_part);
                             sub_part = Vec::new();
@@ -358,11 +358,11 @@ where
                         sub_part.append(&mut ser_decrypt::<Vec<(Option<K>, W)>>(&block_enc.clone()).into_iter()
                             .map(|(k, w)| (k, (None::<V>, Some(w))))
                             .collect::<Vec<_>>());
-                        if sub_part.get_size() > CACHE_LIMIT/input.get_parallel() {
+                        if sub_part.get_size() > CACHE_LIMIT/MAX_OM_THREAD/input.get_parallel() {
                             max_len = std::cmp::max(max_len, sub_part.len());
                             part.push(sub_part);
                             sub_part = Vec::new();
-                        } 
+                        }
                     }
                     if !sub_part.is_empty() {
                         max_len = std::cmp::max(max_len, sub_part.len());

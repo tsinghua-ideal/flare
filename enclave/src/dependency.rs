@@ -9,7 +9,7 @@ use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
 use crate::basic::{AnyData, Data, Func};
-use crate::op::{get_thread_affinity, set_thread_affinity, hybrid_individual_sort, res_enc_to_ptr, to_ptr, ser_encrypt, ser_decrypt, batch_encrypt, batch_decrypt, create_enc, combine_enc, ItemE, CACHE_LIMIT, NUM_OM_THREAD, Input, NextOpId, OpId, OpBase, Op, ElemSortHelper, BlockSortHelper, column_sort_step_2, merge_enc};
+use crate::op::{get_thread_affinity, set_thread_affinity, hybrid_individual_sort, res_enc_to_ptr, to_ptr, ser_encrypt, ser_decrypt, batch_encrypt, batch_decrypt, create_enc, combine_enc, ItemE, MAX_OM_THREAD, Input, NextOpId, OpId, OpBase, Op, ElemSortHelper, BlockSortHelper, column_sort_step_2, merge_enc};
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use downcast_rs::DowncastSync;
@@ -186,7 +186,7 @@ where
         for i in 0..num_cores - 1 {
             let pair_c = pair.clone();
             let max_len = max_len.clone();
-            let is_for_om = i < NUM_OM_THREAD;
+            let is_for_om = i < MAX_OM_THREAD;
             let handler = hybrid_individual_sort(is_for_om, pair_c, max_len, input.get_parallel());
             handlers.push(handler);
         }
