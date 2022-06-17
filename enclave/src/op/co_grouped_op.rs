@@ -375,7 +375,7 @@ where
                     assert!(CNT_PER_PARTITION.lock().unwrap().insert((op_id, call_seq.get_part_id()), 0).is_none());
                     res_enc_to_ptr(Vec::<Vec<ItemE>>::new())
                 } else {
-                    let mut sort_helper = BlockSortHelper::<K, (Option<V>, Option<W>)>::new_with(data, max_len, true);
+                    let mut sort_helper = BlockSortHelper::<K, (Option<V>, Option<W>)>::new_with_sorted(data, max_len, true);
                     sort_helper.sort();
                     let (sorted_data, num_real_elem) = sort_helper.take();
                     assert!(CNT_PER_PARTITION.lock().unwrap().insert((op_id, call_seq.get_part_id()), num_real_elem).is_none());

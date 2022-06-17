@@ -22,6 +22,7 @@ enclave {
     from "sgx_tstdc.edl" import *;
     from "sgx_pthread.edl" import *;
     from "sgx_sys.edl" import *;
+    from "sgx_thread.edl" import *;
     
     struct op_id_t {
         uint64_t h;

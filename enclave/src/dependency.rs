@@ -1,15 +1,14 @@
 use std::any::Any;
 use std::boxed::Box;
-use std::collections::VecDeque;
 use std::hash::Hash;
 use std::mem::forget;
-use std::sync::{Arc, SgxCondvar as Condvar, SgxMutex as Mutex, SgxRwLock as RwLock, atomic::{self, AtomicUsize, AtomicBool}};
+use std::sync::{Arc, SgxRwLock as RwLock, atomic::{self, AtomicBool}, mpsc::sync_channel};
 use std::time::Instant;
 use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
 use crate::basic::{AnyData, Data, Func};
-use crate::op::{get_thread_affinity, set_thread_affinity, hybrid_individual_sort, res_enc_to_ptr, to_ptr, ser_encrypt, ser_decrypt, batch_encrypt, batch_decrypt, create_enc, combine_enc, ItemE, MAX_OM_THREAD, Input, NextOpId, OpId, OpBase, Op, ElemSortHelper, BlockSortHelper, column_sort_step_2, merge_enc};
+use crate::op::{get_thread_affinity, set_thread_affinity, hybrid_individual_sort, res_enc_to_ptr, to_ptr, ser_encrypt, ser_decrypt, batch_encrypt, batch_decrypt, create_enc, combine_enc, ItemE, MAX_OM_THREAD, Input, NextOpId, OpId, OpBase, Op, BlockSortHelper, column_sort_step_2, merge_enc};
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use downcast_rs::DowncastSync;
@@ -176,49 +175,32 @@ where
         let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
         let num_output_splits = self.partitioner.read().unwrap().get_num_of_partitions();
         let is_cogroup = self.is_cogroup;
-        let max_len = Arc::new(AtomicUsize::new(0));
-        let cores = get_thread_affinity();
-        let num_cores = cores.len();
 
-        let pair = Arc::new((Mutex::new(VecDeque::<Vec<(Option<K>, V)>>::new()), Condvar::new()));
-        let mut handlers = Vec::with_capacity(num_cores);
-        //we can launch another num_cores-1 threads
-        for i in 0..num_cores - 1 {
-            let pair_c = pair.clone();
-            let max_len = max_len.clone();
-            let is_for_om = i < MAX_OM_THREAD;
-            let handler = hybrid_individual_sort(is_for_om, pair_c, max_len, input.get_parallel());
-            handlers.push(handler);
-        }
-
+        let (sender, receiver) = sync_channel(0);
         //a thread for narrow dependency
-        {
+        let handler = {
             let builder = std::thread::Builder::new();
-            let handler_nar = builder
+            builder
                 .spawn(move || {
                     set_thread_affinity(false);
                     let result_iter = Box::new(op.compute(&mut call_seq, input)
                         .map(|x| x.collect::<Vec<_>>()));
-                    let (buf_lock, cvar) = &*pair;
                     for block in result_iter {
                         let block = block.into_iter().map(|(k, v)| (Some(k), v)).collect::<Vec<_>>();
                         if !block.is_empty() {
-                            buf_lock.lock().unwrap().push_back(block);
-                            cvar.notify_one();
+                            sender.send(block).unwrap();
                         }
                     }
-                    buf_lock.lock().unwrap().push_back(Vec::new());
-                    cvar.notify_all();
-                }).unwrap();
-            handler_nar.join().unwrap();
-        }
+                }).unwrap()
+        };
+
         //current thread can be either more OM thread or less OM thread
         //and it is for miscs 
         //it should not shrink the cpu set here, otherwise it will affect the child threads in sort helper
-        let sub_parts = handlers.into_iter().map(|handler| handler.join().unwrap().into_iter()).flatten().collect::<Vec<_>>();
-        let max_len = max_len.load(atomic::Ordering::SeqCst);
+        let (max_len, sub_parts) = hybrid_individual_sort(receiver, input.get_parallel());
+        handler.join().unwrap();
         //partition sort (local sort), and pad so that each sub partition should have the same number of (K, V)
-        let mut sort_helper = BlockSortHelper::<K, V>::new(sub_parts, max_len, true);
+        let mut sort_helper = BlockSortHelper::<K, V>::new_with_lock(sub_parts, max_len, true);
         sort_helper.sort();
         let (sorted_data, num_real_elem) = sort_helper.take();
         let chunk_size = num_real_elem.saturating_sub(1) / num_output_splits + 1;
