@@ -381,7 +381,7 @@ where
         ));
 
         let key = call_seq.get_caching_doublet();
-        if need_cache && CACHE.get(key).is_none() {
+        if need_cache && !CACHE.contains(key) {
             return self.set_cached_data(
                 call_seq,
                 res_iter,
@@ -606,7 +606,7 @@ where
         }));
 
         let key = call_seq.get_caching_doublet();
-        if need_cache && CACHE.get(key).is_none() {
+        if need_cache && !CACHE.contains(key) {
             return self.set_cached_data(
                 call_seq,
                 res_iter,
@@ -829,7 +829,7 @@ where
         }));
 
         let key = call_seq.get_caching_doublet();
-        if need_cache && CACHE.get(key).is_none() {
+        if need_cache && !CACHE.contains(key) {
             return self.set_cached_data(
                 call_seq,
                 res_iter,
