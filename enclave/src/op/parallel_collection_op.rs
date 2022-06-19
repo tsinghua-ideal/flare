@@ -174,7 +174,7 @@ where
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("in enclave decrypt {:?} s", dur);  
         let key = call_seq.get_caching_doublet();
-        if need_cache && CACHE.get(key).is_none() {
+        if need_cache && !CACHE.contains(key) {
             return self.set_cached_data(
                 call_seq,
                 res_iter,
