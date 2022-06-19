@@ -67,6 +67,7 @@ type ResIter<T> = Box<dyn Iterator<Item = Box<dyn Iterator<Item = T>>>>;
 pub const MAX_ENC_BL: usize = 1024;
 pub const MERGE_FACTOR: usize = 32;
 pub const CACHE_LIMIT: usize = 4_000_000;
+pub const ENABLE_CACHE_INSIDE: bool = false;
 pub type Result<T> = std::result::Result<T, &'static str>;
 
 extern "C" {
@@ -528,9 +529,6 @@ pub struct OpCache {
     //temperarily save the point of data, which is ready to sent out
     // <(cached_rdd_id, part_id), data ptr>
     out_map: Arc<RwLock<HashMap<(usize, usize), usize>>>,
-    //<(cached_rdd_id, part_id), (start_block_id, end_block_id)>
-    //contains all blocks whose corresponding values are cached inside enclave
-    block_map: Arc<RwLock<HashMap<(usize, usize), (usize, usize)>>>,
 }
 
 impl OpCache{
@@ -538,19 +536,18 @@ impl OpCache{
         OpCache {
             in_map: Arc::new(RwLock::new(HashMap::new())),
             out_map: Arc::new(RwLock::new(HashMap::new())),
-            block_map: Arc::new(RwLock::new(HashMap::new())), 
         }
     }
 
-    pub fn get(&self, key: (usize, usize)) -> Option<(usize, OpId)> {
-        self.in_map.read().unwrap().get(&key).map(|x| *x)
+    pub fn contains(&self, key: (usize, usize)) -> bool {
+        self.in_map.read().unwrap().contains_key(&key)
     }
 
     pub fn insert(&self, key: (usize, usize), data: usize, op_id: OpId) -> Option<(usize, OpId)> {
         self.in_map.write().unwrap().insert(key, (data, op_id))
     }
 
-    //free the value?
+    //Note: should be reconstructed with Box::from_raw()
     pub fn remove(&self, key: (usize, usize)) -> Option<(usize, OpId)> {
         self.in_map.write().unwrap().remove(&key)
     }
@@ -563,26 +560,12 @@ impl OpCache{
         self.out_map.write().unwrap().remove(&key)
     }
 
-    pub fn insert_bid(&self, rdd_id: usize, part_id: usize, start_bid: usize, end_bid: usize) {
-        let mut res =  self.block_map.write().unwrap();
-        if let Some(set) = res.get_mut(&(rdd_id, part_id)) {
-            *set = (std::cmp::min(start_bid, set.0), std::cmp::max(end_bid, set.1));
-            return;
+    pub fn send(&self, key: (usize, usize)) {
+        if let Some(ct_ptr) = self.remove_ptr(key) {
+            let mut res = 0;
+            unsafe { ocall_cache_to_outside(&mut res, key.0, key.1, ct_ptr); }
+            //TODO: Handle the case res != 0
         }
-        res.insert((rdd_id, part_id), (start_bid, end_bid));
-    }
-
-    pub fn remove_bid(&self, rdd_id: usize, part_id: usize) -> Option<(usize, usize)> {
-        let mut block_map = self.block_map.write()
-            .unwrap();
-        block_map.remove(&(rdd_id, part_id))
-    }
-
-    pub fn get_bid(&self, rdd_id: usize, part_id: usize) -> Option<(usize, usize)> {
-        self.block_map.read()
-            .unwrap()
-            .get(&(rdd_id, part_id))
-            .map(|v| *v)
     }
 
     pub fn clear(&self) {
@@ -1078,10 +1061,10 @@ pub trait Op: OpBase + 'static {
         }.unwrap())
     }
 
-    fn cache_to_outside(&self, key: (usize, usize), value: Vec<Self::Item>) -> Option<PThread> {
+    fn cache_to_outside(&self, key: (usize, usize), value: &Vec<Self::Item>) -> Option<PThread> {
         //let handle = unsafe {
         //    PThread::new(Box::new(move || {
-        let ct = batch_encrypt(&value, true);
+        let ct = batch_encrypt(value, true);
         //println!("finish encryption, memory usage {:?} B", crate::ALLOCATOR.get_memory_usage());
         let acc = match CACHE.remove_ptr(key) {
             Some(ptr) => {
@@ -1102,56 +1085,41 @@ pub trait Op: OpBase + 'static {
     }
 
     fn get_and_remove_cached_data(&self, key: (usize, usize)) -> ResIter<Self::Item> {
-        let bid_range = CACHE.remove_bid(key.0, key.1);
-        
-        let mut res_iter = {
+        //cache inside enclave
+        //TODO: parallelize
+        if let Some(val) = CACHE.remove(key) {
+            let v = unsafe { Box::from_raw(val.0 as *mut u8 as *mut Vec<Vec<Self::Item>>) };
+            Box::new(v.into_iter().map(|x| Box::new(x.into_iter()) as Box<dyn Iterator<Item = _>>)) as ResIter<_>
+        } else {
             let ct = self.cache_from_outside(key).unwrap();
             let len = ct.len();
-            let seperator = bid_range.unwrap_or((len, len));
-    
             //cache outside enclave
-            Box::new((0..seperator.0).chain(seperator.1..len).map(move |i| {
+            Box::new((0..len).map(move |i| {
                 //println!("get cached data outside enclave");
                 Box::new(ser_decrypt::<Vec<Self::Item>>(&ct[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
             })) as ResIter<_>
-        };
-
-        //cache inside enclave
-        if let Some(val) = CACHE.remove(key) {
-            res_iter = Box::new(vec![unsafe {
-                    let v = Box::from_raw(val.0 as *mut u8 as *mut Vec<Self::Item>);
-                    Box::new(v.into_iter())
-                    as Box<dyn Iterator<Item = _>>
-                }].into_iter().chain(res_iter));
-        };
-        Box::new(res_iter)
+        }
     }
 
     fn set_cached_data(&self, call_seq: &NextOpId, res_iter: ResIter<Self::Item>, is_caching_final_rdd: bool) -> ResIter<Self::Item> {
         let ope = self.get_op();
         let op_id = self.get_op_id();
         let key = call_seq.get_caching_doublet();
-        let (lower_bound, upper_bound) = res_iter.size_hint();
-        let esti_bound = upper_bound.unwrap_or(lower_bound);
-        //set number of blocks that are cached inside enclave
-        let num_inside = 1;
 
-        Box::new(res_iter.enumerate().map(move |(idx, iter)| {
+        Box::new(res_iter.map(move |iter| {
             //cache outside enclave
             if is_caching_final_rdd {
                 iter
             } else {
                 let res = iter.collect::<Vec<_>>();
                 //cache inside enclave
-                if idx >= esti_bound.saturating_sub(num_inside) {
-                    let mut data = CACHE.remove(key).map_or(vec![], |x| *unsafe{Box::from_raw(x.0 as *mut u8 as *mut Vec<Self::Item>)});
-                    data.append(&mut res.clone());
+                if ENABLE_CACHE_INSIDE {
+                    let mut data = CACHE.remove(key).map_or(vec![], |x| *unsafe{Box::from_raw(x.0 as *mut u8 as *mut Vec<Vec<Self::Item>>)});
+                    data.push(res.clone());
                     CACHE.insert(key, Box::into_raw(Box::new(data)) as *mut u8 as usize, op_id);
-                    CACHE.insert_bid(key.0, key.1, idx, idx+1);
-                }
-                //println!("After cache inside enclave, memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
-                let _handle = ope.cache_to_outside(key, res.clone());
-                //println!("After launch encryption thread, memroy usage: {:?} B", crate::ALLOCATOR.get_memory_usage());
+                } 
+                //it should be always cached outside for inter-machine communcation
+                let _handle = ope.cache_to_outside(key, &res);
                 Box::new(res.into_iter()) as Box<dyn Iterator<Item = _>>
             }
         }))
@@ -1225,11 +1193,7 @@ pub trait Op: OpBase + 'static {
         }
         //cache to outside
         let key = call_seq.get_caching_doublet();
-        if let Some(ct_ptr) = CACHE.remove_ptr(key) {
-            let mut res = 0;
-            unsafe { ocall_cache_to_outside(&mut res, key.0, key.1, ct_ptr); }
-            //TODO: Handle the case res != 0
-        }
+        CACHE.send(key);
         to_ptr(acc)
     } 
 
@@ -1262,6 +1226,10 @@ pub trait Op: OpBase + 'static {
         } else {
             shuf_dep.free_buckets(tid, buckets);
         }
+
+        //cache to outside
+        let key = call_seq.get_caching_doublet();
+        CACHE.send(key);
 
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("tid: {:?}, shuffle write: {:?}s, cur mem: {:?}B", call_seq.tid, dur, crate::ALLOCATOR.get_memory_usage());
