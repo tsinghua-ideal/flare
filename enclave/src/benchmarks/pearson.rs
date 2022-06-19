@@ -15,12 +15,12 @@ pub fn pearson_sec_0() -> Result<()> {
     let dir0 = PathBuf::from("/opt/data/ct_pe_a_108");
     let dir1 = PathBuf::from("/opt/data/ct_pe_b_108");
     let x = sc.read_source(
-        LocalFsReaderConfig::new(dir0).num_partitions_per_executor(8),
+        LocalFsReaderConfig::new(dir0).num_partitions_per_executor(1),
         None,
         Some(deserializer.clone()),
     );
     let y = sc.read_source(
-        LocalFsReaderConfig::new(dir1).num_partitions_per_executor(8),
+        LocalFsReaderConfig::new(dir1).num_partitions_per_executor(1),
         None,
         Some(deserializer),
     );
