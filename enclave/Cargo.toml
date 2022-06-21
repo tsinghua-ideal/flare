@@ -27,6 +27,7 @@ aes-gcm = "0.8.0"
 bincode = { git = "https://github.com/mesalock-linux/bincode-sgx" }
 # bytes = { git = "https://github.com/mesalock-linux/bytes-sgx" }
 # dashmap = { version = "3.11.10", features = ["no_std"] }  # need to port
+deepsize = { version = "0.2.0", default-features = false, features = ["derive"] }
 downcast-rs = { version = "1.2.0", default-features = false }
 dyn-clone = "1.0.3"
 itertools = { git = "https://github.com/mesalock-linux/rust-itertools-sgx" }

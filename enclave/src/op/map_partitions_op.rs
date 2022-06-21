@@ -10,6 +10,7 @@ where
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     prev: Arc<dyn Op<Item = T>>,
     f: F,
+    cache_space: Arc<Mutex<HashMap<(usize, usize), Vec<Vec<U>>>>>
 }
 
 impl<T, U, F> Clone for MapPartitions<T, U, F>
@@ -24,6 +25,7 @@ where
             next_deps: self.next_deps.clone(),
             prev: self.prev.clone(),
             f: self.f.clone(),
+            cache_space: self.cache_space.clone(),
         }
     }
 }
@@ -55,6 +57,7 @@ where
             next_deps: Arc::new(RwLock::new(HashMap::new())),
             prev,
             f,
+            cache_space: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -165,6 +168,10 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+        self.cache_space.clone()
+    }
+
     fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {  
@@ -185,8 +192,7 @@ where
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
-            let key = call_seq.get_cached_doublet();
-            return self.get_and_remove_cached_data(key);
+            return self.get_and_remove_cached_data(call_seq);
         }
         
         let mut f = self.f.clone();
@@ -206,8 +212,7 @@ where
             f(index, res_iter)
         ));
 
-        let key = call_seq.get_caching_doublet();
-        if need_cache && !CACHE.contains(key) {
+        if need_cache {
             return self.set_cached_data(
                 call_seq,
                 res_iter,

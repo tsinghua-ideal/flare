@@ -107,7 +107,6 @@ where
         //4 is only for local reduce & fold (sf + cf)
         if dep_info.dep_type() == 3 {
             let data_enc = input.get_enc_data::<Vec<ItemE>>();
-            let data = data_enc.clone();
             let t = (self.f)(Box::new(data_enc.clone()
                 .into_iter()
                 .map(|x| ser_decrypt::<T>(&x))
@@ -131,13 +130,7 @@ where
                     op.compute_start(call_seq, input, dep_info)
                 }
             } else {
-                let result_iter = self.compute(&mut call_seq, input);
-                let mut acc = create_enc();
-                for result in result_iter {
-                    let block_enc = batch_encrypt(&result.collect::<Vec<_>>(), true);
-                    combine_enc(&mut acc, block_enc);
-                }
-                to_ptr(acc)
+                self.narrow(call_seq, input, dep_info)
             }
         }
     }

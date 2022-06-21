@@ -1,16 +1,19 @@
 use std::any::Any;
 use std::boxed::Box;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::Hash;
 use std::mem::forget;
-use std::sync::{Arc, SgxRwLock as RwLock, atomic::{self, AtomicBool}, mpsc::sync_channel};
+use std::sync::{Arc, Barrier, SgxMutex as Mutex, SgxRwLock as RwLock, atomic::{self, AtomicBool}, mpsc::sync_channel};
 use std::time::Instant;
+use std::thread::{self, ThreadId, SgxThread};
 use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
 use crate::basic::{AnyData, Data, Func};
-use crate::op::{get_thread_affinity, set_thread_affinity, hybrid_individual_sort, res_enc_to_ptr, to_ptr, ser_encrypt, ser_decrypt, batch_encrypt, batch_decrypt, create_enc, combine_enc, ItemE, MAX_OM_THREAD, Input, NextOpId, OpId, OpBase, Op, BlockSortHelper, column_sort_step_2, merge_enc};
+use crate::op::*;
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
+use deepsize::DeepSizeOf;
 use downcast_rs::DowncastSync;
 use itertools::Itertools;
 
@@ -171,25 +174,99 @@ where
         }
     }
 
-    fn do_shuffle_task(&self, tid: u64, opb: Arc<dyn OpBase>, mut call_seq: NextOpId, input: Input) -> *mut u8 {        
+    fn do_shuffle_task(&self, tid: u64, opb: Arc<dyn OpBase>, mut call_seq: NextOpId, input: Input) -> *mut u8 {
         let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
         let num_output_splits = self.partitioner.read().unwrap().get_num_of_partitions();
         let is_cogroup = self.is_cogroup;
+        
+        let handler_map: Arc<RwLock<HashMap<ThreadId, SgxThread>>> = Arc::new(RwLock::new(HashMap::new()));
+        let pending_thread: Arc<Mutex<VecDeque<ThreadId>>> = Arc::new(Mutex::new(VecDeque::new()));
+
+        let mut sample_data = Vec::new();
+        //run the first block for profiling
+        call_seq.is_step_para = {
+            let mut call_seq = call_seq.clone();
+            assert!(call_seq.para_info.is_none());
+            sample_data = op.compute(&mut call_seq, input)
+                .collect::<Vec<_>>()
+                .remove(0)
+                .map(|(k, v)| (Some(k), v))
+                .collect::<Vec<_>>();
+            let sample_len = sample_data.len() as f64;
+            let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
+            let alloc_cnt_ratio = alloc_cnt as f64/sample_len;
+            println!("for narrow processing, alloc_cnt per len = {:?}", alloc_cnt_ratio);
+            call_seq.is_step_para.1 = alloc_cnt_ratio < 0.1;
+            //shuffle specific
+            crate::ALLOCATOR.reset_alloc_cnt();
+            sample_data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
+            let alloc_cnt_ratio = alloc_cnt as f64/sample_len;
+            println!("for shuffle processing, alloc_cnt per len = {:?}", alloc_cnt_ratio);
+            call_seq.is_step_para.2 = alloc_cnt_ratio < 0.1;            
+            call_seq.is_step_para
+        };
+
+        let mut handlers = Vec::with_capacity(MAX_NAR_THREAD);
+        let narrow_barrier = Arc::new(Barrier::new(MAX_NAR_THREAD));
+
+        for i in 0..MAX_NAR_THREAD {
+            let op = op.clone();
+            let handler_map = handler_map.clone();
+            let pending_thread = pending_thread.clone();
+            let narrow_barrier = narrow_barrier.clone();
+            let mut call_seq = call_seq.clone();
+            call_seq.para_info = Some((i, narrow_barrier, handler_map.clone(), pending_thread.clone()));
+            let (_, is_para_nar, _) = call_seq.is_step_para;
+
+            let builder = thread::Builder::new();
+            let handler = builder
+                .spawn(move || {
+                    set_thread_affinity(true);
+                    let cur_thread = thread::current();
+                    let cur_thread_id = cur_thread.id();
+                    handler_map.write().unwrap().insert(cur_thread_id, cur_thread);
+                    //shuffle specific
+                    let mut results: Vec<Vec<(Option<K>, V)>> = Vec::new();
+                    let mut sub_part_size = 0;
+                    let result_iter = op.compute(&mut call_seq, input);
+                    for result_bl in result_iter {
+                        let mut result_bl = result_bl.map(|(k, v)| (Some(k), v)).collect::<Vec<_>>();
+                        let result_bl_size = result_bl.deep_size_of();
+                        let mut should_create_new = true;
+                        if let Some(sub_part) = results.last_mut() {
+                            if sub_part_size + result_bl_size <= CACHE_LIMIT/MAX_OM_THREAD/input.get_parallel() {
+                                sub_part.append(&mut result_bl);
+                                sub_part_size += result_bl_size;
+                                should_create_new = false;
+                            } 
+                        } 
+                        if should_create_new {
+                            results.push(result_bl);
+                            sub_part_size = result_bl_size;
+                        }
+                    }
+
+                    if !is_para_nar {
+                        release_bottleneck_lock(&handler_map, &pending_thread);
+                        barrier_seq2par(&handler_map, &pending_thread);
+                        println!("thread {:?} begin shuffle", cur_thread_id);
+                    }
+                    results
+                }).unwrap();
+            handlers.push(handler);
+        }
 
         let (sender, receiver) = sync_channel(0);
-        //a thread for narrow dependency
         let handler = {
             let builder = std::thread::Builder::new();
             builder
                 .spawn(move || {
                     set_thread_affinity(false);
-                    let result_iter = Box::new(op.compute(&mut call_seq, input)
-                        .map(|x| x.collect::<Vec<_>>()));
-                    for block in result_iter {
-                        let block = block.into_iter().map(|(k, v)| (Some(k), v)).collect::<Vec<_>>();
-                        if !block.is_empty() {
-                            sender.send(block).unwrap();
-                        }
+                    for sub_part in vec![sample_data].into_iter().chain(handlers.into_iter().map(|handler| {
+                        handler.join().unwrap().into_iter()
+                    }).flatten()) {
+                        sender.send(sub_part).unwrap();
                     }
                 }).unwrap()
         };
@@ -199,6 +276,7 @@ where
         //it should not shrink the cpu set here, otherwise it will affect the child threads in sort helper
         let (max_len, sub_parts) = hybrid_individual_sort(receiver, input.get_parallel());
         handler.join().unwrap();
+
         //partition sort (local sort), and pad so that each sub partition should have the same number of (K, V)
         let mut sort_helper = BlockSortHelper::<K, V>::new_with_lock(sub_parts, max_len, true);
         sort_helper.sort();

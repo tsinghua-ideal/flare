@@ -134,13 +134,7 @@ where
                     op.compute_start(call_seq, input, dep_info)
                 }
             } else {
-                let result_iter = self.compute(&mut call_seq, input);
-                let mut acc = create_enc();
-                for result in result_iter {
-                    let block_enc = batch_encrypt(&result.collect::<Vec<_>>(), true);
-                    combine_enc(&mut acc, block_enc);
-                }
-                to_ptr(acc)
+                self.narrow(call_seq, input, dep_info)
             }
         }
     }

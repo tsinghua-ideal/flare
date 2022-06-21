@@ -195,6 +195,7 @@ where
     vals: Arc<OpVals>,
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     prev: Arc<dyn Op<Item = (K, V)>>,
+    cache_space: Arc<Mutex<HashMap<(usize, usize), Vec<Vec<V>>>>>,
 }
 
 impl<K, V> Clone for Values<K, V>
@@ -207,6 +208,7 @@ where
             vals: self.vals.clone(),
             next_deps: self.next_deps.clone(),
             prev: self.prev.clone(),
+            cache_space: self.cache_space.clone(),
         }
     }
 }
@@ -236,6 +238,7 @@ where
             vals,
             next_deps: Arc::new(RwLock::new(HashMap::new())),
             prev,
+            cache_space: Arc::new(Mutex::new(HashMap::new()))
         }
     }
 }
@@ -345,6 +348,10 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+        self.cache_space.clone()
+    }
+
     fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {
@@ -365,8 +372,7 @@ where
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
-            let key = call_seq.get_cached_doublet();
-            return self.get_and_remove_cached_data(key);
+            return self.get_and_remove_cached_data(call_seq);
         }
         
         let opb = call_seq.get_next_op().clone();
@@ -380,8 +386,7 @@ where
             Box::new(res_iter.map(move |(k, v)| v)) as Box<dyn Iterator<Item = _>>
         ));
 
-        let key = call_seq.get_caching_doublet();
-        if need_cache && !CACHE.contains(key) {
+        if need_cache {
             return self.set_cached_data(
                 call_seq,
                 res_iter,
@@ -404,6 +409,7 @@ where
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     prev: Arc<dyn Op<Item = (K, V)>>,
     f: F,
+    cache_space: Arc<Mutex<HashMap<(usize, usize), Vec<Vec<(K, U)>>>>>,
 }
 
 impl<K, V, U, F> Clone for MappedValues<K, V, U, F>
@@ -419,6 +425,7 @@ where
             next_deps: self.next_deps.clone(),
             prev: self.prev.clone(),
             f: self.f.clone(),
+            cache_space: self.cache_space.clone(),
         }
     }
 }
@@ -451,6 +458,7 @@ where
             next_deps: Arc::new(RwLock::new(HashMap::new())),
             prev,
             f,
+            cache_space: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -564,6 +572,10 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+        self.cache_space.clone()
+    }
+
     fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {
@@ -584,8 +596,7 @@ where
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
-            let key = call_seq.get_cached_doublet();
-            return self.get_and_remove_cached_data(key);
+            return self.get_and_remove_cached_data(call_seq);
         }
         
         let mut f = self.f.clone();
@@ -605,8 +616,7 @@ where
             Box::new(res_iter.map(move |(k, v)| (k, f(v)))) as Box<dyn Iterator<Item = _>>
         }));
 
-        let key = call_seq.get_caching_doublet();
-        if need_cache && !CACHE.contains(key) {
+        if need_cache {
             return self.set_cached_data(
                 call_seq,
                 res_iter,
@@ -628,6 +638,7 @@ where
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     prev: Arc<dyn Op<Item = (K, V)>>,
     f: F,    
+    cache_space: Arc<Mutex<HashMap<(usize, usize), Vec<Vec<(K, U)>>>>>,
 }
 
 impl<K, V, U, F> Clone for FlatMappedValues<K, V, U, F>
@@ -643,6 +654,7 @@ where
             next_deps: self.next_deps.clone(),
             prev: self.prev.clone(),
             f: self.f.clone(),
+            cache_space: self.cache_space.clone(),
         }
     }
 }
@@ -675,6 +687,7 @@ where
             next_deps: Arc::new(RwLock::new(HashMap::new())),
             prev,
             f,
+            cache_space: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -786,6 +799,10 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+        self.cache_space.clone()
+    }
+
     fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {       //narrow
@@ -806,8 +823,7 @@ where
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
-            let key = call_seq.get_cached_doublet();
-            return self.get_and_remove_cached_data(key);
+            return self.get_and_remove_cached_data(call_seq);
         }
 
         let mut f = self.f.clone();
@@ -828,8 +844,7 @@ where
             Box::new(res_iter.flat_map(move |(k, v)| f(v).map(move |x| (k.clone(), x)))) as Box<dyn Iterator<Item = _>>
         }));
 
-        let key = call_seq.get_caching_doublet();
-        if need_cache && !CACHE.contains(key) {
+        if need_cache {
             return self.set_cached_data(
                 call_seq,
                 res_iter,

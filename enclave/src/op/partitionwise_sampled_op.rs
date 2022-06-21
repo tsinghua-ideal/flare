@@ -10,6 +10,7 @@ where
     prev: Arc<dyn Op<Item = T>>,
     sampler: Arc<RwLock<Arc<dyn RandomSampler<T>>>>,
     preserves_partitioning: bool,
+    cache_space: Arc<Mutex<HashMap<(usize, usize), Vec<Vec<T>>>>>,
 }
 
 impl<T> PartitionwiseSampled<T> 
@@ -23,6 +24,7 @@ where
             prev: self.prev.clone(),
             sampler: self.sampler.clone(),
             preserves_partitioning: self.preserves_partitioning,
+            cache_space: self.cache_space.clone(),
         }
     }
 }
@@ -58,6 +60,7 @@ where
             prev,
             sampler,
             preserves_partitioning,
+            cache_space: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -182,6 +185,10 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+        self.cache_space.clone()
+    }
+
     fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {
@@ -202,8 +209,7 @@ where
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
-            let key = call_seq.get_cached_doublet();
-            return self.get_and_remove_cached_data(key);
+            return self.get_and_remove_cached_data(call_seq);
         }
         
         let opb = call_seq.get_next_op().clone();
@@ -220,8 +226,7 @@ where
             Box::new(sampler_func(res_iter).into_iter()) as Box<dyn Iterator<Item = _>>
         }));
         
-        let key = call_seq.get_caching_doublet();
-        if need_cache && !CACHE.contains(key) {
+        if need_cache {
             return self.set_cached_data(
                 call_seq,
                 res_iter,

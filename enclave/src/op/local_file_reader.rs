@@ -207,15 +207,6 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
-        let len = input.get_enc_data::<Vec<ItemE>>().len();
-        let res_iter = Box::new((0..len).map(move|i| {
-            let data = input.get_enc_data::<Vec<ItemE>>();
-            Box::new(ser_decrypt::<Vec<Self::Item>>(&data[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
-        }));
-        res_iter
-    }
-
     fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         //suppose no shuffle will happen after this rdd
         self.narrow(call_seq, input, dep_info)

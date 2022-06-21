@@ -2,11 +2,13 @@ use std::{
 	any, boxed, borrow::{Borrow, BorrowMut}, error, fmt, marker, ops::{self, Deref, DerefMut}, sync, vec::Vec,
 };
 pub use serde_closure::structs::Peep;
+pub use deepsize::DeepSizeOf;
 
 pub trait Data:
     Clone
     + any::Any
     + Default
+    + DeepSizeOf
     + Send
     + Sync
     + fmt::Debug
@@ -20,6 +22,7 @@ impl<
         T: Clone
         + any::Any
         + Default
+        + DeepSizeOf
         + Send
         + Sync
         + fmt::Debug
