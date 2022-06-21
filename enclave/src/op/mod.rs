@@ -1,7 +1,7 @@
 use core::panic::Location;
 use std::any::{Any, TypeId};
 use std::boxed::Box;
-use std::collections::{btree_map::BTreeMap, hash_map::DefaultHasher, HashMap, HashSet};
+use std::collections::{btree_map::BTreeMap, hash_map::DefaultHasher, HashMap, VecDeque};
 use std::cmp::{min, Ordering, Reverse};
 use std::hash::{Hash, Hasher};
 use std::mem::forget;
@@ -10,9 +10,10 @@ use std::raw::TraitObject;
 use std::string::ToString;
 use std::sync::{
     atomic::{self, AtomicBool, AtomicU32, AtomicUsize},
-    Arc, SgxMutex as Mutex, SgxRwLock as RwLock, Weak,
+    Arc, Barrier, SgxMutex as Mutex, SgxRwLock as RwLock, Weak,
 };
 use std::time::Instant;
+use std::thread::{self, JoinHandle, ThreadId, SgxThread};
 use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 
@@ -65,9 +66,9 @@ pub type ItemE = Vec<u8>;
 type ResIter<T> = Box<dyn Iterator<Item = Box<dyn Iterator<Item = T>>>>;
 
 pub const MAX_ENC_BL: usize = 1024;
-pub const MERGE_FACTOR: usize = 32;
 pub const CACHE_LIMIT: usize = 4_000_000;
 pub const ENABLE_CACHE_INSIDE: bool = false;
+pub const MAX_THREAD: usize = 1;
 pub type Result<T> = std::result::Result<T, &'static str>;
 
 extern "C" {
@@ -198,6 +199,50 @@ pub fn to_ptr<T: Clone>(result_enc: T) -> *mut u8 {
     let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
     crate::ALLOCATOR.set_switch(false);
     result_ptr
+}
+
+//it is needed when switching from parallel to seq
+pub fn require_bottleneck_lock(pending_thread: &Arc<Mutex<VecDeque<ThreadId>>>) {
+    let cur_thread_id = std::thread::current().id();
+    let mut has_pushed = false;
+    while {
+        let mut l = pending_thread.lock().unwrap();
+        if !has_pushed {
+            l.push_back(cur_thread_id);
+            has_pushed = true;
+        }
+        *l.front().unwrap() != cur_thread_id
+    } {
+        std::thread::park();
+    }
+    println!("thread {:?} begin", cur_thread_id);
+}
+
+//it is needed when switching from seq to parallel
+pub fn release_bottleneck_lock(handler_map: &Arc<RwLock<HashMap<ThreadId, SgxThread>>>, pending_thread: &Arc<Mutex<VecDeque<ThreadId>>>) {
+    let cur_thread_id = std::thread::current().id();
+    let mut l = pending_thread.lock().unwrap();
+    println!("thread {:?} end", cur_thread_id);
+    assert_eq!(cur_thread_id, l.pop_front().unwrap());
+    if let Some(next_thread_id) = l.front() {
+        println!("wake up thread {:?}", next_thread_id);
+        handler_map.read().unwrap().get(&next_thread_id).unwrap().unpark();
+    }
+}
+
+//wait until all the threads finish streaming
+//actually, it act like a barrier
+//so use it can save a barrier
+pub fn barrier_seq2par(handler_map: &Arc<RwLock<HashMap<ThreadId, SgxThread>>>, pending_thread: &Arc<Mutex<VecDeque<ThreadId>>>) {
+    while {
+        let l = pending_thread.lock().unwrap();
+        l.len() > 0
+    } {
+        std::thread::park();
+    }
+    for (_id, thread) in handler_map.read().unwrap().iter() {
+        thread.unpark();
+    }
 }
 
 #[track_caller]
@@ -524,8 +569,6 @@ impl TailCompInfo {
 
 #[derive(Clone)]
 pub struct OpCache {
-    //<(cached_rdd_id, part_id), data, op id>, data can not be Any object, required by lazy_static
-    in_map: Arc<RwLock<HashMap<(usize, usize), (usize, OpId)>>>,
     //temperarily save the point of data, which is ready to sent out
     // <(cached_rdd_id, part_id), data ptr>
     out_map: Arc<RwLock<HashMap<(usize, usize), usize>>>,
@@ -534,34 +577,12 @@ pub struct OpCache {
 impl OpCache{
     pub fn new() -> Self {
         OpCache {
-            in_map: Arc::new(RwLock::new(HashMap::new())),
             out_map: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
-    pub fn contains(&self, key: (usize, usize)) -> bool {
-        self.in_map.read().unwrap().contains_key(&key)
-    }
-
-    pub fn insert(&self, key: (usize, usize), data: usize, op_id: OpId) -> Option<(usize, OpId)> {
-        self.in_map.write().unwrap().insert(key, (data, op_id))
-    }
-
-    //Note: should be reconstructed with Box::from_raw()
-    pub fn remove(&self, key: (usize, usize)) -> Option<(usize, OpId)> {
-        self.in_map.write().unwrap().remove(&key)
-    }
-
-    pub fn insert_ptr(&self, key: (usize, usize), data_ptr: usize) {
-        self.out_map.write().unwrap().insert(key, data_ptr);
-    }
-
-    pub fn remove_ptr(&self, key: (usize, usize)) -> Option<usize> {
-        self.out_map.write().unwrap().remove(&key)
-    }
-
     pub fn send(&self, key: (usize, usize)) {
-        if let Some(ct_ptr) = self.remove_ptr(key) {
+        if let Some(ct_ptr) = self.out_map.write().unwrap().remove(&key) {
             let mut res = 0;
             unsafe { ocall_cache_to_outside(&mut res, key.0, key.1, ct_ptr); }
             //TODO: Handle the case res != 0
@@ -569,13 +590,11 @@ impl OpCache{
     }
 
     pub fn clear(&self) {
-        let keys = self.in_map.read().unwrap().keys().map(|x| *x).collect::<Vec<_>>();
-        let mut map = self.in_map.write().unwrap();
-        for key in keys {
-            if let Some((data_ptr, op_id)) = map.remove(&key) {
-                let op = load_opmap().get(&op_id).unwrap();
-                op.call_free_res_enc(data_ptr as *mut u8, false, &DepInfo::padding_new(0));
-            }
+        let out_map = std::mem::take(&mut *self.out_map.write().unwrap());
+        //normally the map is empty, and it should not enter the following loop
+        for ((rdd_id, part_id), data_ptr) in out_map.into_iter() {
+            let mut res = 0;
+            unsafe { ocall_cache_to_outside(&mut res, rdd_id, part_id, data_ptr); }
         }
     }
 
@@ -595,22 +614,28 @@ impl OpId {
     }
 }
 
-pub struct NextOpId<'a> {
+#[derive(Clone, Debug)]
+pub struct NextOpId {
     tid: u64,
-    rdd_ids: &'a Vec<usize>,
-    op_ids: &'a Vec<OpId>,
-    part_ids: &'a Vec<usize>,
+    rdd_ids: Vec<usize>,
+    op_ids: Vec<OpId>,
+    part_ids: Vec<usize>,
     cur_idx: usize,
     cache_meta: CacheMeta,
     captured_vars: HashMap<usize, Vec<Vec<u8>>>,
     is_shuffle: bool,
+    pub para_info: Option<(usize, Arc<Barrier>, Arc<RwLock<HashMap<ThreadId, SgxThread>>>, Arc<Mutex<VecDeque<ThreadId>>>)>,
+    //if the decryption step, the streaming processing, and the shuffle parallelizable 
+    pub is_step_para: (bool, bool, bool),
+    //used to decide is_step_para
+    pub sample_len: usize,
 }
 
-impl<'a> NextOpId<'a> {
+impl<'a> NextOpId {
     pub fn new(tid: u64, 
-        rdd_ids: &'a Vec<usize>, 
-        op_ids: &'a Vec<OpId>, 
-        part_ids: &'a Vec<usize>, 
+        rdd_ids: Vec<usize>, 
+        op_ids: Vec<OpId>, 
+        part_ids: Vec<usize>, 
         cache_meta: CacheMeta, 
         captured_vars: HashMap<usize, Vec<Vec<u8>>>, 
         dep_info: &DepInfo,
@@ -625,6 +650,9 @@ impl<'a> NextOpId<'a> {
             cache_meta,
             captured_vars,
             is_shuffle,
+            para_info: None,
+            is_step_para: (false, false, false),
+            sample_len: 0,
         }
     }
 
@@ -901,7 +929,7 @@ pub trait OpBase: Send + Sync {
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
         None
     }
-    fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8;
+    fn iterator_start(&self, call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8;
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
         unreachable!()
     }
@@ -910,10 +938,6 @@ pub trait OpBase: Send + Sync {
     }
     fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
         unreachable!()
-    }
-    fn pre_merge(&self, dep_info: DepInfo, tid: u64, input: Input) -> usize {
-        let shuf_dep = self.get_next_shuf_dep(&dep_info).unwrap();
-        shuf_dep.pre_merge(tid, input)
     }
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
         unreachable!()
@@ -985,7 +1009,7 @@ impl<I: Op + ?Sized> OpBase for SerArc<I> {
     fn number_of_splits(&self) -> usize {
         (**self).get_op_base().number_of_splits()
     }
-    fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         (**self).get_op_base().iterator_start(call_seq, input, dep_info)
     }
     fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
@@ -996,9 +1020,6 @@ impl<I: Op + ?Sized> OpBase for SerArc<I> {
     }
     fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
         (**self).etake(input, should_take, have_take)
-    }
-    fn pre_merge(&self, dep_info: DepInfo, tid: u64, input: Input) -> usize {
-        (**self).pre_merge(dep_info, tid, input)
     }
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
         (**self).clone().__to_arc_op(id)
@@ -1013,7 +1034,10 @@ impl<I: Op + ?Sized> Op for SerArc<I> {
     fn get_op_base(&self) -> Arc<dyn OpBase> {
         (**self).get_op_base()
     }
-    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+        (**self).get_cache_space()
+    }
+    fn compute_start(&self, call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         (**self).compute_start(call_seq, input, dep_info)
     }
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
@@ -1029,8 +1053,34 @@ pub trait Op: OpBase + 'static {
     type Item: Data;
     fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>>;
     fn get_op_base(&self) -> Arc<dyn OpBase>;
-    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8;
-    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item>;
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+        unreachable!()
+    }
+    fn compute_start(&self, call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8;
+    //the deault is for narrow begin
+    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
+        let data_ptr = input.data;
+        let have_cache = call_seq.have_cache();
+        let need_cache = call_seq.need_cache();
+        let is_caching_final_rdd = call_seq.is_caching_final_rdd();
+
+        if have_cache {
+            assert_eq!(data_ptr as usize, 0 as usize);
+            return self.get_and_remove_cached_data(call_seq);
+        }
+        
+        let data_enc = input.get_enc_data::<Vec<ItemE>>();
+        let res_iter = self.parallel_control(call_seq, data_enc);
+        
+        if need_cache {
+            return self.set_cached_data(
+                call_seq,
+                res_iter,
+                is_caching_final_rdd,
+            )
+        }
+        res_iter
+    }
     fn cache(&self, data: Vec<Self::Item>) {
         ()
     }
@@ -1066,7 +1116,8 @@ pub trait Op: OpBase + 'static {
         //    PThread::new(Box::new(move || {
         let ct = batch_encrypt(value, true);
         //println!("finish encryption, memory usage {:?} B", crate::ALLOCATOR.get_memory_usage());
-        let acc = match CACHE.remove_ptr(key) {
+        let mut out_map = CACHE.out_map.write().unwrap();
+        let acc = match out_map.remove(&key) {
             Some(ptr) => {
                 crate::ALLOCATOR.set_switch(true);
                 let mut acc = *unsafe { Box::from_raw(ptr as *mut Vec<ItemE>) };
@@ -1076,7 +1127,7 @@ pub trait Op: OpBase + 'static {
             },
             None => to_ptr(ct), 
         } as usize;
-        CACHE.insert_ptr(key, acc);
+        out_map.insert(key, acc);
         //println!("finish copy out, memory usage {:?} B", crate::ALLOCATOR.get_memory_usage());
         //    }))
         //}.unwrap();
@@ -1084,20 +1135,69 @@ pub trait Op: OpBase + 'static {
         None
     }
 
-    fn get_and_remove_cached_data(&self, key: (usize, usize)) -> ResIter<Self::Item> {
+    fn get_and_remove_cached_data(&self, call_seq: &mut NextOpId) -> ResIter<Self::Item> {
+        let key = call_seq.get_cached_doublet();
         //cache inside enclave
         //TODO: parallelize
-        if let Some(val) = CACHE.remove(key) {
-            let v = unsafe { Box::from_raw(val.0 as *mut u8 as *mut Vec<Vec<Self::Item>>) };
-            Box::new(v.into_iter().map(|x| Box::new(x.into_iter()) as Box<dyn Iterator<Item = _>>)) as ResIter<_>
+        let have_cache_inside = {
+            let cache_space = self.get_cache_space();
+            let l = cache_space.lock().unwrap();
+            l.contains_key(&key)
+        };
+        
+        if have_cache_inside {
+            //another version of parallel_control, there are no decryption step
+            match std::mem::take(&mut call_seq.para_info) {
+                Some((para_id, barrier, handler_map, pending_thread)) => {
+                    let data = {
+                        let cache_space = self.get_cache_space();
+                        let mut l = cache_space.lock().unwrap();
+                        let v = l.get_mut(&key).unwrap();
+                        let len = v.len();
+                        let r = len.saturating_sub(1) / MAX_THREAD + 1;
+                        let mut b = std::cmp::min(para_id * r, len);
+                        let e = std::cmp::min((para_id+1)*r, len);
+                        //because data_enc[0] has been computed in the profiling phase
+                        if para_id == 0 {
+                            b += 1;
+                        }
+                        let mut data = Vec::with_capacity(e.saturating_sub(b));
+                        for block in &mut v[b..e] {
+                            data.push(std::mem::take(block));
+                        }
+                        data
+                    };
+
+                    //release the relevant cache space
+                    barrier.wait();
+                    {
+                        let cache_space = self.get_cache_space();
+                        let mut l = cache_space.lock().unwrap();
+                        l.remove(&key);
+                    }
+
+                    let (is_para_enc, is_para_nar, _) = call_seq.is_step_para;
+                    assert!(is_para_enc);
+
+                    if !is_para_nar {
+                        require_bottleneck_lock(&pending_thread);
+                    } 
+                    Box::new(data.into_iter().map(|item| Box::new(item.into_iter()) as Box<dyn Iterator<Item = _>>))
+                },
+                None => {
+                    let sample_data = std::mem::take(&mut self.get_cache_space().lock().unwrap().get_mut(&key).unwrap()[0]);
+                    call_seq.is_step_para.0 = true;
+                    call_seq.sample_len = sample_data.len();
+                    //profile begin
+                    crate::ALLOCATOR.reset_alloc_cnt();
+                    Box::new(vec![sample_data].into_iter().map(move |data| {
+                        Box::new(data.into_iter()) as Box<dyn Iterator<Item = _>>
+                    }))
+                }
+            }
         } else {
-            let ct = self.cache_from_outside(key).unwrap();
-            let len = ct.len();
-            //cache outside enclave
-            Box::new((0..len).map(move |i| {
-                //println!("get cached data outside enclave");
-                Box::new(ser_decrypt::<Vec<Self::Item>>(&ct[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
-            })) as ResIter<_>
+            let data_enc = self.cache_from_outside(key).unwrap();
+            self.parallel_control(call_seq, data_enc)
         }
     }
 
@@ -1105,6 +1205,7 @@ pub trait Op: OpBase + 'static {
         let ope = self.get_op();
         let op_id = self.get_op_id();
         let key = call_seq.get_caching_doublet();
+        let cache_space = self.get_cache_space();
 
         Box::new(res_iter.map(move |iter| {
             //cache outside enclave
@@ -1114,9 +1215,9 @@ pub trait Op: OpBase + 'static {
                 let res = iter.collect::<Vec<_>>();
                 //cache inside enclave
                 if ENABLE_CACHE_INSIDE {
-                    let mut data = CACHE.remove(key).map_or(vec![], |x| *unsafe{Box::from_raw(x.0 as *mut u8 as *mut Vec<Vec<Self::Item>>)});
+                    let mut cache_space = cache_space.lock().unwrap();
+                    let data = cache_space.entry(key).or_insert(Vec::new());
                     data.push(res.clone());
-                    CACHE.insert(key, Box::into_raw(Box::new(data)) as *mut u8 as usize, op_id);
                 } 
                 //it should be always cached outside for inter-machine communcation
                 let _handle = ope.cache_to_outside(key, &res);
@@ -1182,59 +1283,140 @@ pub trait Op: OpBase + 'static {
         }
     }
 
-    fn narrow(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
-        println!("regular narrow");
-        let result_iter = self.compute(call_seq, input);
-        //acc stays outside enclave
-        let mut acc = create_enc();
-        for result in result_iter {
-            let block_enc = batch_encrypt(&result.collect::<Vec<_>>(), true);
-            combine_enc(&mut acc, block_enc);
+    //note that data_enc is outside enclave
+    fn parallel_control(&self, call_seq: &mut NextOpId, data_enc: &Vec<ItemE>) -> ResIter<Self::Item> {
+        match std::mem::take(&mut call_seq.para_info) {
+            Some((para_id, barrier, handler_map, pending_thread)) => {
+                let len = data_enc.len();
+                let r = len.saturating_sub(1) / MAX_THREAD + 1;
+                let mut b = std::cmp::min(para_id * r, len);
+                let e = std::cmp::min((para_id+1)*r, len);
+                //because data_enc[0] has been computed in the profiling phase
+                if para_id == 0 {
+                    b += 1;
+                }
+
+                let (is_para_enc, is_para_nar, _) = call_seq.is_step_para;
+                if !is_para_enc {
+                    require_bottleneck_lock(&pending_thread);
+                } 
+                let data = data_enc[b..e].iter().map(|x| ser_decrypt::<Vec<Self::Item>>(&x.clone())).collect::<Vec<_>>();
+                if is_para_enc && !is_para_nar {
+                    barrier.wait();
+                    require_bottleneck_lock(&pending_thread);
+                } else if !is_para_enc && is_para_nar  {
+                    release_bottleneck_lock(&handler_map, &pending_thread);
+                    barrier.wait();
+                }
+                Box::new(data.into_iter().map(|item| Box::new(item.into_iter()) as Box<dyn Iterator<Item = _>>))
+            },
+            None => {
+                //for profile
+                crate::ALLOCATOR.reset_alloc_cnt();
+                let data = ser_decrypt::<Vec<Self::Item>>(&data_enc[0].clone());
+                let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
+                call_seq.sample_len = data.len();
+                let alloc_cnt_ratio = alloc_cnt as f64/(call_seq.sample_len as f64);
+                println!("for decryption, alloc_cnt per len = {:?}", alloc_cnt_ratio);
+                call_seq.is_step_para.0 = alloc_cnt_ratio < 0.1;
+
+                //profile begin
+                crate::ALLOCATOR.reset_alloc_cnt();
+                Box::new(vec![data].into_iter().map(move |data| {
+                    Box::new(data.into_iter()) as Box<dyn Iterator<Item = _>>
+                }))
+            }
         }
+    }
+
+    fn narrow(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+        let handler_map: Arc<RwLock<HashMap<ThreadId, SgxThread>>> = Arc::new(RwLock::new(HashMap::new()));
+        let pending_thread: Arc<Mutex<VecDeque<ThreadId>>> = Arc::new(Mutex::new(VecDeque::new()));
+
+        let mut acc = create_enc();
+        //run the first block for profiling
+        call_seq.is_step_para = {
+            let mut call_seq = call_seq.clone();
+            assert!(call_seq.para_info.is_none());
+            let result_bl_first = self.compute(&mut call_seq, input).collect::<Vec<_>>().remove(0).collect::<Vec<_>>();
+            let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
+            let alloc_cnt_ratio = alloc_cnt as f64/(call_seq.sample_len as f64);
+            println!("for narrow processing, alloc_cnt per len = {:?}", alloc_cnt_ratio);
+            call_seq.is_step_para.1 = alloc_cnt_ratio < 0.1;
+            //narrow specific
+            let block_enc = batch_encrypt(&result_bl_first, true);
+            combine_enc(&mut acc, block_enc);
+            call_seq.is_step_para
+        };
+
+        let mut handlers = Vec::with_capacity(MAX_THREAD);
+        let barrier = Arc::new(Barrier::new(MAX_THREAD));
+
+        for i in 0..MAX_THREAD {
+            let op = self.get_op();
+            let handler_map = handler_map.clone();
+            let pending_thread = pending_thread.clone();
+            let barrier = barrier.clone();
+            let mut call_seq = call_seq.clone();
+            call_seq.para_info = Some((i, barrier, handler_map.clone(), pending_thread.clone()));
+            let (is_para_enc, is_para_nar, _) = call_seq.is_step_para;
+            
+            let builder = thread::Builder::new();
+            let handler = builder
+                .spawn(move || {
+                    let cur_thread = thread::current();
+                    let cur_thread_id = cur_thread.id();
+                    handler_map.write().unwrap().insert(cur_thread_id, cur_thread);
+                    //narrow specific
+                    let mut results = Vec::new();
+                    let result_iter = op.compute(&mut call_seq, input);
+                    for result_bl in result_iter {
+                        results.push(result_bl.collect::<Vec<_>>());
+                    }
+
+                    if is_para_enc && !is_para_nar || !is_para_enc && !is_para_nar {
+                        release_bottleneck_lock(&handler_map, &pending_thread);
+                        barrier_seq2par(&handler_map, &pending_thread);
+                        println!("thread {:?} begin encrypt", cur_thread_id);
+                    }
+                    
+                    //narrow specific
+                    //acc stays outside enclave
+                    let mut acc = create_enc();
+                    for result_bl in results {
+                        let block_enc = batch_encrypt(&result_bl, true);
+                        combine_enc(&mut acc, block_enc);
+                    }
+                    acc
+                }).unwrap();
+            handlers.push(handler);
+        }
+
+        for handler in handlers {
+            combine_enc(&mut acc, handler.join().unwrap());
+        }
+
         //cache to outside
         let key = call_seq.get_caching_doublet();
         CACHE.send(key);
         to_ptr(acc)
     } 
 
-    fn shuffle(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn shuffle(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
         let tid = call_seq.tid;
         let now = Instant::now();
 
-        let result_iter = self.compute(call_seq, input);
-        let mut cur_memory = 0;
-        let mut buckets = shuf_dep.create_buckets(tid);
-
-        let mut still_in = true;
-        let mut result_ptr = None;
-        for result in result_iter {
-            still_in = true;
-            let iter = Box::new(result.collect::<Vec<_>>()) as Box<dyn Any>;
-            buckets = shuf_dep.do_shuffle_task(tid, iter, buckets);
-            cur_memory = crate::ALLOCATOR.get_max_memory_usage().0;
-            if cur_memory > CACHE_LIMIT/input.get_parallel() {
-                crate::ALLOCATOR.reset_max_memory_usage();
-                result_ptr = shuf_dep.finish_buckets(tid, buckets, result_ptr);
-                buckets = shuf_dep.create_buckets(tid);
-                still_in = false;
-            }
-        }
-        
-        if still_in {
-            result_ptr = shuf_dep.finish_buckets(tid, buckets, result_ptr);
-        } else {
-            shuf_dep.free_buckets(tid, buckets);
-        }
+        let opb = self.get_op_base();
+        let key = call_seq.get_caching_doublet();
+        let result_ptr = shuf_dep.do_shuffle_task(tid, opb, call_seq, input);
 
         //cache to outside
-        let key = call_seq.get_caching_doublet();
         CACHE.send(key);
 
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("tid: {:?}, shuffle write: {:?}s, cur mem: {:?}B", call_seq.tid, dur, crate::ALLOCATOR.get_memory_usage());
-        //let iter = Box::new(data.into_iter().map(|x| Box::new(x) as Box<dyn AnyData>));
-        result_ptr.unwrap()
+        println!("tid: {:?}, shuffle write: {:?}s", tid, dur);
+        result_ptr
     }
 
     fn randomize_in_place_(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {

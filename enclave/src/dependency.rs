@@ -1,17 +1,19 @@
 use std::any::Any;
 use std::boxed::Box;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::Hash;
 use std::mem::forget;
-use std::sync::{Arc, SgxRwLock as RwLock, atomic::{self, AtomicBool}};
+use std::sync::{Arc, Barrier, SgxMutex as Mutex, SgxRwLock as RwLock, atomic::{self, AtomicBool}};
 use std::time::Instant;
+use std::thread::{self, ThreadId, SgxThread};
 use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
 use crate::basic::{AnyData, Data, Func};
-use crate::op::{res_enc_to_ptr, to_ptr, batch_encrypt, batch_decrypt, ItemE, MAX_ENC_BL, MERGE_FACTOR, CACHE_LIMIT, Input, OpId, combine_enc};
+use crate::op::*;
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
+use deepsize::DeepSizeOf;
 use downcast_rs::DowncastSync;
 use itertools::Itertools;
 
@@ -105,11 +107,7 @@ impl NarrowDependencyTrait for RangeDependency {
 
 pub trait ShuffleDependencyTrait: DowncastSync + Send + Sync  { 
     fn change_partitioner(&self, reduce_num: usize);
-    fn create_buckets(&self, tid: u64) -> *mut u8;
-    fn do_shuffle_task(&self, tid: u64, iter: Box<dyn Any>, buckets: *mut u8) -> *mut u8;
-    fn finish_buckets(&self, tid: u64, buckets: *mut u8, result_ptr: Option<*mut u8>) -> Option<*mut u8>;
-    fn free_buckets(&self, tid: u64, buckets: *mut u8);
-    fn pre_merge(&self, tid: u64, input: Input) -> usize;
+    fn do_shuffle_task(&self, tid: u64, opb: Arc<dyn OpBase>, call_seq: NextOpId, input: Input) -> *mut u8;
     fn send_sketch(&self, buf: &mut SizeBuf, p_data_enc: *mut u8);
     fn send_enc_data(&self, p_out: usize, p_data_enc: *mut u8);
     fn free_res_enc(&self, res_ptr: *mut u8, is_enc: bool);
@@ -161,123 +159,6 @@ where
         }
     }
 
-    // pub fn encrypt_buckets(&self, buckets: Vec<Vec<(K, C)>>) -> Vec<Vec<ItemE>> {
-    //     let result = buckets.into_iter()
-    //         .map(|mut bucket| {
-    //             //batch encrypt
-    //             let mut len = bucket.len();
-    //             let mut data_enc = Vec::with_capacity(len/MAX_ENC_BL+1);
-    //             if len >= 1 {    
-    //                 len -= 1;
-    //                 let input = vec![bucket.remove(0)];
-    //                 data_enc.push((self.fe)(input));
-    //             }
-    //             //TODO: need to adjust the block size
-    //             while len >= MAX_ENC_BL {    
-    //                 len -= MAX_ENC_BL;
-    //                 let remain = bucket.split_off(MAX_ENC_BL);
-    //                 let input = bucket;
-    //                 bucket = remain;
-    //                 data_enc.push((self.fe)(input));
-    //             }
-    //             if len != 0 {
-    //                 data_enc.push((self.fe)(bucket));
-    //             }
-    //             data_enc
-    //         })
-    //         .collect::<Vec<_>>();  //BTreeMap to Vec
-    //     result
-    // }
-
-    // pub fn batch_decrypt(&self, data_enc: Vec<(KE, CE)>) -> Vec<(K, C)> {
-    //     let mut data = Vec::new();
-    //     for block in data_enc {
-    //         let mut pt = (self.fd)(block);
-    //         data.append(&mut pt); //need to check security
-    //     }
-    //     data
-    // }
-
-    pub fn pre_merge_core(&self, parallel_num: usize, buckets_enc: &[Vec<ItemE>], lower: &mut Vec<usize>, upper: &mut Vec<usize>, upper_bound: &Vec<usize>, mut combiners: Vec<(K, C)>, sorted_max_key: &mut BTreeMap<(K, usize), usize>) -> (Vec<ItemE>, Vec<(K, C)>)  {
-        let aggregator = self.aggregator.clone();
-        let mut block = Vec::new();
-        if sorted_max_key.is_empty() {
-            block = buckets_enc.iter()
-                .enumerate()
-                .map(|(idx, sub_part)| {
-                    let l = &mut lower[idx];
-                    let u = &mut upper[idx];
-                    let ub = upper_bound[idx];
-                    match *l < ub {
-                        true => {
-                            let data_enc = sub_part[*l..*u].to_vec();
-                            *l += 1;
-                            *u += 1;
-                            batch_decrypt::<(K, C)>(&data_enc, false)
-                        },
-                        false => Vec::new(),
-                    }
-                }).collect::<Vec<_>>();
-            *sorted_max_key = block.iter()
-                .enumerate()
-                .filter(|(idx, sub_part)| sub_part.last().is_some())
-                .map(|(idx, sub_part)| ((sub_part.last().unwrap().0.clone(), idx), idx))
-                .collect::<BTreeMap<_, _>>();
-        } else {
-            block.resize(lower.len(), Vec::new());
-        }
-
-        let mut cur_len = 0;
-        let mut cur_memory = crate::ALLOCATOR.get_memory_usage().1;
-        while cur_memory < CACHE_LIMIT / parallel_num || cur_len == 0 {
-            let entry = match sorted_max_key.first_entry() {
-                Some(entry) => entry,
-                None => break,
-            };
-            let idx = *entry.get();
-            entry.remove_entry();
-            if lower[idx] >= upper_bound[idx] {
-                continue;
-            }
-            let mut inc_block = batch_decrypt::<(K, C)>(&buckets_enc[idx][lower[idx]..upper[idx]], true);
-            block[idx].append(&mut inc_block); 
-            sorted_max_key.insert((block[idx].last().unwrap().0.clone(), idx), idx);
-            lower[idx] += 1;
-            upper[idx] += 1;
-            cur_memory = crate::ALLOCATOR.get_memory_usage().1;
-            cur_len += 1;
-        }
-
-        let mut iter = block.into_iter().chain(vec![combiners]).kmerge_by(|a, b| a.0 < b.0);
-        let first = iter.next();
-        combiners = match first {
-            Some(pair) => {
-                let mut combiners = vec![pair];
-                for (k, c) in iter{
-                    if k == combiners.last().unwrap().0 {
-                        let pair = combiners.last_mut().unwrap();
-                        pair.1 = (aggregator.merge_combiners)((pair.1.clone(), c));
-                    } else {
-                        combiners.push((k.clone(), c));
-                    }
-                }
-                combiners
-            },
-            None => Vec::new(),
-        };
-
-        if lower.iter().zip(upper_bound.iter()).filter(|(l, ub)| l < ub).count() > 0 {
-            let min_max_k = sorted_max_key.first_entry().unwrap();
-            let seek = &min_max_k.key().0;
-            let idx = combiners.binary_search_by(|probe| probe.0.cmp(seek)).unwrap();
-            let remained_c = combiners.split_off(idx);
-            let res_bl = batch_encrypt(&combiners, true);
-            (res_bl, remained_c)
-        } else {
-            (batch_encrypt(&combiners, true), vec![])
-        }
-    }
-
 }
 
 impl<K, V, C> ShuffleDependencyTrait for ShuffleDependency<K, V, C>
@@ -294,151 +175,128 @@ where
         }
     }
 
-    fn create_buckets(&self, tid: u64) -> *mut u8 {
-        let partitioner = self.partitioner.read().unwrap().clone();
-        let num_output_splits = partitioner.get_num_of_partitions();
-        let buckets: Vec<BTreeMap<K, C>> = (0..num_output_splits)
-            .map(|_| BTreeMap::new())
-            .collect::<Vec<_>>();
-        Box::into_raw(Box::new(buckets)) as *mut u8
-    }
-
-    //fn do_shuffle_task(&self, iter: Box<dyn Iterator<Item = Box<dyn AnyData>>>) -> *mut u8 {
-    fn do_shuffle_task(&self, tid: u64, iter: Box<dyn Any>, buckets: *mut u8) -> *mut u8 {
+    fn do_shuffle_task(&self, tid: u64, opb: Arc<dyn OpBase>, mut call_seq: NextOpId, input: Input) -> *mut u8 {
+        let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
         let aggregator = self.aggregator.clone();
         let partitioner = self.partitioner.read().unwrap().clone();
-        let mut buckets = unsafe{ Box::from_raw(buckets as *mut Vec<BTreeMap<K, C>>) };
-        let mut data = *iter.downcast::<Vec<(K, V)>>().unwrap();
-        if aggregator.is_default {
-            //data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-            for group in data.group_by(|x, y| x.0 == y.0) {
-                let k = group[0].0.clone();
-                let bucket_id = partitioner.get_partition(&k);
-                let bucket = &mut buckets[bucket_id];
-                let v = group.iter().map(|(k, v)| v.clone()).collect::<Vec<_>>();
-                let v = (Box::new(v) as Box<dyn Any>).downcast::<C>().unwrap();
-                if let Some(old_v) = bucket.get_mut(&k) {
-                    let input = ((old_v.clone(), *v),);
-                    let output = aggregator.merge_combiners.call(input);
-                    *old_v = output;
-                } else {
-                    bucket.insert(k, aggregator.merge_combiners.call(((Default::default(), *v),)));
-                }
-            }
-        } else {
-            for (count, i) in data.into_iter().enumerate() {
-                let (k, v) = i;
-                let bucket_id = partitioner.get_partition(&k);
-                let bucket = &mut buckets[bucket_id];
-                if let Some(old_v) = bucket.get_mut(&k) {
-                    let input = ((old_v.clone(), v),);
-                    let output = aggregator.merge_value.call(input);
-                    *old_v = output;
-                } else {
-                    bucket.insert(k, aggregator.create_combiner.call((v,)));
-                }
-            }
+        let num_output_splits = partitioner.get_num_of_partitions();
+
+        let handler_map: Arc<RwLock<HashMap<ThreadId, SgxThread>>> = Arc::new(RwLock::new(HashMap::new()));
+        let pending_thread: Arc<Mutex<VecDeque<ThreadId>>> = Arc::new(Mutex::new(VecDeque::new()));
+
+        let mut acc = create_enc();
+        let mut buckets = Vec::new();
+        //run the first block for profiling
+        call_seq.is_step_para = {
+            let mut call_seq = call_seq.clone();
+            assert!(call_seq.para_info.is_none());
+            let sample_data = op.compute(&mut call_seq, input).collect::<Vec<_>>().remove(0).collect::<Vec<_>>();
+            let sample_len = sample_data.len() as f64;
+            let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
+            let alloc_cnt_ratio = alloc_cnt as f64/sample_len;
+            println!("for narrow processing, alloc_cnt per len = {:?}", alloc_cnt_ratio);
+            call_seq.is_step_para.1 = alloc_cnt_ratio < 0.1;
+            //shuffle specific
+            crate::ALLOCATOR.reset_alloc_cnt();
+            buckets = do_shuffle_task_core(sample_data, &aggregator, &partitioner, num_output_splits);
+            let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
+            let alloc_cnt_ratio = alloc_cnt as f64/sample_len;
+            println!("for shuffle processing, alloc_cnt per len = {:?}", alloc_cnt_ratio);
+            call_seq.is_step_para.2 = alloc_cnt_ratio < 0.1;            
+            call_seq.is_step_para
+        };
+
+        let mut handlers = Vec::with_capacity(MAX_THREAD);
+        let narrow_barrier = Arc::new(Barrier::new(MAX_THREAD));
+        let shuffle_barrier = Arc::new(Barrier::new(MAX_THREAD));
+
+        for i in 0..MAX_THREAD {
+            let op = op.clone();
+            let aggregator = aggregator.clone();
+            let partitioner = partitioner.clone();
+            let handler_map = handler_map.clone();
+            let pending_thread = pending_thread.clone();
+            let narrow_barrier = narrow_barrier.clone();
+            let shuffle_barrier = shuffle_barrier.clone();
+            let mut call_seq = call_seq.clone();
+            call_seq.para_info = Some((i, narrow_barrier, handler_map.clone(), pending_thread.clone()));
+            let (_, is_para_nar, is_para_shuf) = call_seq.is_step_para;
+            let buckets = std::mem::take(&mut buckets);
+            
+            let builder = thread::Builder::new();
+            let handler = builder
+                .spawn(move || {
+                    let cur_thread = thread::current();
+                    let cur_thread_id = cur_thread.id();
+                    handler_map.write().unwrap().insert(cur_thread_id, cur_thread);
+                    //shuffle specific
+                    let mut results: Vec<Vec<(K, V)>> = Vec::new();
+                    let mut sub_part_size = 0;
+                    let result_iter = op.compute(&mut call_seq, input);
+                    for result_bl in result_iter {
+                        let mut result_bl = result_bl.collect::<Vec<_>>();
+                        let result_bl_size = result_bl.deep_size_of();
+                        let mut should_create_new = true;
+                        if let Some(sub_part) = results.last_mut() {
+                            if sub_part_size + result_bl_size <= CACHE_LIMIT/MAX_THREAD/input.get_parallel() {
+                                sub_part.append(&mut result_bl);
+                                sub_part_size += result_bl_size;
+                                should_create_new = false;
+                            } 
+                        } 
+                        if should_create_new {
+                            results.push(result_bl);
+                            sub_part_size = result_bl_size;
+                        }
+                    }
+
+                    if !is_para_nar && is_para_shuf {
+                        release_bottleneck_lock(&handler_map, &pending_thread);
+                        barrier_seq2par(&handler_map, &pending_thread);
+                        println!("thread {:?} begin shuffle", cur_thread_id);
+                    } else if is_para_nar && !is_para_shuf {
+                        shuffle_barrier.wait();
+                        require_bottleneck_lock(&pending_thread);
+                    }
+
+                    crate::ALLOCATOR.reset_alloc_cnt();
+                    let mut len = 0;
+                    //shuffle specific
+                    let mut buckets_col = results.into_iter().map(|data| {
+                        len += data.len();
+                        do_shuffle_task_core(data, &aggregator, &partitioner, num_output_splits)
+                    }).collect::<Vec<_>>();
+                    //capture the buckets outside
+                    if !buckets.is_empty() {
+                        buckets_col.push(buckets);
+                    }
+
+                    let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
+                    println!("in shuffle, alloc per len = {:?}", alloc_cnt as f64/(len as f64));
+
+                    if !is_para_shuf {
+                        release_bottleneck_lock(&handler_map, &pending_thread);
+                        barrier_seq2par(&handler_map, &pending_thread);
+                        println!("thread {:?} begin encryption", cur_thread_id);
+                    }
+
+                    //acc stays outside enclave
+                    let mut acc = create_enc();
+                    for buckets in buckets_col {
+                        let buckets_enc = buckets.into_iter().map(|bucket| batch_encrypt(&bucket, false)).collect::<Vec<_>>();
+                        merge_enc(&mut acc, &buckets_enc);
+                    }
+                    acc
+                }).unwrap();
+            handlers.push(handler);
         }
 
-        Box::into_raw(buckets) as *mut u8
-    }
-
-    fn finish_buckets(&self, tid: u64, buckets: *mut u8, result_ptr: Option<*mut u8>) -> Option<*mut u8> {
-        let buckets = unsafe{ Box::from_raw(buckets as *mut Vec<BTreeMap<K, C>>) };
-        let result = buckets.into_iter().map(|bucket| batch_encrypt(&bucket.into_iter().collect::<Vec<_>>(), false)).collect::<Vec<_>>();
-        let ptr = Some(match result_ptr {
-            Some(ptr) => {
-                crate::ALLOCATOR.set_switch(true);
-                let mut res = *unsafe { Box::from_raw(ptr as *mut Vec<Vec<Vec<ItemE>>>) };
-                res.push(result.clone());
-                crate::ALLOCATOR.set_switch(false);
-                to_ptr(res)
-            },
-            None => {
-                res_enc_to_ptr(vec![result])
-            },
-        });
-        ptr
-    }
-
-    fn free_buckets(&self, tid: u64, buckets: *mut u8) {
-        let mut _buckets = unsafe{ Box::from_raw(buckets as *mut Vec<BTreeMap<K, C>>) };
-    }
-
-    fn pre_merge(&self, tid: u64, input: Input) -> usize {
-        let data_original = input.get_enc_data::<Vec<Vec<ItemE>>>();
-        crate::ALLOCATOR.set_switch(true); 
-        let mut data = Vec::new();
-        let mut res = Vec::new();
-        crate::ALLOCATOR.set_switch(false);
-
-        let mut n = data_original.len();
-        let mut c = 0;
-        println!("c = {:?}, n = {:?}", c, n);
-
-        while n > MERGE_FACTOR {
-            let m = (n - 1) / MERGE_FACTOR + 1;
-            crate::ALLOCATOR.set_switch(true); 
-            res.resize(m, Vec::new());
-            crate::ALLOCATOR.set_switch(false);
-            for i in 0..m {
-                let start = i * MERGE_FACTOR;
-                let end = std::cmp::min((i + 1) * MERGE_FACTOR, n);
-                let num_sub_part = end - start;
-                let mut combiners: Vec<(K, C)> = Vec::new();
-                let mut sorted_max_key: BTreeMap<(K, usize), usize> = BTreeMap::new();
-                let buckets_enc = if c == 0 {
-                    &data_original[start..end]
-                } else {
-                    &data[start..end]
-                };
-                let mut lower = vec![0; num_sub_part];
-                let mut upper = vec![1; num_sub_part];
-                let upper_bound = buckets_enc
-                    .iter()
-                    .map(|sub_part| sub_part.len())
-                    .collect::<Vec<_>>();
-                while lower
-                    .iter()
-                    .zip(upper_bound.iter())
-                    .filter(|(l, ub)| l < ub)
-                    .count()
-                    > 0
-                {
-                    upper = upper
-                        .iter()
-                        .zip(upper_bound.iter())
-                        .map(|(l, ub)| std::cmp::min(*l, *ub))
-                        .collect::<Vec<_>>();
-                    let (res_bl, remained_c) = self.pre_merge_core(input.get_parallel(), buckets_enc, &mut lower, &mut upper, &upper_bound, combiners, &mut sorted_max_key);
-                    combiners = remained_c;
-                    crate::ALLOCATOR.set_switch(true);
-                    combine_enc(&mut res[i], res_bl);
-                    crate::ALLOCATOR.set_switch(false);
-                    lower = lower
-                        .iter()
-                        .zip(upper_bound.iter())
-                        .map(|(l, ub)| std::cmp::min(*l, *ub))
-                        .collect::<Vec<_>>();
-                }
-            }
-            crate::ALLOCATOR.set_switch(true);
-            drop(data);
-            data = res;
-            res = Vec::new();
-            crate::ALLOCATOR.set_switch(false);
-            n = data.len();
-            c += 1;
-            println!("c = {:?}, n = {:?}", c, n);
+        for handler in handlers {
+            combine_enc(&mut acc, handler.join().unwrap());
         }
-        crate::ALLOCATOR.set_switch(true);
-        //to be compatible with bucket encryption in shuffle write
-        let res = vec![data];
-        crate::ALLOCATOR.set_switch(false);
-        let res_ptr = to_ptr(res);
-        res_ptr as usize
+
+        to_ptr(acc)
     }
-    
 
     fn send_sketch(&self, buf: &mut SizeBuf, p_data_enc: *mut u8){
         let mut idx = Idx::new();
@@ -486,4 +344,60 @@ where
         )) as Arc<dyn ShuffleDependencyTrait>
     }
 
+}
+
+pub fn do_shuffle_task_core<K, V, C>(mut data: Vec<(K, V)>, aggregator: &Arc<Aggregator<K, V, C>>, partitioner: &Box<dyn Partitioner>, num_output_splits: usize) -> Vec<Vec<(K, C)>>
+where 
+    K: Ord + Data,
+    V: Data,
+    C: Data,
+{
+    //BTreeMap seems unnecessary
+    let mut buckets: Vec<Vec<(K, C)>> = (0..num_output_splits)
+        .map(|_| Vec::new())
+        .collect::<Vec<_>>();
+    if aggregator.is_default {
+        data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        for group in data.group_by(|x, y| x.0 == y.0) {
+            let k = group[0].0.clone();
+            let bucket_id = partitioner.get_partition(&k);
+            let bucket = &mut buckets[bucket_id];
+            let v = group.iter().map(|(k, v)| v.clone()).collect::<Vec<_>>();
+            let v = (Box::new(v) as Box<dyn Any>).downcast::<C>().unwrap();
+            if bucket.last().map_or(false, |(last_k, _)| &k == last_k) {
+                let old_v = &mut bucket.last_mut().unwrap().1;
+                let input = ((std::mem::take(old_v), *v),);
+                *old_v = aggregator.merge_combiners.call(input);
+            } else {
+                bucket.push((k, aggregator.merge_combiners.call(((Default::default(), *v),))));
+            }
+        }
+    } else {
+        data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        for (k, v) in data.into_iter() {
+            let bucket_id = partitioner.get_partition(&k);
+            let bucket = &mut buckets[bucket_id];
+            if bucket.last().map_or(false, |(last_k, _)| &k == last_k) {
+                let old_v = &mut bucket.last_mut().unwrap().1;
+                let input = ((std::mem::take(old_v), v),);
+                *old_v = aggregator.merge_value.call(input);
+            } else {
+                bucket.push((k, aggregator.create_combiner.call((v,))));
+            }
+        }
+
+        // for i in data.into_iter() {
+        //     let (k, v) = i;
+        //     let bucket_id = partitioner.get_partition(&k);
+        //     let bucket = &mut buckets[bucket_id];
+        //     if let Some(old_v) = bucket.get_mut(&k) {
+        //         let input = ((std::mem::take(old_v), v),);
+        //         let output = aggregator.merge_value.call(input);
+        //         *old_v = output;
+        //     } else {
+        //         bucket.insert(k, aggregator.create_combiner.call((v,)));
+        //     }
+        // }
+    }
+    buckets
 }

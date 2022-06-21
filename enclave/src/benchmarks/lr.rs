@@ -1,3 +1,4 @@
+use deepsize::DeepSizeOf;
 
 use std::path::PathBuf;
 use crate::*;
@@ -5,7 +6,7 @@ use crate::*;
 
 use serde_derive::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Default, Clone, Debug)]
+#[derive(Serialize, Deserialize, DeepSizeOf, Default, Clone, Debug)]
 pub struct Point {
     x: Vec<f32>,
     y: f32,

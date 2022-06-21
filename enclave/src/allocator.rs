@@ -11,12 +11,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 thread_local! {
     static SWITCH: Cell<bool> = Cell::new(false);
-    static MEM_USAGE: Cell<usize> = Cell::new(0);
-    static MAX_MEM_USAGE: Cell<usize> = Cell::new(0);
+    static ALLOC_CNT: Cell<usize> = Cell::new(0);
 }
-
-static MEM_TOTAL_USAGE: AtomicUsize = AtomicUsize::new(0);
-static MAX_MEM_TOTAL_USAGE: AtomicUsize = AtomicUsize::new(0);
 
 extern "C" {
     pub fn ocall_tc_calloc(nobj: size_t, size: size_t) -> *mut c_void;
@@ -48,36 +44,12 @@ impl Allocator {
         SWITCH.with(|f| f.get())
     }
 
-    //Memory usage: (local, total)
-    pub fn get_memory_usage(&self) -> (usize, usize) {
-        (
-            MEM_USAGE.with(|f| f.get()),
-            MEM_TOTAL_USAGE.load(Ordering::SeqCst),
-        )
+    pub fn get_alloc_cnt(&self) -> usize {
+        ALLOC_CNT.with(|f| f.get())
     }
 
-    pub fn get_max_memory_usage(&self) -> (usize, usize) {
-        (
-            MAX_MEM_USAGE.with(|f| f.get()),
-            MAX_MEM_TOTAL_USAGE.load(Ordering::SeqCst),
-        )
-    }
-
-    pub fn reset_memory_usage(&self, init_usage: usize) -> (usize, usize) {
-        let total_usage = MEM_TOTAL_USAGE.load(Ordering::SeqCst);
-        MAX_MEM_TOTAL_USAGE.store(total_usage, Ordering::SeqCst);
-        MEM_USAGE.with(|f| {
-            f.set(init_usage)
-        });
-        MAX_MEM_USAGE.with(|f| {
-            f.set(init_usage);
-        });
-        (init_usage, total_usage)
-    }
-
-    pub fn reset_max_memory_usage(&self) {
-        MAX_MEM_TOTAL_USAGE.store(0, Ordering::SeqCst);
-        MAX_MEM_USAGE.with(|f| {
+    pub fn reset_alloc_cnt(&self) {
+        ALLOC_CNT.with(|f| {
             f.set(0);
         });
     }
@@ -116,13 +88,8 @@ unsafe impl GlobalAlloc for Allocator {
                 aligned_malloc(&layout)
             }
         } else {
-            MEM_TOTAL_USAGE.fetch_add(layout.size(), Ordering::Relaxed);
-            MAX_MEM_TOTAL_USAGE.fetch_max(MEM_TOTAL_USAGE.load(Ordering::Relaxed), Ordering::Relaxed);
-            let usage = MEM_USAGE.with(|f| {
-                f.update(|x| x + layout.size())
-            });
-            MAX_MEM_USAGE.with(|f| {
-                f.update(|x| std::cmp::max(x,usage));
+            ALLOC_CNT.with(|f| {
+                f.update(|x| x + 1);
             });
             System.alloc(layout)
         }
@@ -142,13 +109,8 @@ unsafe impl GlobalAlloc for Allocator {
                 ptr
             }
         } else {
-            MEM_TOTAL_USAGE.fetch_add(layout.size(), Ordering::Relaxed);
-            MAX_MEM_TOTAL_USAGE.fetch_max(MEM_TOTAL_USAGE.load(Ordering::Relaxed), Ordering::Relaxed);
-            let usage = MEM_USAGE.with(|f| {
-                f.update(|x| x + layout.size())
-            });
-            MAX_MEM_USAGE.with(|f| {
-                f.update(|x| std::cmp::max(x,usage));
+            ALLOC_CNT.with(|f| {
+                f.update(|x| x + 1);
             });
             System.alloc_zeroed(layout)
         }
@@ -160,13 +122,6 @@ unsafe impl GlobalAlloc for Allocator {
         if switch {
             ocall_tc_free(ptr as *mut c_void);
         } else {
-            MEM_TOTAL_USAGE.fetch_sub(layout.size(), Ordering::Relaxed);
-            MEM_USAGE.with(|f| {
-                let s = layout.size();
-                let r = s.saturating_sub(f.get());
-                let f = f.update(|x| x.saturating_sub(s));
-                f
-            });
             System.dealloc(ptr, layout);
         }
     }
@@ -181,18 +136,8 @@ unsafe impl GlobalAlloc for Allocator {
                 self.realloc_fallback(ptr, layout, new_size)
             }
         } else {
-            MEM_TOTAL_USAGE.fetch_add(new_size, Ordering::Relaxed);
-            MEM_TOTAL_USAGE.fetch_sub(layout.size(), Ordering::Relaxed);
-            MAX_MEM_TOTAL_USAGE.fetch_max(MEM_TOTAL_USAGE.load(Ordering::Relaxed), Ordering::Relaxed);
-            let usage = MEM_USAGE.with(|f| {
-                let s = layout.size();
-                let v = f.update(|x| x + new_size);
-                let r = s.saturating_sub(v);
-                let f = f.update(|x| x.saturating_sub(s));
-                f
-            });
-            MAX_MEM_USAGE.with(|f| {
-                f.update(|x| std::cmp::max(x,usage));
+            ALLOC_CNT.with(|f| {
+                f.update(|x| x + 1);
             });
             System.realloc(ptr, layout, new_size)
         }

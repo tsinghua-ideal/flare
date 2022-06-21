@@ -7,6 +7,7 @@ pub struct Union<T: Data>
     vals: Arc<OpVals>,
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     part: Option<Box<dyn Partitioner>>,
+    cache_space: Arc<Mutex<HashMap<(usize, usize), Vec<Vec<T>>>>>,
 }
 
 impl<T: Data> Clone for Union<T>
@@ -17,6 +18,7 @@ impl<T: Data> Clone for Union<T>
             vals: self.vals.clone(),
             next_deps: self.next_deps.clone(),
             part: self.part.clone(),
+            cache_space: self.cache_space.clone(),
         }
     }
 }
@@ -78,6 +80,7 @@ impl<T: Data> Union<T>
             vals,
             next_deps: Arc::new(RwLock::new(HashMap::new())),
             part,
+            cache_space: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -161,7 +164,7 @@ impl<T: Data> OpBase for Union<T>
         self.vals.split_num.load(atomic::Ordering::SeqCst)
     }
 
-    fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         
 		self.compute_start(call_seq, input, dep_info)
     }
@@ -204,7 +207,11 @@ impl<T: Data> Op for Union<T>
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+        self.cache_space.clone()
+    }
+
+    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {    
                 self.narrow(call_seq, input, dep_info)
@@ -224,8 +231,7 @@ impl<T: Data> Op for Union<T>
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
-            let key = call_seq.get_cached_doublet();
-            return self.get_and_remove_cached_data(key);
+            return self.get_and_remove_cached_data(call_seq);
         }
         
         let opb = call_seq.get_next_op().clone();
@@ -233,7 +239,7 @@ impl<T: Data> Op for Union<T>
         let res_iter = op.compute(call_seq, input);
 
         let key = call_seq.get_caching_doublet();
-        if need_cache && !CACHE.contains(key) {
+        if need_cache {
             return self.set_cached_data(
                 call_seq,
                 res_iter,

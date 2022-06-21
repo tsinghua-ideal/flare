@@ -13,6 +13,7 @@ vega = { path = "../Submodule-of-SecureSpark" }
 
 # serialization
 bincode = "1.2.1"
+deepsize = "0.2.0"
 serde = { version = "1.0.125", features = ["rc"] }
 serde_closure = { git = "https://github.com/AmbitionXiang/serde_closure", branch = "master" }
 #serde_closure = { path = "../../../sgx/ported/serde_closure" }
