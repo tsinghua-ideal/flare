@@ -1126,16 +1126,8 @@ impl OpCache{
         self.in_map.write().unwrap().remove(&key)
     }
 
-    pub fn insert_ptr(&self, key: (usize, usize), data_ptr: usize) {
-        self.out_map.write().unwrap().insert(key, data_ptr);
-    }
-
-    pub fn remove_ptr(&self, key: (usize, usize)) -> Option<usize> {
-        self.out_map.write().unwrap().remove(&key)
-    }
-
     pub fn send(&self, key: (usize, usize)) {
-        if let Some(ct_ptr) = self.remove_ptr(key) {
+        if let Some(ct_ptr) = self.out_map.write().unwrap().remove(&key) {
             let mut res = 0;
             unsafe { ocall_cache_to_outside(&mut res, key.0, key.1, ct_ptr); }
             //TODO: Handle the case res != 0
@@ -1150,6 +1142,12 @@ impl OpCache{
                 let op = load_opmap().get(&op_id).unwrap();
                 op.call_free_res_enc(data_ptr as *mut u8, false, &DepInfo::padding_new(0));
             }
+        }
+        let out_map = std::mem::take(&mut *self.out_map.write().unwrap());
+        //normally the map is empty, and it should not enter the following loop
+        for ((rdd_id, part_id), data_ptr) in out_map.into_iter() {
+            let mut res = 0;
+            unsafe { ocall_cache_to_outside(&mut res, rdd_id, part_id, data_ptr); }
         }
     }
 
@@ -1633,7 +1631,8 @@ pub trait Op: OpBase + 'static {
         //    PThread::new(Box::new(move || {
         let ct = batch_encrypt(value, true);
         //println!("finish encryption, memory usage {:?} B", crate::ALLOCATOR.get_memory_usage());
-        let acc = match CACHE.remove_ptr(key) {
+        let mut out_map = CACHE.out_map.write().unwrap();
+        let acc = match out_map.remove(&key) {
             Some(ptr) => {
                 crate::ALLOCATOR.set_switch(true);
                 let mut acc = *unsafe { Box::from_raw(ptr as *mut Vec<ItemE>) };
@@ -1643,7 +1642,7 @@ pub trait Op: OpBase + 'static {
             },
             None => to_ptr(ct), 
         } as usize;
-        CACHE.insert_ptr(key, acc);
+        out_map.insert(key, acc);
         //println!("finish copy out, memory usage {:?} B", crate::ALLOCATOR.get_memory_usage());
         //    }))
         //}.unwrap();
