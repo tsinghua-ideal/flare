@@ -5,6 +5,7 @@ use crate::CNT_PER_PARTITION;
 use crate::aggregator::Aggregator;
 use crate::dependency::ShuffleDependency;
 use crate::op::*;
+use itertools::Itertools;
 
 pub struct Shuffled<K, V, C>
 where
@@ -17,6 +18,7 @@ where
     parent: Arc<dyn Op<Item = (K, V)>>,
     aggregator: Arc<Aggregator<K, V, C>>,
     part: Box<dyn Partitioner>,
+    cache_space: Arc<Mutex<HashMap<(usize, usize), Vec<Vec<(K, C)>>>>>,
 }
 
 impl<K, V, C> Clone for Shuffled<K, V, C> 
@@ -32,6 +34,7 @@ where
             parent: self.parent.clone(),
             aggregator: self.aggregator.clone(),
             part: self.part.clone(),
+            cache_space: self.cache_space.clone(),
         }
     }
 }
@@ -72,6 +75,7 @@ where
             parent,
             aggregator,
             part,
+            cache_space: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -228,7 +232,7 @@ where
         Some(self.part.clone())
     }
     
-    fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         
 		self.compute_start(call_seq, input, dep_info)
     }
@@ -274,7 +278,11 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+        self.cache_space.clone()
+    }
+
+    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {
                 self.narrow(call_seq, input, dep_info)
@@ -342,37 +350,5 @@ where
             }
             _ => panic!("Invalid is_shuffle"),
         }
-    }
-
-    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
-        let data_ptr = input.data;
-        let have_cache = call_seq.have_cache();
-        let need_cache = call_seq.need_cache();
-        let is_caching_final_rdd = call_seq.is_caching_final_rdd();
-
-        if have_cache {
-            assert_eq!(data_ptr as usize, 0 as usize);
-            let key = call_seq.get_cached_doublet();
-            return self.get_and_remove_cached_data(key);
-        }
-
-        let len = input.get_enc_data::<Vec<ItemE>>().len();
-        let res_iter = Box::new((0..len).map(move|i| {
-            let data = input.get_enc_data::<Vec<ItemE>>();
-            Box::new(ser_decrypt::<Vec<(Option<K>, C)>>(&data[i].clone()).into_iter()
-                .filter(|(k, c)| k.is_some())
-                .map(|(k, c)| (k.unwrap(), c))
-            ) as Box<dyn Iterator<Item = _>>
-        }));
-
-        let key = call_seq.get_caching_doublet();
-        if need_cache && !CACHE.contains(key) {
-            return self.set_cached_data(
-                call_seq,
-                res_iter,
-                is_caching_final_rdd,
-            )
-        }
-        res_iter
     }
 }

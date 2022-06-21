@@ -195,6 +195,7 @@ where
     vals: Arc<OpVals>,
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     prev: Arc<dyn Op<Item = (K, V)>>,
+    cache_space: Arc<Mutex<HashMap<(usize, usize), Vec<Vec<V>>>>>,
 }
 
 impl<K, V> Clone for Values<K, V>
@@ -207,6 +208,7 @@ where
             vals: self.vals.clone(),
             next_deps: self.next_deps.clone(),
             prev: self.prev.clone(),
+            cache_space: self.cache_space.clone(),
         }
     }
 }
@@ -236,6 +238,7 @@ where
             vals,
             next_deps: Arc::new(RwLock::new(HashMap::new())),
             prev,
+            cache_space: Arc::new(Mutex::new(HashMap::new()))
         }
     }
 }
@@ -302,7 +305,7 @@ where
         self.take_(input ,should_take, have_take)
     }
     
-    fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         
 		self.compute_start(call_seq, input, dep_info)
     }
@@ -345,7 +348,11 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+        self.cache_space.clone()
+    }
+
+    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {
                 self.narrow(call_seq, input, dep_info)
@@ -365,8 +372,7 @@ where
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
-            let key = call_seq.get_cached_doublet();
-            return self.get_and_remove_cached_data(key);
+            return self.get_and_remove_cached_data(call_seq);
         }
         
         let opb = call_seq.get_next_op().clone();
@@ -381,7 +387,7 @@ where
         ));
 
         let key = call_seq.get_caching_doublet();
-        if need_cache && !CACHE.contains(key) {
+        if need_cache {
             return self.set_cached_data(
                 call_seq,
                 res_iter,
@@ -404,6 +410,7 @@ where
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     prev: Arc<dyn Op<Item = (K, V)>>,
     f: F,
+    cache_space: Arc<Mutex<HashMap<(usize, usize), Vec<Vec<(K, U)>>>>>,
 }
 
 impl<K, V, U, F> Clone for MappedValues<K, V, U, F>
@@ -419,6 +426,7 @@ where
             next_deps: self.next_deps.clone(),
             prev: self.prev.clone(),
             f: self.f.clone(),
+            cache_space: self.cache_space.clone(),
         }
     }
 }
@@ -451,6 +459,7 @@ where
             next_deps: Arc::new(RwLock::new(HashMap::new())),
             prev,
             f,
+            cache_space: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -519,7 +528,7 @@ where
         self.take_(input ,should_take, have_take)
     }
 
-    fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         
 		self.compute_start(call_seq, input, dep_info)
     }
@@ -564,7 +573,11 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+        self.cache_space.clone()
+    }
+
+    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {
                 self.narrow(call_seq, input, dep_info)
@@ -584,8 +597,7 @@ where
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
-            let key = call_seq.get_cached_doublet();
-            return self.get_and_remove_cached_data(key);
+            return self.get_and_remove_cached_data(call_seq);
         }
         
         let mut f = self.f.clone();
@@ -606,7 +618,7 @@ where
         }));
 
         let key = call_seq.get_caching_doublet();
-        if need_cache && !CACHE.contains(key) {
+        if need_cache {
             return self.set_cached_data(
                 call_seq,
                 res_iter,
@@ -628,6 +640,7 @@ where
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     prev: Arc<dyn Op<Item = (K, V)>>,
     f: F,    
+    cache_space: Arc<Mutex<HashMap<(usize, usize), Vec<Vec<(K, U)>>>>>,
 }
 
 impl<K, V, U, F> Clone for FlatMappedValues<K, V, U, F>
@@ -643,6 +656,7 @@ where
             next_deps: self.next_deps.clone(),
             prev: self.prev.clone(),
             f: self.f.clone(),
+            cache_space: self.cache_space.clone(),
         }
     }
 }
@@ -675,6 +689,7 @@ where
             next_deps: Arc::new(RwLock::new(HashMap::new())),
             prev,
             f,
+            cache_space: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -739,7 +754,7 @@ where
         self.vals.split_num.load(atomic::Ordering::SeqCst)
     }
 
-    fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         
 		self.compute_start(call_seq, input, dep_info)
     }
@@ -786,7 +801,11 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+        self.cache_space.clone()
+    }
+
+    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {       //narrow
                 self.narrow(call_seq, input, dep_info)
@@ -806,8 +825,7 @@ where
 
         if have_cache {
             assert_eq!(data_ptr as usize, 0 as usize);
-            let key = call_seq.get_cached_doublet();
-            return self.get_and_remove_cached_data(key);
+            return self.get_and_remove_cached_data(call_seq);
         }
 
         let mut f = self.f.clone();
@@ -829,7 +847,7 @@ where
         }));
 
         let key = call_seq.get_caching_doublet();
-        if need_cache && !CACHE.contains(key) {
+        if need_cache {
             return self.set_cached_data(
                 call_seq,
                 res_iter,

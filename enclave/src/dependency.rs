@@ -1,16 +1,19 @@
 use std::any::Any;
 use std::boxed::Box;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::hash::Hash;
 use std::mem::forget;
-use std::sync::{Arc, SgxRwLock as RwLock, atomic::{self, AtomicBool}};
+use std::sync::{Arc, Barrier, SgxMutex as Mutex, SgxRwLock as RwLock, atomic::{self, AtomicBool}};
 use std::time::Instant;
+use std::thread::{self, ThreadId, SgxThread};
 use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
 use crate::basic::{AnyData, Data, Func};
-use crate::op::{res_enc_to_ptr, to_ptr, ser_encrypt, ser_decrypt, batch_encrypt, batch_decrypt, create_enc, combine_enc, ItemE, CACHE_LIMIT, Input, OpId, SortHelper, column_sort_step_2, merge_enc};
+use crate::op::*;
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
+use deepsize::DeepSizeOf;
 use downcast_rs::DowncastSync;
 use itertools::Itertools;
 
@@ -104,7 +107,7 @@ impl NarrowDependencyTrait for RangeDependency {
 
 pub trait ShuffleDependencyTrait: DowncastSync + Send + Sync  { 
     fn change_partitioner(&self, reduce_num: usize);
-    fn do_shuffle_task(&self, tid: u64, iter: Box<dyn Iterator<Item = Box<dyn Any>>>, parallel_num: usize) -> *mut u8;
+    fn do_shuffle_task(&self, tid: u64, opb: Arc<dyn OpBase>, call_seq: NextOpId, input: Input) -> *mut u8;
     fn send_sketch(&self, buf: &mut SizeBuf, p_data_enc: *mut u8);
     fn send_enc_data(&self, p_out: usize, p_data_enc: *mut u8);
     fn free_res_enc(&self, res_ptr: *mut u8, is_enc: bool);
@@ -171,32 +174,111 @@ where
         }
     }
 
-    fn do_shuffle_task(&self, tid: u64, iter: Box<dyn Iterator<Item = Box<dyn Any>>>, parallel_num: usize) -> *mut u8 {
-        let aggregator = self.aggregator.clone();
-        //sub partition sort, for each vector in sub_parts, it is sorted
-        let mut sub_part = Vec::new();
-        let mut sub_parts = Vec::new();
+    fn do_shuffle_task(&self, tid: u64, opb: Arc<dyn OpBase>, mut call_seq: NextOpId, input: Input) -> *mut u8 {
+        let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
+        let handler_map: Arc<RwLock<HashMap<ThreadId, SgxThread>>> = Arc::new(RwLock::new(HashMap::new()));
+        let pending_thread: Arc<Mutex<VecDeque<ThreadId>>> = Arc::new(Mutex::new(VecDeque::new()));
 
-        let mut max_len = 0;
-        
-        for block in iter {
-            let mut block = block.downcast::<Vec<(K, V)>>()
-                .unwrap().into_iter().map(|(k, v)| (Some(k), v)).collect::<Vec<_>>();
-            sub_part.append(&mut block);
+        let mut sample_data = Vec::new();
+        //run the first block for profiling
+        call_seq.is_step_para = {
+            let mut call_seq = call_seq.clone();
+            assert!(call_seq.para_info.is_none());
+            sample_data = op.compute(&mut call_seq, input)
+                .collect::<Vec<_>>()
+                .remove(0)
+                .map(|(k, v)| (Some(k), v))
+                .collect::<Vec<_>>();
+            let sample_len = sample_data.len() as f64;
+            let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
+            let alloc_cnt_ratio = alloc_cnt as f64/sample_len;
+            println!("for narrow processing, alloc_cnt per len = {:?}", alloc_cnt_ratio);
+            call_seq.is_step_para.1 = alloc_cnt_ratio < 0.1;
+            //shuffle specific
+            crate::ALLOCATOR.reset_alloc_cnt();
+            sample_data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
+            let alloc_cnt_ratio = alloc_cnt as f64/sample_len;
+            println!("for shuffle processing, alloc_cnt per len = {:?}", alloc_cnt_ratio);
+            call_seq.is_step_para.2 = alloc_cnt_ratio < 0.1;            
+            call_seq.is_step_para
+        };
+        let mut max_len = sample_data.len();
 
-            if sub_part.get_size() > CACHE_LIMIT/parallel_num {
-                sub_part.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-                max_len = std::cmp::max(max_len, sub_part.len());
-                sub_parts.push(sub_part);
-                sub_part = Vec::new();
-            }
+        let mut handlers = Vec::with_capacity(MAX_THREAD);
+        let narrow_barrier = Arc::new(Barrier::new(MAX_THREAD));
+        let shuffle_barrier = Arc::new(Barrier::new(MAX_THREAD));
+
+        for i in 0..MAX_THREAD {
+            let op = op.clone();
+            let handler_map = handler_map.clone();
+            let pending_thread = pending_thread.clone();
+            let narrow_barrier = narrow_barrier.clone();
+            let shuffle_barrier = shuffle_barrier.clone();
+            let mut call_seq = call_seq.clone();
+            call_seq.para_info = Some((i, narrow_barrier, handler_map.clone(), pending_thread.clone()));
+            let (_, is_para_nar, is_para_shuf) = call_seq.is_step_para;
+            
+            let builder = thread::Builder::new();
+            let handler = builder
+                .spawn(move || {
+                    let cur_thread = thread::current();
+                    let cur_thread_id = cur_thread.id();
+                    handler_map.write().unwrap().insert(cur_thread_id, cur_thread);
+                    //shuffle specific
+                    let mut results: Vec<Vec<(Option<K>, V)>> = Vec::new();
+                    let mut sub_part_size = 0;
+                    let result_iter = op.compute(&mut call_seq, input);
+                    for result_bl in result_iter {
+                        let mut result_bl = result_bl.map(|(k, v)| (Some(k), v)).collect::<Vec<_>>();
+                        let result_bl_size = result_bl.deep_size_of();
+                        let mut should_create_new = true;
+                        if let Some(sub_part) = results.last_mut() {
+                            if sub_part_size + result_bl_size <= CACHE_LIMIT/MAX_THREAD/input.get_parallel() {
+                                sub_part.append(&mut result_bl);
+                                sub_part_size += result_bl_size;
+                                should_create_new = false;
+                            } 
+                        } 
+                        if should_create_new {
+                            results.push(result_bl);
+                            sub_part_size = result_bl_size;
+                        }
+                    }
+
+                    if !is_para_nar && is_para_shuf {
+                        release_bottleneck_lock(&handler_map, &pending_thread);
+                        barrier_seq2par(&handler_map, &pending_thread);
+                        println!("thread {:?} begin shuffle", cur_thread_id);
+                    } else if is_para_nar && !is_para_shuf {
+                        shuffle_barrier.wait();
+                        require_bottleneck_lock(&pending_thread);
+                    }
+
+                    //shuffle specific
+                    let mut local_max_len = 0;
+                    for sub_part in &mut results {
+                        sub_part.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+                        local_max_len = std::cmp::max(local_max_len, sub_part.len()); 
+                    }
+
+                    if !is_para_shuf {
+                        release_bottleneck_lock(&handler_map, &pending_thread);
+                        barrier_seq2par(&handler_map, &pending_thread);
+                        println!("thread {:?} begin encryption", cur_thread_id);
+                    }
+
+                    (results, local_max_len)
+                }).unwrap();
+            handlers.push(handler);
         }
-        
-        if !sub_part.is_empty() {
-            sub_part.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-            max_len = std::cmp::max(max_len, sub_part.len());
-            sub_parts.push(sub_part);
-        }
+
+        let mut sub_parts = handlers.into_iter().map(|handler| {
+            let (res, len) = handler.join().unwrap();
+            max_len = std::cmp::max(max_len, len);
+            res.into_iter()
+        }).flatten().collect::<Vec<_>>();
+        sub_parts.push(sample_data);
 
         //partition sort (local sort), and pad so that each sub partition should have the same number of (K, V)
         let mut sort_helper = SortHelper::<K, V>::new(sub_parts, max_len, true);

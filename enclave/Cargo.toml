@@ -19,7 +19,7 @@ sgx_signal = { path = "../incubator-teaclave-sgx-sdk/sgx_signal" }
 sgx_tcrypto = { path = "../incubator-teaclave-sgx-sdk/sgx_tcrypto" }
 sgx_trts = { path = "../incubator-teaclave-sgx-sdk/sgx_trts" }
 sgx_tseal = { path = "../incubator-teaclave-sgx-sdk/sgx_tseal" }
-sgx_tstd = { path = "../incubator-teaclave-sgx-sdk/sgx_tstd" }
+sgx_tstd = { path = "../incubator-teaclave-sgx-sdk/sgx_tstd", features = ["thread"] }
 sgx_types = { path = "../incubator-teaclave-sgx-sdk/sgx_types" }
 
 [dependencies]
@@ -27,6 +27,7 @@ aes-gcm = "0.8.0"
 bincode = { git = "https://github.com/mesalock-linux/bincode-sgx" }
 # bytes = { git = "https://github.com/mesalock-linux/bytes-sgx" }
 # dashmap = { version = "3.11.10", features = ["no_std"] }  # need to port
+deepsize = { version = "0.2.0", default-features = false, features = ["derive"] }
 downcast-rs = { version = "1.2.0", default-features = false }
 dyn-clone = "1.0.3"
 itertools = { git = "https://github.com/mesalock-linux/rust-itertools-sgx" }

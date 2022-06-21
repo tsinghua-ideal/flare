@@ -219,19 +219,19 @@ pub extern "C" fn secure_execute(tid: u64,
     captured_vars: *const u8,
 ) -> usize {
     let _init = *init; //this is necessary to let it accually execute
-    println!("tid: {:?}, Cur mem: {:?}, at the begining of secure execution", tid, ALLOCATOR.get_memory_usage());
-    let rdd_ids = unsafe { (rdd_ids as *const Vec<usize>).as_ref() }.unwrap();
-    let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap();
-    let part_ids = unsafe { (part_ids as *const Vec<usize>).as_ref() }.unwrap();
-    let captured_vars = unsafe { (captured_vars as *const HashMap<usize, Vec<Vec<u8>>>).as_ref() }.unwrap();
+    println!("tid: {:?}, at the begining of secure execution", tid);
+    let rdd_ids = unsafe { (rdd_ids as *const Vec<usize>).as_ref() }.unwrap().clone();
+    let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap().clone();
+    let part_ids = unsafe { (part_ids as *const Vec<usize>).as_ref() }.unwrap().clone();
+    let captured_vars = unsafe { (captured_vars as *const HashMap<usize, Vec<Vec<u8>>>).as_ref() }.unwrap().clone();
     println!("tid: {:?}, rdd ids = {:?}, op ids = {:?}, part_ids = {:?}, dep_info = {:?}, cache_meta = {:?}", tid, rdd_ids, op_ids, part_ids, dep_info, cache_meta);
-    
+
     let now = Instant::now();
-    let mut call_seq = NextOpId::new(tid, rdd_ids, op_ids, part_ids, cache_meta.clone(), captured_vars.clone(), &dep_info);
+    let mut call_seq = NextOpId::new(tid, rdd_ids, op_ids, part_ids, cache_meta.clone(), captured_vars, &dep_info);
     let final_op = call_seq.get_cur_op();
-    let result_ptr = final_op.iterator_start(&mut call_seq, input, &dep_info); //shuffle need dep_info
+    let result_ptr = final_op.iterator_start(call_seq, input, &dep_info); //shuffle need dep_info
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-    println!("tid: {:?}, Cur mem: {:?}, Max mem: {:?}, secure_execute {:?} s", tid, ALLOCATOR.get_memory_usage(), ALLOCATOR.get_max_memory_usage(), dur);
+    println!("tid: {:?}, secure_execute {:?} s", tid, dur);
     return result_ptr as usize
 }
 

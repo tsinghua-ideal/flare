@@ -9,6 +9,8 @@ use crate::dependency::{
 };
 use crate::op::*;
 use crate::partitioner::HashPartitioner;
+use deepsize::DeepSizeOf;
+use itertools::Itertools;
 
 #[derive(Clone)]
 pub struct CoGrouped<K, V, W> 
@@ -23,6 +25,7 @@ where
     pub(crate) op0: Arc<dyn Op<Item = (K, V)>>,
     pub(crate) op1: Arc<dyn Op<Item = (K, W)>>,
     pub(crate) part: Box<dyn Partitioner>,
+    pub(crate) cache_space: Arc<Mutex<HashMap<(usize, usize), Vec<Vec<(K, (Vec<V>, Vec<W>))>>>>>
 }
 
 impl<K, V, W> CoGrouped<K, V, W> 
@@ -116,6 +119,7 @@ W: Data,
             op0,
             op1,
             part,
+            cache_space: Arc::new(Mutex::new(HashMap::new()))
         }
     }
 
@@ -237,7 +241,7 @@ where
         self.vals.in_loop
     }
     
-    fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8{
+    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8{
         
 		self.compute_start(call_seq, input, dep_info)
     }
@@ -284,7 +288,11 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+        self.cache_space.clone()
+    }
+
+    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {       //narrow
                 self.narrow(call_seq, input, dep_info)
@@ -321,7 +329,7 @@ where
                         sub_part.append(&mut ser_decrypt::<Vec<(Option<K>, V)>>(&block_enc.clone()).into_iter()
                             .map(|(k, v)| (k, (Some(v), None::<W>)))
                             .collect::<Vec<_>>());
-                        if sub_part.get_size() > CACHE_LIMIT/input.get_parallel() {
+                        if sub_part.deep_size_of() > CACHE_LIMIT/input.get_parallel() {
                             max_len = std::cmp::max(max_len, sub_part.len());
                             part.push(sub_part);
                             sub_part = Vec::new();
@@ -348,7 +356,7 @@ where
                         sub_part.append(&mut ser_decrypt::<Vec<(Option<K>, W)>>(&block_enc.clone()).into_iter()
                             .map(|(k, w)| (k, (None::<V>, Some(w))))
                             .collect::<Vec<_>>());
-                        if sub_part.get_size() > CACHE_LIMIT/input.get_parallel() {
+                        if sub_part.deep_size_of() > CACHE_LIMIT/input.get_parallel() {
                             max_len = std::cmp::max(max_len, sub_part.len());
                             part.push(sub_part);
                             sub_part = Vec::new();
@@ -410,37 +418,5 @@ where
             }
             _ => panic!("Invalid is_shuffle")
         }
-    }
-
-    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
-        let data_ptr = input.data;
-        let have_cache = call_seq.have_cache();
-        let need_cache = call_seq.need_cache();
-        let is_caching_final_rdd = call_seq.is_caching_final_rdd();
-
-        if have_cache {
-            assert_eq!(data_ptr as usize, 0 as usize);
-            let key = call_seq.get_cached_doublet();
-            return self.get_and_remove_cached_data(key);
-        }
-        
-        let len = input.get_enc_data::<Vec<ItemE>>().len();
-        let res_iter = Box::new((0..len).map(move|i| {
-            let data = input.get_enc_data::<Vec<ItemE>>();
-            Box::new(ser_decrypt::<Vec<(Option<K>, (Vec<V>, Vec<W>))>>(&data[i].clone()).into_iter()
-                .filter(|(k, c)| k.is_some())
-                .map(|(k, c)| (k.unwrap(), c))
-            ) as Box<dyn Iterator<Item = _>>
-        }));
-        
-        let key = call_seq.get_caching_doublet();
-        if need_cache && !CACHE.contains(key) {
-            return self.set_cached_data(
-                call_seq,
-                res_iter,
-                is_caching_final_rdd,
-            )
-        }
-        res_iter
     }
 }

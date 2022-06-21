@@ -95,7 +95,7 @@ where
         self.vals.split_num.load(atomic::Ordering::SeqCst)
     }
 
-    fn iterator_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         
 		self.compute_start(call_seq, input, dep_info)
     }
@@ -139,7 +139,7 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn compute_start(&self, call_seq: &mut NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => { 
                 self.narrow(call_seq, input, dep_info)
@@ -150,38 +150,4 @@ where
             _ => panic!("Invalid is_shuffle")
         }
     }
-
-    fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
-        let now = Instant::now();
-        let data_ptr = input.data;
-        let have_cache = call_seq.have_cache();
-        let need_cache = call_seq.need_cache();
-        let is_caching_final_rdd = call_seq.is_caching_final_rdd();
-
-        //In this case, the data is either cached outside enclave or inside enclave
-        if have_cache {
-            assert_eq!(data_ptr as usize, 0 as usize);
-            let key = call_seq.get_cached_doublet();
-            return self.get_and_remove_cached_data(key);
-        }
-
-        let len = input.get_enc_data::<Vec<ItemE>>().len();
-        let res_iter = Box::new((0..len).map(move|i| {
-            let data = input.get_enc_data::<Vec<ItemE>>();
-            Box::new(ser_decrypt::<Vec<Self::Item>>(&data[i].clone()).into_iter()) as Box<dyn Iterator<Item = _>>
-        }));
-
-        let dur = now.elapsed().as_nanos() as f64 * 1e-9;
-        println!("in enclave decrypt {:?} s", dur);  
-        let key = call_seq.get_caching_doublet();
-        if need_cache && !CACHE.contains(key) {
-            return self.set_cached_data(
-                call_seq,
-                res_iter,
-                is_caching_final_rdd,
-            )
-        }
-        res_iter
-    }
-
 }
