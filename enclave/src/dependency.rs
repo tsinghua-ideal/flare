@@ -175,126 +175,107 @@ where
         }
     }
 
-    fn do_shuffle_task(&self, tid: u64, opb: Arc<dyn OpBase>, mut call_seq: NextOpId, input: Input) -> *mut u8 {
+    fn do_shuffle_task(&self, tid: u64, opb: Arc<dyn OpBase>, call_seq: NextOpId, input: Input) -> *mut u8 {
         let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
-        let aggregator = self.aggregator.clone();
-        let partitioner = self.partitioner.read().unwrap().clone();
-        let num_output_splits = partitioner.get_num_of_partitions();
-
-        let handler_map: Arc<RwLock<HashMap<ThreadId, SgxThread>>> = Arc::new(RwLock::new(HashMap::new()));
-        let pending_thread: Arc<Mutex<VecDeque<ThreadId>>> = Arc::new(Mutex::new(VecDeque::new()));
-
-        let mut acc = create_enc();
-        let mut buckets = Vec::new();
-        //run the first block for profiling
-        call_seq.is_step_para = {
-            let mut call_seq = call_seq.clone();
-            assert!(call_seq.para_info.is_none());
-            let sample_data = op.compute(&mut call_seq, input).collect::<Vec<_>>().remove(0).collect::<Vec<_>>();
-            let sample_len = sample_data.len() as f64;
-            let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
-            let alloc_cnt_ratio = alloc_cnt as f64/sample_len;
-            println!("for narrow processing, alloc_cnt per len = {:?}", alloc_cnt_ratio);
-            call_seq.is_step_para.1 = alloc_cnt_ratio < 0.1;
-            //shuffle specific
-            crate::ALLOCATOR.reset_alloc_cnt();
-            buckets = do_shuffle_task_core(sample_data, &aggregator, &partitioner, num_output_splits);
-            let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
-            let alloc_cnt_ratio = alloc_cnt as f64/sample_len;
-            println!("for shuffle processing, alloc_cnt per len = {:?}", alloc_cnt_ratio);
-            call_seq.is_step_para.2 = alloc_cnt_ratio < 0.1;            
-            call_seq.is_step_para
-        };
+        let mut sub_parts: Vec<Vec<(K, V)>> = Vec::new();
+        let mut sub_part_size = 0;
+        let results = *unsafe{ Box::from_raw(op.narrow(call_seq, input, false) as *mut Vec<Vec<(K, V)>>) };
+        for mut block in results {
+            let block_size = block.deep_size_of();
+            let mut should_create_new = true;
+            if let Some(sub_part) = sub_parts.last_mut() {
+                if sub_part_size + block_size <= CACHE_LIMIT/MAX_THREAD/input.get_parallel() {
+                    sub_part.append(&mut block);
+                    sub_part_size += block_size;
+                    should_create_new = false;
+                } 
+            } 
+            if should_create_new {
+                sub_parts.push(block);
+                sub_part_size = block_size;
+            }
+        }
 
         let mut handlers = Vec::with_capacity(MAX_THREAD);
-        let narrow_barrier = Arc::new(Barrier::new(MAX_THREAD));
-        let shuffle_barrier = Arc::new(Barrier::new(MAX_THREAD));
-
-        for i in 0..MAX_THREAD {
-            let op = op.clone();
-            let aggregator = aggregator.clone();
-            let partitioner = partitioner.clone();
-            let handler_map = handler_map.clone();
-            let pending_thread = pending_thread.clone();
-            let narrow_barrier = narrow_barrier.clone();
-            let shuffle_barrier = shuffle_barrier.clone();
-            let mut call_seq = call_seq.clone();
-            call_seq.para_info = Some((i, narrow_barrier, handler_map.clone(), pending_thread.clone()));
-            let (_, is_para_nar, is_para_shuf) = call_seq.is_step_para;
-            let buckets = std::mem::take(&mut buckets);
-            
-            let builder = thread::Builder::new();
-            let handler = builder
+        let r = sub_parts.len().saturating_sub(1) / MAX_THREAD + 1;
+        for _ in 0..MAX_THREAD {
+            let mut sub_parts = sub_parts.split_off(sub_parts.len().saturating_sub(r));
+            let handler = thread::Builder::new()
                 .spawn(move || {
-                    let cur_thread = thread::current();
-                    let cur_thread_id = cur_thread.id();
-                    handler_map.write().unwrap().insert(cur_thread_id, cur_thread);
-                    //shuffle specific
-                    let mut results: Vec<Vec<(K, V)>> = Vec::new();
-                    let mut sub_part_size = 0;
-                    let result_iter = op.compute(&mut call_seq, input);
-                    for result_bl in result_iter {
-                        let mut result_bl = result_bl.collect::<Vec<_>>();
-                        let result_bl_size = result_bl.deep_size_of();
-                        let mut should_create_new = true;
-                        if let Some(sub_part) = results.last_mut() {
-                            if sub_part_size + result_bl_size <= CACHE_LIMIT/MAX_THREAD/input.get_parallel() {
-                                sub_part.append(&mut result_bl);
-                                sub_part_size += result_bl_size;
-                                should_create_new = false;
-                            } 
-                        } 
-                        if should_create_new {
-                            results.push(result_bl);
-                            sub_part_size = result_bl_size;
-                        }
+                    for sub_part in sub_parts.iter_mut() {
+                        sub_part.sort_unstable_by(|a, b| a.0.cmp(&b.0));
                     }
-
-                    if !is_para_nar && is_para_shuf {
-                        release_bottleneck_lock(&handler_map, &pending_thread);
-                        barrier_seq2par(&handler_map, &pending_thread);
-                        println!("thread {:?} begin shuffle", cur_thread_id);
-                    } else if is_para_nar && !is_para_shuf {
-                        shuffle_barrier.wait();
-                        require_bottleneck_lock(&pending_thread);
-                    }
-
-                    crate::ALLOCATOR.reset_alloc_cnt();
-                    let mut len = 0;
-                    //shuffle specific
-                    let mut buckets_col = results.into_iter().map(|data| {
-                        len += data.len();
-                        do_shuffle_task_core(data, &aggregator, &partitioner, num_output_splits)
-                    }).collect::<Vec<_>>();
-                    //capture the buckets outside
-                    if !buckets.is_empty() {
-                        buckets_col.push(buckets);
-                    }
-
-                    let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
-                    println!("in shuffle, alloc per len = {:?}", alloc_cnt as f64/(len as f64));
-
-                    if !is_para_shuf {
-                        release_bottleneck_lock(&handler_map, &pending_thread);
-                        barrier_seq2par(&handler_map, &pending_thread);
-                        println!("thread {:?} begin encryption", cur_thread_id);
-                    }
-
-                    //acc stays outside enclave
-                    let mut acc = create_enc();
-                    for buckets in buckets_col {
-                        let buckets_enc = buckets.into_iter().map(|bucket| batch_encrypt(&bucket, false)).collect::<Vec<_>>();
-                        merge_enc(&mut acc, &buckets_enc);
-                    }
-                    acc
+                    sub_parts
                 }).unwrap();
             handlers.push(handler);
         }
+        assert!(sub_parts.is_empty());
 
-        for handler in handlers {
-            combine_enc(&mut acc, handler.join().unwrap());
+        let aggregator = self.aggregator.clone();
+        let mut partitioner = self.partitioner.read().unwrap().clone();
+        let mut num_output_splits = partitioner.get_num_of_partitions();
+        num_output_splits *= MAX_THREAD + 1;
+        partitioner.set_num_of_partitions(num_output_splits);
+
+        let mut is_para_shuf = true;
+        let mut handlers_res = Vec::with_capacity(MAX_THREAD);
+        for (i, handler) in handlers.into_iter().enumerate() {
+            let mut buckets_col = Vec::new();
+            let mut sub_parts = handler.join().unwrap();
+            if i == 0 {
+                //sample
+                let sample_data = sub_parts.pop().unwrap();
+                let sample_len = sample_data.len();
+                //shuffle specific
+                crate::ALLOCATOR.reset_alloc_cnt();
+                buckets_col.push(do_shuffle_task_core(sample_data, &aggregator, &partitioner, num_output_splits));
+                let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
+                let alloc_cnt_ratio = alloc_cnt as f64/(sample_len as f64);
+                println!("for shuffle processing, alloc_cnt per len = {:?}", alloc_cnt_ratio);
+                is_para_shuf = alloc_cnt_ratio < 0.1;
+            };
+            if is_para_shuf {
+                //launch enc
+                let aggregator = aggregator.clone();
+                let partitioner = partitioner.clone();
+                let handler = thread::Builder::new()
+                    .spawn(move || {
+                        let mut acc = create_enc();
+                        if let Some(buckets) = buckets_col.pop() {
+                            let buckets_enc = buckets.into_iter().map(|bucket| batch_encrypt(&bucket, false)).collect::<Vec<_>>();
+                            merge_enc(&mut acc, &buckets_enc);
+                        }
+                        for sub_part in sub_parts {
+                            let buckets = do_shuffle_task_core(sub_part, &aggregator, &partitioner, num_output_splits);
+                            let buckets_enc = buckets.into_iter().map(|bucket| batch_encrypt(&bucket, false)).collect::<Vec<_>>();
+                            merge_enc(&mut acc, &buckets_enc);
+                        }
+                        acc
+                    }).unwrap();
+                handlers_res.push(handler);
+            } else {
+                for sub_part in sub_parts {
+                    buckets_col.push(do_shuffle_task_core(sub_part, &aggregator, &partitioner, num_output_splits));
+                }
+                //launch enc
+                let handler = thread::Builder::new()
+                    .spawn(move || {
+                        //acc stays outside enclave
+                        let mut acc = create_enc();
+                        for buckets in buckets_col {
+                            let buckets_enc = buckets.into_iter().map(|bucket| batch_encrypt(&bucket, false)).collect::<Vec<_>>();
+                            merge_enc(&mut acc, &buckets_enc);
+                        }
+                        acc
+                    }).unwrap();
+                handlers_res.push(handler);
+            }
         }
 
+        let mut acc = create_enc();
+        for handler in handlers_res {
+            combine_enc(&mut acc, handler.join().unwrap());
+        }
         to_ptr(acc)
     }
 
@@ -352,28 +333,33 @@ where
     V: Data,
     C: Data,
 {
-    //BTreeMap seems unnecessary
-    let mut buckets: Vec<Vec<(K, C)>> = (0..num_output_splits)
-        .map(|_| Vec::new())
-        .collect::<Vec<_>>();
     if aggregator.is_default {
-        data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-        for group in data.group_by(|x, y| x.0 == y.0) {
-            let k = group[0].0.clone();
-            let bucket_id = partitioner.get_partition(&k);
-            let bucket = &mut buckets[bucket_id];
-            let v = group.iter().map(|(k, v)| v.clone()).collect::<Vec<_>>();
-            let v = (Box::new(v) as Box<dyn Any>).downcast::<C>().unwrap();
-            if bucket.last().map_or(false, |(last_k, _)| &k == last_k) {
-                let old_v = &mut bucket.last_mut().unwrap().1;
-                let input = ((std::mem::take(old_v), *v),);
-                *old_v = aggregator.merge_combiners.call(input);
-            } else {
-                bucket.push((k, aggregator.merge_combiners.call(((Default::default(), *v),))));
+        let mut buckets: Vec<Vec<(K, Vec<V>)>> = (0..num_output_splits)
+            .map(|_| Vec::new())
+            .collect::<Vec<_>>();
+        let mut iter = data.into_iter();
+        if let Some((k, v)) = iter.next() {
+            let mut bucket_id = partitioner.get_partition(&k);
+            buckets[bucket_id].push((k, vec![v]));
+            let mut last_k = &buckets[bucket_id][0].0;
+            for (k, v) in iter {
+                if last_k == &k {
+                    drop(last_k);
+                    buckets[bucket_id].last_mut().unwrap().1.push(v);
+                    last_k = &buckets[bucket_id].last().unwrap().0;
+                } else {
+                    drop(last_k);
+                    bucket_id = partitioner.get_partition(&k);
+                    buckets[bucket_id].push((k, vec![v]));
+                    last_k = &buckets[bucket_id].last().unwrap().0;
+                }
             }
         }
+        *(Box::new(buckets) as Box<dyn Any>).downcast::<Vec<Vec<(K, C)>>>().unwrap()
     } else {
-        data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        let mut buckets: Vec<Vec<(K, C)>> = (0..num_output_splits)
+            .map(|_| Vec::new())
+            .collect::<Vec<_>>();
         for (k, v) in data.into_iter() {
             let bucket_id = partitioner.get_partition(&k);
             let bucket = &mut buckets[bucket_id];
@@ -385,19 +371,6 @@ where
                 bucket.push((k, aggregator.create_combiner.call((v,))));
             }
         }
-
-        // for i in data.into_iter() {
-        //     let (k, v) = i;
-        //     let bucket_id = partitioner.get_partition(&k);
-        //     let bucket = &mut buckets[bucket_id];
-        //     if let Some(old_v) = bucket.get_mut(&k) {
-        //         let input = ((std::mem::take(old_v), v),);
-        //         let output = aggregator.merge_value.call(input);
-        //         *old_v = output;
-        //     } else {
-        //         bucket.insert(k, aggregator.create_combiner.call((v,)));
-        //     }
-        // }
+        buckets
     }
-    buckets
 }

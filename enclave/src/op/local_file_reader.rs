@@ -71,8 +71,8 @@ where
     vals: Arc<OpVals>,
     path: PathBuf,
     sec_decoder: Option<F0>,
+    cache_space: Arc<Mutex<HashMap<(usize, usize), Vec<Vec<U>>>>>,
     _marker_text_data: PhantomData<I>,
-    _marker_data: PhantomData<U>,
 }
 
 impl<I, U, F0> LocalFsReader<I, U, F0> 
@@ -93,8 +93,8 @@ where
             vals,
             path: dir_path,
             sec_decoder,
+            cache_space: Arc::new(Mutex::new(HashMap::new())),
             _marker_text_data: PhantomData,
-            _marker_data: PhantomData,
         }
     }
 }
@@ -207,9 +207,13 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+        self.cache_space.clone()
+    }
+
     fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         //suppose no shuffle will happen after this rdd
-        self.narrow(call_seq, input, dep_info)
+        self.narrow(call_seq, input, true)
     }
 
 }

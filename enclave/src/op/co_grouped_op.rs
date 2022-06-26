@@ -126,35 +126,8 @@ W: Data,
         fn decrypt_buckets<K: Ord + Data, T: Data>(data_enc: &Vec<Vec<ItemE>>) -> Vec<Vec<(K, T)>> {
             data_enc.iter().map(|bucket| batch_decrypt(bucket, true)).collect::<Vec<_>>()
         }
-
-        let data_enc = input.get_enc_data::<(
-            Vec<Vec<ItemE>>,
-            Vec<Vec<ItemE>>, 
-            Vec<Vec<ItemE>>, 
-            Vec<Vec<ItemE>>
-        )>();
-
-        let (a0, a1, b0, b1): (
-            Vec<Vec<(K, V)>>,
-            Vec<Vec<(K, Vec<V>)>>,
-            Vec<Vec<(K, W)>>,
-            Vec<Vec<(K, Vec<W>)>>
-        ) = (
-            decrypt_buckets(&data_enc.0), 
-            decrypt_buckets(&data_enc.1),
-            decrypt_buckets(&data_enc.2),
-            decrypt_buckets(&data_enc.3),   
-        );
-
-        let mut agg: Vec<(K, (Vec<V>, Vec<W>))> = Vec::new();
-
-        if !a0.is_empty() && !b0.is_empty() {
-            unimplemented!()
-        } else if !a0.is_empty() && !b1.is_empty() {
-            unimplemented!()
-        } else if !a1.is_empty() && !b0.is_empty() {
-            unimplemented!()
-        } else {
+        fn merge_core<K: Ord + Data, V: Data, W: Data>(a1: Vec<Vec<(K, Vec<V>)>>, b1: Vec<Vec<(K, Vec<W>)>>) -> Vec<(K, (Vec<V>, Vec<W>))> {
+            let mut agg: Vec<(K, (Vec<V>, Vec<W>))> = Vec::new();
             let mut iter_a = a1.into_iter().kmerge_by(|a, b| a.0 < b.0);
             let mut iter_b = b1.into_iter().kmerge_by(|a, b| a.0 < b.0);
 
@@ -169,8 +142,10 @@ W: Data,
                     let (k, mut v) = cur_a.unwrap();
                     cur_a = iter_a.next();
                     if agg.last().map_or(false, |(last_k, _)| last_k == &k) {
-                        let (last_k, (last_v, _)) = agg.last_mut().unwrap();
+                        let (_, (last_v, _)) = agg.last_mut().unwrap();
                         last_v.append(&mut v);
+                    } else if agg.last().map_or(false, |(_, (last_v, last_w))| last_v.is_empty() || last_w.is_empty()) {
+                        *agg.last_mut().unwrap() = (k, (v, Vec::new()));
                     } else {
                         agg.push((k, (v, Vec::new())));
                     }
@@ -178,77 +153,132 @@ W: Data,
                     let (k, mut w) = cur_b.unwrap();
                     cur_b = iter_b.next();
                     if agg.last().map_or(false, |(last_k, _)| last_k == &k) {
-                        let (last_k, (_, last_w)) = agg.last_mut().unwrap();
+                        let (_, (_, last_w)) = agg.last_mut().unwrap();
                         last_w.append(&mut w);
+                    } else if agg.last().map_or(false, |(_, (last_v, last_w))| last_v.is_empty() || last_w.is_empty()) {
+                        *agg.last_mut().unwrap() = (k, (Vec::new(), w));
                     } else {
                         agg.push((k, (Vec::new(), w)));
                     }
                 }
             }
+            agg
         }
 
-        //block reshape
-        let res = if self.is_for_join {
-            let mut len = 0;
-            let agg = agg.into_iter()
-                .filter(|(k, (v, w))| v.len() != 0 && w.len() != 0)
-                .collect::<Vec<_>>()
-                .split_inclusive(|(k, (v, w))| {
-                    len += v.deep_size_of() * w.deep_size_of();
-                    let res = len > MAX_ENC_BL * MAX_ENC_BL;
-                    len = (!res as usize) * len;
-                    res
-                }).flat_map(|x| {
-                    let mut x = x.to_vec();
-                    let mut y = x.drain_filter(|(k, (v, w))| v.len() * w.len() > MAX_ENC_BL * 128)
-                        .flat_map(|(k, (v, w))| {
-                            let vlen = v.len();
-                            let wlen = w.len();
-                            {
-                                if vlen > wlen {
-                                    let chunk_size = (MAX_ENC_BL*128-1)/wlen+1;
-                                    let chunk_num =  (vlen-1)/chunk_size+1;
-                                    let kk = vec![k; chunk_num].into_iter();
-                                    let vv = v.chunks(chunk_size).map(|x| x.to_vec()).collect::<Vec<_>>().into_iter();
-                                    let ww = vec![w; chunk_num].into_iter();
-                                    kk.zip(vv.zip(ww))
-                                } else {
-                                    let chunk_size = (MAX_ENC_BL*128-1)/vlen+1;
-                                    let chunk_num =  (wlen-1)/chunk_size+1;
-                                    let kk = vec![k; chunk_num].into_iter();
-                                    let ww = w.chunks(chunk_size).map(|x| x.to_vec()).collect::<Vec<_>>().into_iter();
-                                    let vv = vec![v; chunk_num].into_iter();
-                                    kk.zip(vv.zip(ww))
-                                }
-                            }
-                        }).map(|x| vec![x])
-                        .collect::<Vec<_>>();
-                    y.push(x);
-                    y
-                }).collect::<Vec<_>>();
-            agg
-        } else {
-            let mut len = 0;
-            let agg = agg.into_iter()
-                .filter(|(k, (v, w))| v.len() != 0 && w.len() != 0)
-                .collect::<Vec<_>>()
-                .split_inclusive(|(k, (v, w))| {
-                    len += v.len() * w.len();
-                    let res = len > MAX_ENC_BL;
-                    len = (!res as usize) * len;
-                    res
-                }).map(|x| x.to_vec())
-                .collect::<Vec<_>>();
-            agg
+        let data_enc = input.get_enc_data::<(
+            Vec<Vec<ItemE>>,
+            Vec<Vec<Vec<ItemE>>>, 
+            Vec<Vec<ItemE>>, 
+            Vec<Vec<Vec<ItemE>>>
+        )>();
+
+        let (mut a0, mut a1, mut b0, mut b1): (
+            Vec<Vec<(K, V)>>,
+            Vec<Vec<Vec<(K, Vec<V>)>>>,
+            Vec<Vec<(K, W)>>,
+            Vec<Vec<Vec<(K, Vec<W>)>>>,
+        ) = (
+            decrypt_buckets(&data_enc.0),
+            data_enc.1.iter().map(|buckets| decrypt_buckets(buckets)).collect::<Vec<_>>(),
+            decrypt_buckets(&data_enc.2),
+            data_enc.3.iter().map(|buckets| decrypt_buckets(buckets)).collect::<Vec<_>>(),
+        );
+        assert_eq!(data_enc.1.len(), MAX_THREAD + 1);
+        assert_eq!(data_enc.3.len(), MAX_THREAD + 1);
+
+        //currently only support that both children are shuffle dep
+    
+        let (is_para_mer, agg) = {
+            crate::ALLOCATOR.reset_alloc_cnt();
+            let sample_a1 = a1.pop().unwrap();
+            let sample_b1 = b1.pop().unwrap();
+            let sample_len = sample_a1.iter().map(|v| v.len()).sum::<usize>() 
+                + sample_b1.iter().map(|v| v.len()).sum::<usize>();
+            let agg = merge_core(sample_a1, sample_b1);
+            let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
+            let alloc_cnt_ratio = (alloc_cnt as f64)/(sample_len as f64);
+            println!("for merge, alloc_cnt per len = {:?}", alloc_cnt_ratio);
+            (alloc_cnt_ratio < 0.1, agg)
         };
 
-        let mut res_enc = create_enc();
-        for res_bl in res {
-            let block_enc = batch_encrypt(&res_bl, true);
-            combine_enc(&mut res_enc, block_enc);
-        }
+        let mut handlers = Vec::with_capacity(MAX_THREAD);
+        if is_para_mer {
+            for i in 0..MAX_THREAD {
+                let a1 = a1.pop().unwrap();
+                let b1 = b1.pop().unwrap();
+                let builder = thread::Builder::new();
+                let handler = builder
+                    .spawn(move || {
+                        merge_core(a1, b1)
+                    }).unwrap();
+                handlers.push(handler);
+            }
+        } 
 
-        res_enc
+        let mut acc = create_enc();
+        for agg in vec![agg].into_iter()
+            .chain(handlers.into_iter().map(|handler| handler.join().unwrap()))
+            .chain(a1.into_iter().zip(b1.into_iter()).map(|(a1, b1)| merge_core(a1, b1))) 
+        {
+            //block reshape
+            let res = if self.is_for_join {
+                let mut len = 0;
+                let agg = agg.split_inclusive(|(k, (v, w))| {
+                        len += v.deep_size_of() * w.deep_size_of();
+                        let res = len > MAX_ENC_BL * MAX_ENC_BL;
+                        len = (!res as usize) * len;
+                        res
+                    }).flat_map(|x| {
+                        let mut x = x.to_vec();
+                        let mut y = x.drain_filter(|(k, (v, w))| v.len() * w.len() > MAX_ENC_BL * 128)
+                            .flat_map(|(k, (v, w))| {
+                                let vlen = v.len();
+                                let wlen = w.len();
+                                {
+                                    if vlen > wlen {
+                                        let chunk_size = (MAX_ENC_BL*128-1)/wlen+1;
+                                        let chunk_num =  (vlen-1)/chunk_size+1;
+                                        let kk = vec![k; chunk_num].into_iter();
+                                        let vv = v.chunks(chunk_size).map(|x| x.to_vec()).collect::<Vec<_>>().into_iter();
+                                        let ww = vec![w; chunk_num].into_iter();
+                                        kk.zip(vv.zip(ww))
+                                    } else {
+                                        let chunk_size = (MAX_ENC_BL*128-1)/vlen+1;
+                                        let chunk_num =  (wlen-1)/chunk_size+1;
+                                        let kk = vec![k; chunk_num].into_iter();
+                                        let ww = w.chunks(chunk_size).map(|x| x.to_vec()).collect::<Vec<_>>().into_iter();
+                                        let vv = vec![v; chunk_num].into_iter();
+                                        kk.zip(vv.zip(ww))
+                                    }
+                                }
+                            }).map(|x| vec![x])
+                            .collect::<Vec<_>>();
+                        y.push(x);
+                        y
+                    }).collect::<Vec<_>>();
+                agg
+            } else {
+                let mut len = 0;
+                let agg = agg.into_iter()
+                    .filter(|(k, (v, w))| v.len() != 0 && w.len() != 0)
+                    .collect::<Vec<_>>()
+                    .split_inclusive(|(k, (v, w))| {
+                        len += v.len() * w.len();
+                        let res = len > MAX_ENC_BL;
+                        len = (!res as usize) * len;
+                        res
+                    }).map(|x| x.to_vec())
+                    .collect::<Vec<_>>();
+                agg
+            };
+            let mut res_enc = create_enc();
+            for res_bl in res {
+                let block_enc = batch_encrypt(&res_bl, true);
+                combine_enc(&mut res_enc, block_enc);
+            }
+            combine_enc(&mut acc, res_enc);
+        }
+        acc
     }
 }
 
@@ -370,7 +400,7 @@ where
     fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {       //narrow
-                self.narrow(call_seq, input, dep_info)
+                self.narrow(call_seq, input, true)
             },
             1 => {       //shuffle write
                 self.shuffle(call_seq, input, dep_info)
