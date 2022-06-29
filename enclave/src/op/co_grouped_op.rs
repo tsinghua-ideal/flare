@@ -198,7 +198,7 @@ W: Data,
             let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
             let alloc_cnt_ratio = (alloc_cnt as f64)/(sample_len as f64);
             println!("for merge, alloc_cnt per len = {:?}", alloc_cnt_ratio);
-            (alloc_cnt_ratio < 0.1, agg)
+            (alloc_cnt_ratio < PARA_THRESHOLD, agg)
         };
 
         let mut handlers = Vec::with_capacity(MAX_THREAD);

@@ -232,7 +232,7 @@ where
                 let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
                 let alloc_cnt_ratio = alloc_cnt as f64/(sample_len as f64);
                 println!("for shuffle processing, alloc_cnt per len = {:?}", alloc_cnt_ratio);
-                is_para_shuf = alloc_cnt_ratio < 0.1;
+                is_para_shuf = alloc_cnt_ratio < PARA_THRESHOLD;
             };
             if is_para_shuf {
                 //launch enc

@@ -108,14 +108,14 @@ where
             let sample_len = sample_data.iter().map(|v| v.len()).sum::<usize>();
             let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
             let alloc_cnt_ratio = (alloc_cnt as f64)/(sample_len as f64);
-            let is_para_enc = alloc_cnt_ratio < 0.1;
+            let is_para_enc = alloc_cnt_ratio < PARA_THRESHOLD;
             println!("for decryption, alloc_cnt per len = {:?}", alloc_cnt_ratio);
 
             crate::ALLOCATOR.reset_alloc_cnt();
             let combiners = merge_core(sample_data, &self.aggregator);
             let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
             let alloc_cnt_ratio = (alloc_cnt as f64)/(sample_len as f64);
-            let is_para_merge = alloc_cnt_ratio < 0.1;
+            let is_para_merge = alloc_cnt_ratio < PARA_THRESHOLD;
             println!("for merge, alloc_cnt per len = {:?}", alloc_cnt_ratio);
             combine_enc(&mut acc, batch_encrypt(&combiners, true));
             (is_para_enc, is_para_merge)

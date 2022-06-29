@@ -69,6 +69,7 @@ pub const MAX_ENC_BL: usize = 1024;
 pub const CACHE_LIMIT: usize = 4_000_000;
 pub const ENABLE_CACHE_INSIDE: bool = false;
 pub const MAX_THREAD: usize = 1;
+pub const PARA_THRESHOLD: f64 = 3.0;
 pub type Result<T> = std::result::Result<T, &'static str>;
 
 extern "C" {
@@ -1020,7 +1021,7 @@ pub trait Op: OpBase + 'static {
         let need_cache = call_seq.need_cache();
         let is_caching_final_rdd = call_seq.is_caching_final_rdd();
 
-        if have_cache {
+        if have_cache || (call_seq.get_cur_rdd_id() == call_seq.cache_meta.cached_rdd_id && data_ptr == 0) {
             assert_eq!(data_ptr as usize, 0 as usize);
             return self.get_and_remove_cached_data(call_seq);
         }
@@ -1259,7 +1260,7 @@ pub trait Op: OpBase + 'static {
                 call_seq.sample_len = data.len();
                 let alloc_cnt_ratio = alloc_cnt as f64/(call_seq.sample_len as f64);
                 println!("for decryption, alloc_cnt per len = {:?}", alloc_cnt_ratio);
-                call_seq.is_step_para.0 = alloc_cnt_ratio < 0.1;
+                call_seq.is_step_para.0 = alloc_cnt_ratio < PARA_THRESHOLD;
                 call_seq.para_range = Some((1, data_enc.len()));
 
                 //profile begin
@@ -1356,7 +1357,7 @@ pub trait Op: OpBase + 'static {
             println!("for narrow processing, alloc_cnt per len = {:?}", alloc_cnt_ratio);
             call_seq.para_range = call_seq_sample.para_range;
             call_seq.is_step_para.0 = call_seq_sample.is_step_para.0;
-            call_seq.is_step_para.1 = alloc_cnt_ratio < 0.1;
+            call_seq.is_step_para.1 = alloc_cnt_ratio < PARA_THRESHOLD;
             //narrow specific
             if need_enc {
                 let block_enc = batch_encrypt(&sample_data, true);
