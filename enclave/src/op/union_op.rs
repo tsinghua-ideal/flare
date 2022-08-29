@@ -214,7 +214,7 @@ impl<T: Data> Op for Union<T>
     fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
         match dep_info.dep_type() {
             0 => {    
-                self.narrow(call_seq, input, dep_info)
+                self.narrow(call_seq, input, true)
             },
             1 => { 
                 self.shuffle(call_seq, input, dep_info)

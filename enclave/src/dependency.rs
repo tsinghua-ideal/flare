@@ -174,111 +174,52 @@ where
         }
     }
 
-    fn do_shuffle_task(&self, tid: u64, opb: Arc<dyn OpBase>, mut call_seq: NextOpId, input: Input) -> *mut u8 {
+    fn do_shuffle_task(&self, tid: u64, opb: Arc<dyn OpBase>, call_seq: NextOpId, input: Input) -> *mut u8 {
         let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
-        let handler_map: Arc<RwLock<HashMap<ThreadId, SgxThread>>> = Arc::new(RwLock::new(HashMap::new()));
-        let pending_thread: Arc<Mutex<VecDeque<ThreadId>>> = Arc::new(Mutex::new(VecDeque::new()));
 
-        let mut sample_data = Vec::new();
-        //run the first block for profiling
-        call_seq.is_step_para = {
-            let mut call_seq = call_seq.clone();
-            assert!(call_seq.para_info.is_none());
-            sample_data = op.compute(&mut call_seq, input)
-                .collect::<Vec<_>>()
-                .remove(0)
-                .map(|(k, v)| (Some(k), v))
-                .collect::<Vec<_>>();
-            let sample_len = sample_data.len() as f64;
-            let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
-            let alloc_cnt_ratio = alloc_cnt as f64/sample_len;
-            println!("for narrow processing, alloc_cnt per len = {:?}", alloc_cnt_ratio);
-            call_seq.is_step_para.1 = alloc_cnt_ratio < 0.1;
-            //shuffle specific
-            crate::ALLOCATOR.reset_alloc_cnt();
-            sample_data.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-            let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
-            let alloc_cnt_ratio = alloc_cnt as f64/sample_len;
-            println!("for shuffle processing, alloc_cnt per len = {:?}", alloc_cnt_ratio);
-            call_seq.is_step_para.2 = alloc_cnt_ratio < 0.1;            
-            call_seq.is_step_para
-        };
-        let mut max_len = sample_data.len();
+        let mut sub_parts: Vec<Vec<(Option<K>, V)>> = Vec::new();
+        let mut sub_part_size = 0;
+        let results = *unsafe{ Box::from_raw(op.narrow(call_seq, input, false) as *mut Vec<Vec<(K, V)>>) };
+        for block in results {
+            let mut block = block.into_iter().map(|(k, v)| (Some(k), v)).collect::<Vec<_>>();
+            let block_size = block.deep_size_of();
+            let mut should_create_new = true;
+            if let Some(sub_part) = sub_parts.last_mut() {
+                if sub_part_size + block_size <= CACHE_LIMIT/MAX_THREAD/input.get_parallel() {
+                    sub_part.append(&mut block);
+                    sub_part_size += block_size;
+                    should_create_new = false;
+                } 
+            } 
+            if should_create_new {
+                sub_parts.push(block);
+                sub_part_size = block_size;
+            }
+        }
 
         let mut handlers = Vec::with_capacity(MAX_THREAD);
-        let narrow_barrier = Arc::new(Barrier::new(MAX_THREAD));
-        let shuffle_barrier = Arc::new(Barrier::new(MAX_THREAD));
-
-        for i in 0..MAX_THREAD {
-            let op = op.clone();
-            let handler_map = handler_map.clone();
-            let pending_thread = pending_thread.clone();
-            let narrow_barrier = narrow_barrier.clone();
-            let shuffle_barrier = shuffle_barrier.clone();
-            let mut call_seq = call_seq.clone();
-            call_seq.para_info = Some((i, narrow_barrier, handler_map.clone(), pending_thread.clone()));
-            let (_, is_para_nar, is_para_shuf) = call_seq.is_step_para;
-            
-            let builder = thread::Builder::new();
-            let handler = builder
+        let r = sub_parts.len().saturating_sub(1) / MAX_THREAD + 1;
+        for _ in 0..MAX_THREAD {
+            let mut sub_parts = sub_parts.split_off(sub_parts.len().saturating_sub(r));
+            let handler = thread::Builder::new()
                 .spawn(move || {
-                    let cur_thread = thread::current();
-                    let cur_thread_id = cur_thread.id();
-                    handler_map.write().unwrap().insert(cur_thread_id, cur_thread);
-                    //shuffle specific
-                    let mut results: Vec<Vec<(Option<K>, V)>> = Vec::new();
-                    let mut sub_part_size = 0;
-                    let result_iter = op.compute(&mut call_seq, input);
-                    for result_bl in result_iter {
-                        let mut result_bl = result_bl.map(|(k, v)| (Some(k), v)).collect::<Vec<_>>();
-                        let result_bl_size = result_bl.deep_size_of();
-                        let mut should_create_new = true;
-                        if let Some(sub_part) = results.last_mut() {
-                            if sub_part_size + result_bl_size <= CACHE_LIMIT/MAX_THREAD/input.get_parallel() {
-                                sub_part.append(&mut result_bl);
-                                sub_part_size += result_bl_size;
-                                should_create_new = false;
-                            } 
-                        } 
-                        if should_create_new {
-                            results.push(result_bl);
-                            sub_part_size = result_bl_size;
-                        }
-                    }
-
-                    if !is_para_nar && is_para_shuf {
-                        release_bottleneck_lock(&handler_map, &pending_thread);
-                        barrier_seq2par(&handler_map, &pending_thread);
-                        println!("thread {:?} begin shuffle", cur_thread_id);
-                    } else if is_para_nar && !is_para_shuf {
-                        shuffle_barrier.wait();
-                        require_bottleneck_lock(&pending_thread);
-                    }
-
-                    //shuffle specific
                     let mut local_max_len = 0;
-                    for sub_part in &mut results {
+                    for sub_part in sub_parts.iter_mut() {
                         sub_part.sort_unstable_by(|a, b| a.0.cmp(&b.0));
                         local_max_len = std::cmp::max(local_max_len, sub_part.len()); 
                     }
-
-                    if !is_para_shuf {
-                        release_bottleneck_lock(&handler_map, &pending_thread);
-                        barrier_seq2par(&handler_map, &pending_thread);
-                        println!("thread {:?} begin encryption", cur_thread_id);
-                    }
-
-                    (results, local_max_len)
+                    (sub_parts, local_max_len)
                 }).unwrap();
             handlers.push(handler);
         }
+        assert!(sub_parts.is_empty());
 
-        let mut sub_parts = handlers.into_iter().map(|handler| {
+        let mut max_len = 0;
+        let sub_parts = handlers.into_iter().map(|handler| {
             let (res, len) = handler.join().unwrap();
             max_len = std::cmp::max(max_len, len);
             res.into_iter()
         }).flatten().collect::<Vec<_>>();
-        sub_parts.push(sample_data);
 
         //partition sort (local sort), and pad so that each sub partition should have the same number of (K, V)
         let mut sort_helper = SortHelper::<K, V>::new(sub_parts, max_len, true);
@@ -344,5 +285,4 @@ where
             child_op_id,
         )) as Arc<dyn ShuffleDependencyTrait>
     }
-
 }

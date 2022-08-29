@@ -134,7 +134,7 @@ where
                     op.compute_start(call_seq, input, dep_info)
                 }
             } else {
-                self.narrow(call_seq, input, dep_info)
+                self.narrow(call_seq, input, true)
                 // let result_iter = self.compute(&mut call_seq, input);
                 // let mut acc = create_enc();
                 // for result in result_iter {

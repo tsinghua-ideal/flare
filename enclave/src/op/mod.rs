@@ -11,10 +11,10 @@ use std::raw::TraitObject;
 use std::string::ToString;
 use std::sync::{
     atomic::{self, AtomicBool, AtomicU32, AtomicUsize},
-    Arc, Barrier, SgxMutex as Mutex, SgxRwLock as RwLock, Weak,
+    Arc, SgxMutex as Mutex, SgxRwLock as RwLock, Weak,
 };
 use std::time::Instant;
-use std::thread::{self, JoinHandle, ThreadId, SgxThread};
+use std::thread::{self, JoinHandle};
 use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 
@@ -71,6 +71,7 @@ pub const MAX_ENC_BL: usize = 1024;
 pub const CACHE_LIMIT: usize = 4_000_000;
 pub const ENABLE_CACHE_INSIDE: bool = false;
 pub const MAX_THREAD: usize = 1;
+pub const PARA_THRESHOLD: f64 = 3.0;
 pub type Result<T> = std::result::Result<T, &'static str>;
 
 extern "C" {
@@ -201,50 +202,6 @@ pub fn to_ptr<T: Clone>(result_enc: T) -> *mut u8 {
     let result_ptr = Box::into_raw(Box::new(result_enc)) as *mut u8;
     crate::ALLOCATOR.set_switch(false);
     result_ptr
-}
-
-//it is needed when switching from parallel to seq
-pub fn require_bottleneck_lock(pending_thread: &Arc<Mutex<VecDeque<ThreadId>>>) {
-    let cur_thread_id = std::thread::current().id();
-    let mut has_pushed = false;
-    while {
-        let mut l = pending_thread.lock().unwrap();
-        if !has_pushed {
-            l.push_back(cur_thread_id);
-            has_pushed = true;
-        }
-        *l.front().unwrap() != cur_thread_id
-    } {
-        std::thread::park();
-    }
-    println!("thread {:?} begin", cur_thread_id);
-}
-
-//it is needed when switching from seq to parallel
-pub fn release_bottleneck_lock(handler_map: &Arc<RwLock<HashMap<ThreadId, SgxThread>>>, pending_thread: &Arc<Mutex<VecDeque<ThreadId>>>) {
-    let cur_thread_id = std::thread::current().id();
-    let mut l = pending_thread.lock().unwrap();
-    println!("thread {:?} end", cur_thread_id);
-    assert_eq!(cur_thread_id, l.pop_front().unwrap());
-    if let Some(next_thread_id) = l.front() {
-        println!("wake up thread {:?}", next_thread_id);
-        handler_map.read().unwrap().get(&next_thread_id).unwrap().unpark();
-    }
-}
-
-//wait until all the threads finish streaming
-//actually, it act like a barrier
-//so use it can save a barrier
-pub fn barrier_seq2par(handler_map: &Arc<RwLock<HashMap<ThreadId, SgxThread>>>, pending_thread: &Arc<Mutex<VecDeque<ThreadId>>>) {
-    while {
-        let l = pending_thread.lock().unwrap();
-        l.len() > 0
-    } {
-        std::thread::park();
-    }
-    for (_id, thread) in handler_map.read().unwrap().iter() {
-        thread.unpark();
-    }
 }
 
 #[track_caller]
@@ -807,7 +764,7 @@ impl DepInfo {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct Input {
-    data: usize,
+    pub data: usize,
     parallel_num: usize,
 }
 
@@ -1068,8 +1025,8 @@ pub struct NextOpId {
     cache_meta: CacheMeta,
     captured_vars: HashMap<usize, Vec<Vec<u8>>>,
     is_shuffle: bool,
-    pub para_info: Option<(usize, Arc<Barrier>, Arc<RwLock<HashMap<ThreadId, SgxThread>>>, Arc<Mutex<VecDeque<ThreadId>>>)>,
-    //if the decryption step, the streaming processing, and the shuffle parallelizable 
+    pub para_range: Option<(usize, usize)>,
+    //if the decryption step and the narrow processing parallelizable 
     pub is_step_para: (bool, bool, bool),
     //used to decide is_step_para
     pub sample_len: usize,
@@ -1094,8 +1051,8 @@ impl<'a> NextOpId {
             cache_meta,
             captured_vars,
             is_shuffle,
-            para_info: None,
-            is_step_para: (false, false, false),
+            para_range: None,
+            is_step_para: (true, true, true),
             sample_len: 0,
         }
     }
@@ -1508,7 +1465,7 @@ pub trait Op: OpBase + 'static {
         let need_cache = call_seq.need_cache();
         let is_caching_final_rdd = call_seq.is_caching_final_rdd();
 
-        if have_cache {
+        if have_cache || (call_seq.get_cur_rdd_id() == call_seq.cache_meta.cached_rdd_id && data_ptr == 0) {
             assert_eq!(data_ptr as usize, 0 as usize);
             return self.get_and_remove_cached_data(call_seq);
         }
@@ -1582,7 +1539,6 @@ pub trait Op: OpBase + 'static {
     fn get_and_remove_cached_data(&self, call_seq: &mut NextOpId) -> ResIter<Self::Item> {
         let key = call_seq.get_cached_doublet();
         //cache inside enclave
-        //TODO: parallelize
         let have_cache_inside = {
             let cache_space = self.get_cache_space();
             let l = cache_space.lock().unwrap();
@@ -1591,46 +1547,34 @@ pub trait Op: OpBase + 'static {
         
         if have_cache_inside {
             //another version of parallel_control, there are no decryption step
-            match std::mem::take(&mut call_seq.para_info) {
-                Some((para_id, barrier, handler_map, pending_thread)) => {
-                    let data = {
+            match std::mem::take(&mut call_seq.para_range) {
+                Some((b, e)) => {
+                    let r = e - b;
+                    if r == 0 {
+                        Box::new(vec![].into_iter()) 
+                    } else {
                         let cache_space = self.get_cache_space();
                         let mut l = cache_space.lock().unwrap();
-                        let v = l.get_mut(&key).unwrap();
-                        let len = v.len();
-                        let r = len.saturating_sub(1) / MAX_THREAD + 1;
-                        let mut b = std::cmp::min(para_id * r, len);
-                        let e = std::cmp::min((para_id+1)*r, len);
-                        //because data_enc[0] has been computed in the profiling phase
-                        if para_id == 0 {
-                            b += 1;
+                        let (data, is_empty) = {
+                            let v = l.get_mut(&key).unwrap();
+                            let data = v.split_off(v.len() - r);
+                            (data, v.is_empty())
+                        };
+                        if is_empty {
+                            println!("remove cache key");
+                            l.remove(&key).unwrap();
                         }
-                        let mut data = Vec::with_capacity(e.saturating_sub(b));
-                        for block in &mut v[b..e] {
-                            data.push(std::mem::take(block));
-                        }
-                        data
-                    };
-
-                    //release the relevant cache space
-                    barrier.wait();
-                    {
-                        let cache_space = self.get_cache_space();
-                        let mut l = cache_space.lock().unwrap();
-                        l.remove(&key);
+                        Box::new(data.into_iter().map(|item| Box::new(item.into_iter()) as Box<dyn Iterator<Item = _>>))
                     }
-
-                    let (is_para_enc, is_para_nar, _) = call_seq.is_step_para;
-                    assert!(is_para_enc);
-
-                    if !is_para_nar {
-                        require_bottleneck_lock(&pending_thread);
-                    } 
-                    Box::new(data.into_iter().map(|item| Box::new(item.into_iter()) as Box<dyn Iterator<Item = _>>))
                 },
                 None => {
-                    let sample_data = std::mem::take(&mut self.get_cache_space().lock().unwrap().get_mut(&key).unwrap()[0]);
-                    call_seq.is_step_para.0 = true;
+                    let sample_data = {
+                        let cache_space = self.get_cache_space();
+                        let mut cache_space = cache_space.lock().unwrap();
+                        let entry = cache_space.get_mut(&key).unwrap();
+                        call_seq.para_range = Some((0, entry.len() - 1));
+                        entry.pop().unwrap()
+                    };
                     call_seq.sample_len = sample_data.len();
                     //profile begin
                     crate::ALLOCATOR.reset_alloc_cnt();
@@ -1729,30 +1673,28 @@ pub trait Op: OpBase + 'static {
 
     //note that data_enc is outside enclave
     fn parallel_control(&self, call_seq: &mut NextOpId, data_enc: &Vec<ItemE>) -> ResIter<Self::Item> {
-        match std::mem::take(&mut call_seq.para_info) {
-            Some((para_id, barrier, handler_map, pending_thread)) => {
-                let len = data_enc.len();
-                let r = len.saturating_sub(1) / MAX_THREAD + 1;
-                let mut b = std::cmp::min(para_id * r, len);
-                let e = std::cmp::min((para_id+1)*r, len);
-                //because data_enc[0] has been computed in the profiling phase
-                if para_id == 0 {
-                    b += 1;
+        match std::mem::take(&mut call_seq.para_range) {
+            Some((b, e)) => {
+                let mut data = data_enc[b..e].iter().map(|x| ser_decrypt::<Vec<Self::Item>>(&x.clone())).collect::<Vec<_>>();
+                if call_seq.is_step_para.0 ^ call_seq.is_step_para.1 {
+                    
+                    let key = (call_seq.get_cur_rdd_id(), call_seq.get_part_id());
+                    //originally it cannot happen that call_seq.get_caching_doublet() == call_seq.get_cached_doublet()
+                    //however, in parallel processing, since we manually set cached key for special use, the situation can occur 
+                    if key == call_seq.get_caching_doublet() {
+                        for block in &data {
+                            let _handle = self.cache_to_outside(key, &block);
+                        }
+                    }
+                    //cache the data inside enclave for parallel processing
+                    let cache_space = self.get_cache_space();
+                    let mut cache_space = cache_space.lock().unwrap();
+                    let entry = cache_space.entry(key).or_insert(Vec::new());
+                    entry.append(&mut data);
+                    Box::new(Vec::new().into_iter())
+                } else {
+                    Box::new(data.into_iter().map(|item| Box::new(item.into_iter()) as Box<dyn Iterator<Item = _>>))
                 }
-
-                let (is_para_enc, is_para_nar, _) = call_seq.is_step_para;
-                if !is_para_enc {
-                    require_bottleneck_lock(&pending_thread);
-                } 
-                let data = data_enc[b..e].iter().map(|x| ser_decrypt::<Vec<Self::Item>>(&x.clone())).collect::<Vec<_>>();
-                if is_para_enc && !is_para_nar {
-                    barrier.wait();
-                    require_bottleneck_lock(&pending_thread);
-                } else if !is_para_enc && is_para_nar  {
-                    release_bottleneck_lock(&handler_map, &pending_thread);
-                    barrier.wait();
-                }
-                Box::new(data.into_iter().map(|item| Box::new(item.into_iter()) as Box<dyn Iterator<Item = _>>))
             },
             None => {
                 //for profile
@@ -1762,7 +1704,8 @@ pub trait Op: OpBase + 'static {
                 call_seq.sample_len = data.len();
                 let alloc_cnt_ratio = alloc_cnt as f64/(call_seq.sample_len as f64);
                 println!("for decryption, alloc_cnt per len = {:?}", alloc_cnt_ratio);
-                call_seq.is_step_para.0 = alloc_cnt_ratio < 0.1;
+                call_seq.is_step_para.0 = alloc_cnt_ratio < PARA_THRESHOLD;
+                call_seq.para_range = Some((1, data_enc.len()));
 
                 //profile begin
                 crate::ALLOCATOR.reset_alloc_cnt();
@@ -1773,77 +1716,179 @@ pub trait Op: OpBase + 'static {
         }
     }
 
-    fn narrow(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
-        let handler_map: Arc<RwLock<HashMap<ThreadId, SgxThread>>> = Arc::new(RwLock::new(HashMap::new()));
-        let pending_thread: Arc<Mutex<VecDeque<ThreadId>>> = Arc::new(Mutex::new(VecDeque::new()));
-
-        let mut acc = create_enc();
-        //run the first block for profiling
-        call_seq.is_step_para = {
-            let mut call_seq = call_seq.clone();
-            assert!(call_seq.para_info.is_none());
-            let result_bl_first = self.compute(&mut call_seq, input).collect::<Vec<_>>().remove(0).collect::<Vec<_>>();
-            let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
-            let alloc_cnt_ratio = alloc_cnt as f64/(call_seq.sample_len as f64);
-            println!("for narrow processing, alloc_cnt per len = {:?}", alloc_cnt_ratio);
-            call_seq.is_step_para.1 = alloc_cnt_ratio < 0.1;
-            //narrow specific
-            let block_enc = batch_encrypt(&result_bl_first, true);
-            combine_enc(&mut acc, block_enc);
-            call_seq.is_step_para
-        };
-
-        let mut handlers = Vec::with_capacity(MAX_THREAD);
-        let barrier = Arc::new(Barrier::new(MAX_THREAD));
-
-        for i in 0..MAX_THREAD {
-            let op = self.get_op();
-            let handler_map = handler_map.clone();
-            let pending_thread = pending_thread.clone();
-            let barrier = barrier.clone();
-            let mut call_seq = call_seq.clone();
-            call_seq.para_info = Some((i, barrier, handler_map.clone(), pending_thread.clone()));
-            let (is_para_enc, is_para_nar, _) = call_seq.is_step_para;
-            
-            let builder = thread::Builder::new();
-            let handler = builder
+    fn spawn_enc_thread(&self, mut results: Vec<Vec<Self::Item>>, handlers: &mut Vec<JoinHandle<Vec<ItemE>>>) {
+        let mut remaining = results.len();
+        let r = remaining.saturating_sub(1) / MAX_THREAD + 1;
+        for _ in 0..MAX_THREAD {
+            let data = results.split_off(results.len() - std::cmp::min(r, remaining));
+            remaining = remaining.saturating_sub(r);
+            let handler = thread::Builder::new()
                 .spawn(move || {
-                    let cur_thread = thread::current();
-                    let cur_thread_id = cur_thread.id();
-                    handler_map.write().unwrap().insert(cur_thread_id, cur_thread);
-                    //narrow specific
-                    let mut results = Vec::new();
-                    let result_iter = op.compute(&mut call_seq, input);
-                    for result_bl in result_iter {
-                        results.push(result_bl.collect::<Vec<_>>());
-                    }
-
-                    if is_para_enc && !is_para_nar || !is_para_enc && !is_para_nar {
-                        release_bottleneck_lock(&handler_map, &pending_thread);
-                        barrier_seq2par(&handler_map, &pending_thread);
-                        println!("thread {:?} begin encrypt", cur_thread_id);
-                    }
-                    
-                    //narrow specific
-                    //acc stays outside enclave
                     let mut acc = create_enc();
-                    for result_bl in results {
-                        let block_enc = batch_encrypt(&result_bl, true);
-                        combine_enc(&mut acc, block_enc);
+                    for block in data {
+                        combine_enc(&mut acc, batch_encrypt(&block, true));
                     }
                     acc
                 }).unwrap();
             handlers.push(handler);
         }
+    }
 
-        for handler in handlers {
+    fn spawn_dec_nar_thread(&self, call_seq: &NextOpId, input: Input, handlers: &mut Vec<JoinHandle<Vec<Vec<Self::Item>>>>, only_dec: bool) {
+        let (s, len) = call_seq.para_range.as_ref().unwrap();
+        let r = (len - s).saturating_sub(1) / MAX_THREAD + 1;
+        let mut b = *s;
+        let mut e = std::cmp::min(b + r, *len);
+        for _ in 0..MAX_THREAD {
+            let op = self.get_op();
+            let mut call_seq = call_seq.clone();
+            call_seq.para_range = Some((b, e));
+            b = e;
+            e = std::cmp::min(b + r, *len);
+            let handler = thread::Builder::new()
+                .spawn(move || {
+                    let results = op.compute(&mut call_seq, input).map(|result| result.collect::<Vec<_>>()).collect::<Vec<_>>();
+                    if only_dec {
+                        assert!(results.into_iter().flatten().collect::<Vec<_>>().is_empty());
+                        Vec::new()
+                    } else {
+                        results
+                    }
+                }).unwrap();
+            handlers.push(handler);
+        }
+    }
+
+    fn spawn_dec_nar_enc_thread(&self, call_seq: &NextOpId, input: Input, handlers: &mut Vec<JoinHandle<Vec<ItemE>>>, only_dec: bool) {
+        let (s, len) = call_seq.para_range.as_ref().unwrap();
+        let r = (len - s).saturating_sub(1) / MAX_THREAD + 1;
+        let mut b = *s;
+        let mut e = std::cmp::min(b + r, *len);
+        for _ in 0..MAX_THREAD {
+            let op = self.get_op();
+            let mut call_seq = call_seq.clone();
+            call_seq.para_range = Some((b, e));
+            b = e;
+            e = std::cmp::min(b + r, *len);
+            let handler = thread::Builder::new()
+                .spawn(move || {
+                    let results = op.compute(&mut call_seq, input).map(|result| result.collect::<Vec<_>>()).collect::<Vec<_>>();
+                    if only_dec {
+                        assert!(results.into_iter().flatten().collect::<Vec<_>>().is_empty());
+                        Vec::new()
+                    } else {
+                        let mut acc = create_enc();
+                        for result in results {
+                            combine_enc(&mut acc, batch_encrypt(&result, true));
+                        }
+                        acc
+                    }
+                }).unwrap();
+            handlers.push(handler);
+        }
+    }
+
+    fn narrow(&self, mut call_seq: NextOpId, mut input: Input, need_enc: bool) -> *mut u8 {
+        let mut acc = create_enc();
+        //run the first block for profiling
+        let mut results = Vec::new();
+        {
+            let mut call_seq_sample = call_seq.clone();
+            assert!(call_seq_sample.para_range.is_none());
+            let sample_data = self.compute(&mut call_seq_sample, input).collect::<Vec<_>>().remove(0).collect::<Vec<_>>();
+            let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
+            let alloc_cnt_ratio = alloc_cnt as f64/(call_seq_sample.sample_len as f64);
+            println!("for narrow processing, alloc_cnt per len = {:?}", alloc_cnt_ratio);
+            call_seq.para_range = call_seq_sample.para_range;
+            call_seq.is_step_para.0 = call_seq_sample.is_step_para.0;
+            call_seq.is_step_para.1 = alloc_cnt_ratio < PARA_THRESHOLD;
+            //narrow specific
+            if need_enc {
+                let block_enc = batch_encrypt(&sample_data, true);
+                combine_enc(&mut acc, block_enc);
+            } else {
+                results.push(sample_data);
+            }
+        };
+
+        let mut handlers_pt =  Vec::with_capacity(MAX_THREAD);
+        let mut handlers_ct = Vec::with_capacity(MAX_THREAD);
+        if !call_seq.is_step_para.0 && !call_seq.is_step_para.1 {
+            results.append(&mut self.compute(&mut call_seq, input).map(|result| result.collect::<Vec<_>>()).collect::<Vec<_>>());
+            if need_enc {
+                self.spawn_enc_thread(results, &mut handlers_ct);
+                results = Vec::new();
+            }
+        } else if call_seq.is_step_para.0 ^ call_seq.is_step_para.1 {
+            //for cache inside, range begin = 0, and for cache outside or no cache, range begin = 1;
+            let (s, len) = call_seq.para_range.as_ref().unwrap();
+            if *s == 1 {
+                //decryption needed
+                if !call_seq.is_step_para.0 {
+                    let mut call_seq = call_seq.clone();
+                    assert!(self.compute(&mut call_seq, input).flatten().collect::<Vec<_>>().is_empty());
+                } else {
+                    if need_enc {
+                        self.spawn_dec_nar_enc_thread(&call_seq, input, &mut handlers_ct, true); 
+                    } else {
+                        self.spawn_dec_nar_thread(&call_seq, input, &mut handlers_pt, true); 
+                    }
+                }
+                //set cached key
+                call_seq.cache_meta.cached_rdd_id = *call_seq.rdd_ids.last().unwrap();
+                call_seq.cache_meta.cached_part_id = *call_seq.part_ids.last().unwrap();
+                input.data = 0;
+            } 
+            {
+                //narrow
+                if !call_seq.is_step_para.1 {
+                    for handler in handlers_ct {
+                        assert!(handler.join().unwrap().is_empty());
+                    }
+                    for handler in handlers_pt {
+                        handler.join().unwrap();
+                    }
+                    handlers_ct = Vec::with_capacity(MAX_THREAD);
+                    handlers_pt = Vec::with_capacity(MAX_THREAD);
+                    let mut call_seq = call_seq.clone();
+                    results.append(&mut self.compute(&mut call_seq, input).map(|result| result.collect::<Vec<_>>()).collect::<Vec<_>>());
+                    if need_enc {
+                        self.spawn_enc_thread(results, &mut handlers_ct);
+                        results = Vec::new();
+                    }
+                } else {
+                    if need_enc {
+                        self.spawn_dec_nar_enc_thread(&call_seq, input, &mut handlers_ct, false);
+                    } else {
+                        self.spawn_dec_nar_thread(&call_seq, input, &mut handlers_pt, false);
+                    }
+                }
+            }
+        } else {
+            if need_enc {
+                self.spawn_dec_nar_enc_thread(&call_seq, input, &mut handlers_ct, false);
+            } else {
+                self.spawn_dec_nar_thread(&call_seq, input, &mut handlers_pt, false);
+            }
+        }
+        for handler in handlers_ct {
             combine_enc(&mut acc, handler.join().unwrap());
         }
-
+        for handler in handlers_pt {
+            results.append(&mut handler.join().unwrap());
+        }
         //cache to outside
         let key = call_seq.get_caching_doublet();
         CACHE.send(key);
-        to_ptr(acc)
+        if need_enc {
+            to_ptr(acc)
+        } else {
+            acc.is_empty();
+            crate::ALLOCATOR.set_switch(true);
+            drop(acc);
+            crate::ALLOCATOR.set_switch(false);
+            Box::into_raw(Box::new(results)) as *mut u8
+        }
     } 
 
     fn shuffle(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
@@ -1852,11 +1897,7 @@ pub trait Op: OpBase + 'static {
         let now = Instant::now();
 
         let opb = self.get_op_base();
-        let key = call_seq.get_caching_doublet();
         let result_ptr = shuf_dep.do_shuffle_task(tid, opb, call_seq, input);
-
-        //cache to outside
-        CACHE.send(key);
 
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("tid: {:?}, shuffle write: {:?}s", tid, dur);
