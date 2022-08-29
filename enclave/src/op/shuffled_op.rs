@@ -151,7 +151,7 @@ where
                 }
             }
         } else {
-            if !is_para_enc {
+            if !is_para_mer {
                 let mut handlers_pt = Vec::with_capacity(MAX_THREAD);
                 for i in 1..MAX_THREAD + 1 {
                     let handler = thread::Builder::new()
