@@ -7,6 +7,7 @@ where
 {
     vals: Arc<OpVals>, 
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
+    cache_space: Arc<Mutex<HashMap<(usize, usize), Vec<Vec<T>>>>>,
     _marker_t: PhantomData<T>,
 }
 
@@ -18,6 +19,7 @@ where
         ParallelCollection {
             vals: self.vals.clone(),
             next_deps: self.next_deps.clone(),
+            cache_space: self.cache_space.clone(),
             _marker_t: PhantomData,
         }
     }
@@ -33,6 +35,7 @@ where
         ParallelCollection {
             vals: Arc::new(vals),
             next_deps: Arc::new(RwLock::new(HashMap::new())),
+            cache_space: Arc::new(Mutex::new(HashMap::new())),
             _marker_t: PhantomData,
         }
     }
@@ -137,6 +140,10 @@ where
     
     fn get_op_base(&self) -> Arc<dyn OpBase> {
         Arc::new(self.clone()) as Arc<dyn OpBase>
+    }
+
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+        self.cache_space.clone()
     }
 
     fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
