@@ -217,6 +217,7 @@ pub extern "C" fn secure_execute(tid: u64,
     dep_info: DepInfo, 
     input: Input, 
     captured_vars: *const u8,
+    addi_fields: *mut usize,
 ) -> usize {
     let _init = *init; //this is necessary to let it accually execute
     println!("tid: {:?}, at the begining of secure execution", tid);
@@ -224,12 +225,14 @@ pub extern "C" fn secure_execute(tid: u64,
     let op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap().clone();
     let part_ids = unsafe { (part_ids as *const Vec<usize>).as_ref() }.unwrap().clone();
     let captured_vars = unsafe { (captured_vars as *const HashMap<usize, Vec<Vec<u8>>>).as_ref() }.unwrap().clone();
+    let addi_fields = unsafe { (addi_fields as *mut usize).as_mut() }.unwrap();
     println!("tid: {:?}, rdd ids = {:?}, op ids = {:?}, part_ids = {:?}, dep_info = {:?}, cache_meta = {:?}", tid, rdd_ids, op_ids, part_ids, dep_info, cache_meta);
 
     let now = Instant::now();
     let mut call_seq = NextOpId::new(tid, rdd_ids, op_ids, part_ids, cache_meta.clone(), captured_vars, &dep_info);
     let final_op = call_seq.get_cur_op();
-    let result_ptr = final_op.iterator_start(call_seq, input, &dep_info); //shuffle need dep_info
+    let (result_ptr, addi_fields_ptr) = final_op.iterator_start(call_seq, input, &dep_info); //shuffle need dep_info
+    *addi_fields = addi_fields_ptr as usize;
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("tid: {:?}, secure_execute {:?} s", tid, dur);
     return result_ptr as usize
@@ -246,17 +249,17 @@ pub extern "C" fn set_cnt_per_partition(op_id: OpId, part_id: usize, cnt_per_par
 }
 
 #[no_mangle]
-pub extern "C" fn free_res_enc(op_id: OpId, dep_info: DepInfo, input: *mut u8) {
+pub extern "C" fn free_res_enc(op_id: OpId, dep_info: DepInfo, data: *mut u8, marks: *mut u8) {
     let _init = *init;
     let op = load_opmap().get(&op_id).unwrap();
-    op.call_free_res_enc(input, true, &dep_info);
+    op.call_free_res_enc(data, marks, true, &dep_info);
 }
 
 #[no_mangle]
-pub extern "C" fn priv_free_res_enc(op_id: OpId, dep_info: DepInfo, input: *mut u8) {
+pub extern "C" fn priv_free_res_enc(op_id: OpId, dep_info: DepInfo, data: *mut u8, marks: *mut u8) {
     let _init = *init;
     let op = load_opmap().get(&op_id).unwrap();
-    op.call_free_res_enc(input, true, &dep_info);
+    op.call_free_res_enc(data, marks, true, &dep_info);
 }
 
 #[no_mangle]
@@ -284,7 +287,7 @@ pub extern "C" fn clone_out(op_id: OpId,
 #[no_mangle]
 pub extern "C" fn randomize_in_place(
     op_id: OpId,
-    input: *const u8,
+    input: *mut u8,
     seed: u64,
     is_some: u8,
     num: u64,
@@ -303,7 +306,7 @@ pub extern "C" fn randomize_in_place(
 #[no_mangle]
 pub extern "C" fn etake(
     op_id: OpId,
-    input: *const u8,
+    input: *mut u8,
     should_take: usize,
     have_take: *mut usize,
 ) -> usize {
@@ -339,6 +342,15 @@ pub extern "C" fn tail_compute(input: *mut u8) -> usize {
     let ptr = Box::into_raw(Box::new(tail_info.clone()));
     ALLOCATOR.set_switch(false);
     ptr as *mut u8 as usize
+}
+
+#[no_mangle]
+pub extern "C" fn reveal_cnt(input: *const u8, max_cnt_prod: *mut u64) -> u64 {
+    let encrypted_cnt = unsafe{ (input as *const Vec<ItemE>).as_ref() }.unwrap();
+    let max_cnt_prod = unsafe{ max_cnt_prod.as_mut() }.unwrap();
+    let cnts: Vec<u64> = batch_decrypt(encrypted_cnt, true);
+    *max_cnt_prod = cnts.iter().product::<u64>();
+    cnts.iter().sum::<u64>()
 }
 
 #[no_mangle]

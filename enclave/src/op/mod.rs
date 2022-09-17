@@ -45,6 +45,8 @@ mod fold_op;
 pub use fold_op::*;
 mod local_file_reader;
 pub use local_file_reader::*;
+mod joined_op;
+pub use joined_op::*;
 mod mapper_op;
 pub use mapper_op::*;
 mod map_partitions_op;
@@ -65,7 +67,7 @@ mod zip_op;
 pub use zip_op::*;
 
 pub type ItemE = Vec<u8>;
-type ResIter<T> = Box<dyn Iterator<Item = Box<dyn Iterator<Item = T>>>>;
+type ResIter<T> = Box<dyn Iterator<Item = (Box<dyn Iterator<Item = T>>, Vec<bool>)>>;
 
 pub const MAX_ENC_BL: usize = 1024;
 pub const CACHE_LIMIT: usize = 4_000_000;
@@ -79,11 +81,13 @@ extern "C" {
         rdd_id: usize,
         part_id: usize,
         data_ptr: usize,
+        marks_ptr: usize,
     ) -> sgx_status_t;
 
-    pub fn ocall_cache_from_outside(ret_val: *mut usize,  //ptr outside enclave
+    pub fn ocall_cache_from_outside(data_ptr: *mut usize,  //ptr outside enclave
         rdd_id: usize,
         part_id: usize,
+        marks_ptr: *mut usize,
     ) -> sgx_status_t;
 }
 
@@ -204,6 +208,30 @@ pub fn to_ptr<T: Clone>(result_enc: T) -> *mut u8 {
     result_ptr
 }
 
+pub fn batch_encrypt_and_align_marks<T: Data>(data: &[T], marks: &[bool]) -> (Vec<ItemE>, Vec<ItemE>) 
+{
+    let data_enc = batch_encrypt(data, true);
+    let marks_enc = if marks.is_empty() {
+        let v = ser_encrypt(&Vec::<bool>::new());
+        crate::ALLOCATOR.set_switch(true);
+        let tmp = vec![v.clone(); data_enc.len()];  //for alignment
+        crate::ALLOCATOR.set_switch(false);
+        tmp
+    } else {
+        batch_encrypt(marks, true)
+    };
+    (data_enc, marks_enc)
+}
+
+#[inline(always)]
+pub fn align_marks_and_batch_encrypt<T: Data>(data: Vec<T>, mut marks: Vec<bool>) -> Vec<ItemE> 
+{
+    let len = data.len();
+    assert!(len == marks.len() || marks.is_empty());
+    marks.resize(len, true);
+    batch_encrypt(&data.into_iter().zip(marks.into_iter()).collect::<Vec<_>>(), true)
+}
+
 #[track_caller]
 fn get_text_loc_id() -> u64 {
     let loc = Location::caller();
@@ -221,7 +249,7 @@ fn get_text_loc_id() -> u64 {
 // prepare for column step 2, shuffle (transpose)
 pub fn column_sort_step_2<T>(tid: u64, sorted_data: Vec<T>, max_len: usize, num_output_splits: usize) -> Vec<Vec<ItemE>>
 where
-    T: Data
+    T: Data,
 {
     let mut buckets_enc = create_enc();
 
@@ -242,9 +270,9 @@ where
     buckets_enc
 }
 
-pub fn column_sort_step_4_6_8<T>(tid: u64, sorted_data: Vec<T>, cnt_per_partition: usize, max_len: usize, n: usize, num_output_splits: usize) -> Vec<Vec<ItemE>>
+pub fn column_sort_step_4_6_8<T>(tid: u64, sorted_data: Vec<T>, cnt_per_partition: usize, step: u8, num_output_splits: usize) -> Vec<Vec<ItemE>>
 where
-    T: Data
+    T: Data,
 {
     let chunk_size = cnt_per_partition.saturating_sub(1) / num_output_splits + 1;
 
@@ -261,28 +289,27 @@ where
     buckets_enc
 }
 
-pub fn combined_column_sort_step_2<K, V>(tid: u64, input: Input, op_id: OpId, part_id: usize, num_output_splits: usize) -> *mut u8
+pub fn combined_column_sort_step_2<T, F>(tid: u64, input: Input, op_id: OpId, part_id: usize, num_output_splits: usize, max_value: T, cmp_f: F) -> *mut u8
 where
-    K: Data + Ord,
-    V: Data
+    T: Data, 
+    F: FnMut(&T, &T) -> Ordering + Clone,
 {
     let data_enc = input.get_enc_data::<Vec<ItemE>>();
 
     let mut data = Vec::new();
     let mut max_len = 0;
-
-    let mut sub_part: Vec<(Option<K>, V)> = Vec::new();
+    let mut sub_part: Vec<T> = Vec::new();
     for block_enc in data_enc {
         sub_part.append(&mut ser_decrypt(&block_enc.clone()));
         if sub_part.deep_size_of() > CACHE_LIMIT/input.get_parallel() {
-            sub_part.sort_unstable_by(cmp_f);
+            sub_part.sort_unstable_by(cmp_f.clone());
             max_len = std::cmp::max(max_len, sub_part.len());
             data.push(sub_part);
             sub_part = Vec::new();
         }
     }
     if !sub_part.is_empty() {
-        sub_part.sort_unstable_by(cmp_f);
+        sub_part.sort_unstable_by(cmp_f.clone());
         max_len = std::cmp::max(max_len, sub_part.len());
         data.push(sub_part);
     }
@@ -295,27 +322,28 @@ where
         crate::ALLOCATOR.set_switch(false);
         to_ptr(buckets_enc)
     } else {
-        let mut sort_helper = SortHelper::<K, V>::new(data, max_len, true);
+        let mut sort_helper = SortHelper::new(data, max_len, max_value, true, cmp_f);
         sort_helper.sort();
         let (sorted_data, num_real_elem) = sort_helper.take();
         assert!(CNT_PER_PARTITION.lock().unwrap().insert((op_id, part_id), num_real_elem).is_none());
-        let buckets_enc = column_sort_step_2::<(Option<K>, V)>(tid, sorted_data, max_len, num_output_splits);
+        let buckets_enc = column_sort_step_2(tid, sorted_data, max_len, num_output_splits);
         to_ptr(buckets_enc)
     }
 }
 
-pub fn combined_column_sort_step_4_6_8<K, V>(tid: u64, input: Input, dep_info: &DepInfo, op_id: OpId, part_id: usize, num_output_splits: usize) -> *mut u8
+pub fn combined_column_sort_step_4_6_8<T, R, F, G>(tid: u64, input: Input, dep_info: &DepInfo, op_id: OpId, part_id: usize, num_output_splits: usize, max_value: T, cmp_f: F, mut filter_f: G) -> *mut u8
 where
-    K: Data + Ord,
-    V: Data
+    T: Data, 
+    R: Data,
+    F: FnMut(&T, &T) -> Ordering + Clone,
+    G: FnMut(Vec<T>) -> Vec<R> + Clone,
 {
     let data_enc_ref = input.get_enc_data::<Vec<Vec<ItemE>>>();
     let mut max_len = 0;
-
     let mut data = Vec::with_capacity(data_enc_ref.len());
     for part_enc in data_enc_ref {
         let mut part = Vec::new();
-        let mut sub_part: Vec<(Option<K>, V)> = Vec::new();
+        let mut sub_part: Vec<T> = Vec::new();
         for block_enc in part_enc.iter() {
             //we can derive max_len from the first sub partition in each partition
             sub_part.append(&mut ser_decrypt(&block_enc.clone()));
@@ -332,29 +360,22 @@ where
         data.push(part);
     }
     if max_len == 0 {
-        if dep_info.dep_type() == 23 || dep_info.dep_type() == 28 {
+        if dep_info.dep_type() == 23 || dep_info.dep_type() == 27 {
             CNT_PER_PARTITION.lock().unwrap().remove(&(op_id, part_id)).unwrap();
         }
         res_enc_to_ptr(Vec::<Vec<ItemE>>::new())
     } else {
-        let mut sort_helper = SortHelper::<K, V>::new_with(data, max_len, true);
+        let mut sort_helper = SortHelper::new_with(data, max_len, max_value, true, cmp_f);
         sort_helper.sort();
         let (sorted_data, num_real_elem) = sort_helper.take();
         let cnt_per_partition = *CNT_PER_PARTITION.lock().unwrap().get(&(op_id, part_id)).unwrap();
         let buckets_enc = match dep_info.dep_type() {
-            21 | 26 => column_sort_step_4_6_8::<(Option<K>, V)>(tid, sorted_data, cnt_per_partition, max_len, num_real_elem, num_output_splits),
-            22 | 27 => column_sort_step_4_6_8::<(Option<K>, V)>(tid, sorted_data, cnt_per_partition, max_len, num_real_elem, 2),
-            23 => {
+            21 | 25 => column_sort_step_4_6_8(tid, sorted_data, cnt_per_partition, dep_info.dep_type(), num_output_splits),
+            22 | 26 => column_sort_step_4_6_8(tid, sorted_data, cnt_per_partition, dep_info.dep_type(), 2),
+            23 | 27 => {
                 CNT_PER_PARTITION.lock().unwrap().remove(&(op_id, part_id)).unwrap();
-                column_sort_step_4_6_8::<(Option<K>, V)>(tid, sorted_data, cnt_per_partition, max_len, num_real_elem, 2)
-            },
-            28 => {
-                CNT_PER_PARTITION.lock().unwrap().remove(&(op_id, part_id)).unwrap();
-                let sorted_data = sorted_data.into_iter()
-                    .filter(|(k, c)| k.is_some())
-                    .map(|(k, c)| (k.unwrap(), c))
-                    .collect::<Vec<_>>();
-                column_sort_step_4_6_8::<(K, V)>(tid, sorted_data, cnt_per_partition, max_len, num_real_elem, 2)
+                let sorted_data = filter_f(sorted_data);
+                column_sort_step_4_6_8(tid, sorted_data, cnt_per_partition, dep_info.dep_type(), 2)
             }
             _ => unreachable!(),
         };
@@ -362,50 +383,39 @@ where
     }
 }
 
-pub fn cmp_f<K, V>(a: &(Option<K>, V), b: &(Option<K>, V)) -> Ordering 
-where 
-    K: Data + Ord,
-    V: Data
-{
-    //TODO: need to be a doubly-oblivious implementation
-    if a.0.is_some() && b.0.is_some() {
-        a.0.cmp(&b.0)
-    } else {
-        a.0.cmp(&b.0).reverse()
-    }
-}
-
 //require each vec (ItemE) is sorted
-pub struct SortHelper<K, V>
+pub struct SortHelper<T, F>
 where
-    K: Data + Ord,
-    V: Data,
+    T: Data,
+    F: FnMut(&T, &T) -> Ordering + Clone, 
 {
-    data: Vec<Arc<Mutex<Vec<(Option<K>, V)>>>>,
+    data: Vec<Arc<Mutex<Vec<T>>>>,
     max_len: usize,
+    max_value: T,
     num_padding: Arc<AtomicUsize>,
     ascending: bool,
     dist: Option<Vec<usize>>,
     dist_use_map: Option<HashMap<usize, AtomicBool>>,
+    f: F,
 }
 
-impl<K, V> SortHelper<K, V>
+impl<T, F> SortHelper<T, F>
 where
-    K: Data + Ord,
-    V: Data,
+    T: Data,
+    F: FnMut(&T, &T) -> Ordering + Clone, 
 {
-    pub fn new(data: Vec<Vec<(Option<K>, V)>>, max_len: usize, ascending: bool) -> Self {
+    pub fn new(data: Vec<Vec<T>>, max_len: usize, max_value: T, ascending: bool, f: F) -> Self {
         let data = {
             data
                 .into_iter()
                 .map(|x| Arc::new(Mutex::new(x)))
                 .collect::<Vec<_>>()
         };
-        SortHelper { data, max_len, num_padding: Arc::new(AtomicUsize::new(0)), ascending, dist: None, dist_use_map: None}
+        SortHelper { data, max_len, max_value, num_padding: Arc::new(AtomicUsize::new(0)), ascending, dist: None, dist_use_map: None, f}
     }
 
     //optimize for merging sorted arrays
-    pub fn new_with(data: Vec<Vec<Vec<(Option<K>, V)>>>, max_len: usize, ascending: bool) -> Self {
+    pub fn new_with(data: Vec<Vec<Vec<T>>>, max_len: usize, max_value: T, ascending: bool, f: F) -> Self {
         let dist = Some(vec![0].into_iter().chain(data.iter()
             .map(|p| p.len()))
             .scan(0usize, |acc, x| {
@@ -417,7 +427,7 @@ where
         let data = {
             data.into_iter().map(|p| p.into_iter().map(|x|Arc::new(Mutex::new(x)))).flatten().collect::<Vec<_>>()
         };
-        SortHelper { data, max_len, num_padding: Arc::new(AtomicUsize::new(0)), ascending, dist, dist_use_map}
+        SortHelper { data, max_len, max_value, num_padding: Arc::new(AtomicUsize::new(0)), ascending, dist, dist_use_map, f}
     }
 
     pub fn sort(&self) {
@@ -449,11 +459,15 @@ where
     }
 
     fn bitonic_merge_arbitrary(&self, lo: usize, n: usize, dir: bool) {
-        fn is_inconsistent_dir<K: Data + Ord, V: Data>(d: &Vec<(Option<K>, V)>, dir: bool) -> bool {
+        fn is_inconsistent_dir<T, F>(d: &Vec<T>, dir: bool, mut f: F) -> bool 
+        where
+            T: Data, 
+            F: FnMut(&T, &T) -> Ordering + Clone
+        {
             d
                 .first()
                 .zip(d.last())
-                .map(|(x, y)| cmp_f(x, y).is_lt() != dir)
+                .map(move |(x, y)| f(x, y).is_lt() != dir)
                 .unwrap_or(false)
         }
         
@@ -485,16 +499,17 @@ where
                     }
                 }
 
+                let mut f = self.f.clone();
                 let (ori_dir, should_reverse) = first_d.as_ref()
                     .zip(last_d.as_ref())
                     .map(|(x, y)| {
-                        let ori_dir = cmp_f(x, y).is_lt();
+                        let ori_dir = f(x, y).is_lt();
                         (ori_dir, ori_dir != dir)
                     }).unwrap_or((true, false));
 
                 //originally ascending
                 if ori_dir {
-                    let mut d_i: Vec<(Option<K>, V)> = Vec::new();
+                    let mut d_i: Vec<T> = Vec::new();
                     let mut cnt = lo;
                     for i in lo..(lo + n) {
                         d_i.append(&mut *self.data[i].lock().unwrap());
@@ -511,7 +526,7 @@ where
                     let mut add_num_padding = 0;
                     while cnt < lo + n {
                         add_num_padding += max_len - d_i.len();
-                        d_i.resize(max_len, (None, Default::default()));
+                        d_i.resize(max_len, self.max_value.clone());
                         if should_reverse {
                             d_i.reverse();
                         }
@@ -521,7 +536,7 @@ where
                     }
                     num_padding.fetch_add(add_num_padding, atomic::Ordering::SeqCst);
                 } else {  //originally desending
-                    let mut d_i: Vec<(Option<K>, V)> = vec![Default::default(); max_len];
+                    let mut d_i: Vec<T> = vec![Default::default(); max_len];
                     let mut cur_len = 0;
                     let mut cnt = lo + n - 1;
                     for i in (lo..(lo + n)).rev() {
@@ -547,8 +562,7 @@ where
                     while cnt >= lo && cnt != usize::MAX { 
                         add_num_padding += max_len - cur_len;
                         for elem in &mut d_i[..max_len-cur_len] {
-                            elem.0 = None;
-                            elem.1 = Default::default();
+                            *elem = self.max_value.clone();
                         }
                         if should_reverse {
                             d_i.reverse();
@@ -571,8 +585,8 @@ where
                 for i in lo..(lo + n - m) {
                     let l = i + m;
                     //merge
-                    let d_i: Vec<(Option<K>, V)> = std::mem::take(&mut *self.data[i].lock().unwrap());
-                    let d_l: Vec<(Option<K>, V)> = std::mem::take(&mut *self.data[l].lock().unwrap());
+                    let d_i: Vec<T> = std::mem::take(&mut *self.data[i].lock().unwrap());
+                    let d_l: Vec<T> = std::mem::take(&mut *self.data[l].lock().unwrap());
     
                     let real_len = d_i.len() + d_l.len();
                     let dummy_len = max_len * 2 - real_len;
@@ -584,29 +598,30 @@ where
                     let mut new_d_l = Vec::with_capacity(max_len);
                     //desending, append dummy elements first
                     if !dir {
-                        new_d_i.append(&mut vec![(None, Default::default()); std::cmp::min(dummy_len, max_len)]);
-                        new_d_l.append(&mut vec![(None, Default::default()); dummy_len.saturating_sub(max_len)]);
+                        new_d_i.append(&mut vec![self.max_value.clone(); std::cmp::min(dummy_len, max_len)]);
+                        new_d_l.append(&mut vec![self.max_value.clone(); dummy_len.saturating_sub(max_len)]);
                     }
     
-                    let mut iter_i = if is_inconsistent_dir(&d_i, dir) {
-                        Box::new(d_i.into_iter().rev()) as Box<dyn Iterator<Item = (Option<K>, V)>>
+                    let mut iter_i = if is_inconsistent_dir(&d_i, dir, self.f.clone()) {
+                        Box::new(d_i.into_iter().rev()) as Box<dyn Iterator<Item = T>>
                     } else {
-                        Box::new(d_i.into_iter()) as Box<dyn Iterator<Item = (Option<K>, V)>>
+                        Box::new(d_i.into_iter()) as Box<dyn Iterator<Item = T>>
                     };
     
-                    let mut iter_l = if is_inconsistent_dir(&d_l, dir) {
-                        Box::new(d_l.into_iter().rev()) as Box<dyn Iterator<Item = (Option<K>, V)>>
+                    let mut iter_l = if is_inconsistent_dir(&d_l, dir, self.f.clone()) {
+                        Box::new(d_l.into_iter().rev()) as Box<dyn Iterator<Item = T>>
                     } else {
-                        Box::new(d_l.into_iter()) as Box<dyn Iterator<Item = (Option<K>, V)>>
+                        Box::new(d_l.into_iter()) as Box<dyn Iterator<Item = T>>
                     };
     
                     let mut cur_i = iter_i.next();
                     let mut cur_l = iter_l.next();
     
+                    let mut f = self.f.clone();
                     while cur_i.is_some() || cur_l.is_some() {
                         let should_puti = cur_l.is_none()
                             || cur_i.is_some()
-                                &&  cmp_f(cur_i.as_ref().unwrap(), cur_l.as_ref().unwrap()).is_lt() == dir;
+                                &&  f(cur_i.as_ref().unwrap(), cur_l.as_ref().unwrap()).is_lt() == dir;
                         let kv = if should_puti {
                             let t = cur_i.unwrap();
                             cur_i = iter_i.next();
@@ -626,8 +641,8 @@ where
     
                     //ascending, append dummy elements finally
                     if dir {
-                        new_d_i.resize(max_len, (None, Default::default()));
-                        new_d_l.resize(max_len, (None, Default::default()));
+                        new_d_i.resize(max_len, self.max_value.clone());
+                        new_d_l.resize(max_len, self.max_value.clone());
                     }
 
                     *self.data[i].lock().unwrap() = new_d_i;
@@ -640,7 +655,7 @@ where
         }
     }
 
-    pub fn take(&mut self) -> (Vec<(Option<K>, V)>, usize) {
+    pub fn take(&mut self) -> (Vec<T>, usize) {
         let num_padding = self.num_padding.load(atomic::Ordering::SeqCst);
         let num_real_elem = self.data.len() * self.max_len - num_padding;
         let num_real_sub_part = self.data.len() - num_padding / self.max_len;
@@ -651,7 +666,7 @@ where
         data.truncate(num_real_sub_part);
         if let Some(last) = data.last_mut() {
             let mut last = last.lock().unwrap();
-            assert!(last.get(self.max_len - num_padding_remaining).map_or(true, |x| x.0.is_none()));
+            assert!(last.get(self.max_len - num_padding_remaining).map_or(true, |x| (self.f)(x, &self.max_value).is_eq()));
             last.truncate(self.max_len - num_padding_remaining);
         }
         let res = data.into_iter().flat_map(|x| Arc::try_unwrap(x).unwrap().into_inner().unwrap()).collect::<Vec<_>>();
@@ -754,7 +769,7 @@ impl DepInfo {
     }
 
     /// 0 for narrow, 1 for shuffle write, 2 for shuffle read, 3, 4 for action
-    /// 20-23, 25-28 for first/second column sort, 24 for aggregate again
+    /// 20-23, 24-27 for first/second column sort, 28 for aggregate again, 29 for group by and join
     pub fn dep_type(&self) -> u8 {
         self.is_shuffle
     }
@@ -765,22 +780,30 @@ impl DepInfo {
 #[derive(Clone, Copy, Debug)]
 pub struct Input {
     pub data: usize,
+    pub marks: usize,
     parallel_num: usize,
 }
 
 impl Input {
-    pub fn new<T: Data>(data: &T, 
+    pub fn new<T: Data, A: Data>(data: &T,
+        marks: &A, 
         parallel_num: usize,
     ) -> Self {
         let data = data as *const T as usize;
+        let marks = marks as *const A as usize;
         Input {
             data,
+            marks,
             parallel_num,
         }
     }
 
     pub fn get_enc_data<T>(&self) -> &T {
         unsafe { (self.data as *const T).as_ref() }.unwrap()
+    }
+
+    pub fn get_enc_marks<A>(&self) -> &A {
+        unsafe { (self.marks as *const A).as_ref() }.unwrap()
     }
 
     pub fn get_parallel(&self) -> usize {
@@ -971,8 +994,8 @@ impl TailCompInfo {
 #[derive(Clone)]
 pub struct OpCache {
     //temperarily save the point of data, which is ready to sent out
-    // <(cached_rdd_id, part_id), data ptr>
-    out_map: Arc<RwLock<HashMap<(usize, usize), usize>>>,
+    // <(cached_rdd_id, part_id), (data ptr, marks ptr)>
+    out_map: Arc<RwLock<HashMap<(usize, usize), (usize, usize)>>>,
 }
 
 impl OpCache{
@@ -983,9 +1006,9 @@ impl OpCache{
     }
 
     pub fn send(&self, key: (usize, usize)) {
-        if let Some(ct_ptr) = self.out_map.write().unwrap().remove(&key) {
+        if let Some((ct_ptr, ct_mk_ptr)) = self.out_map.write().unwrap().remove(&key) {
             let mut res = 0;
-            unsafe { ocall_cache_to_outside(&mut res, key.0, key.1, ct_ptr); }
+            unsafe { ocall_cache_to_outside(&mut res, key.0, key.1, ct_ptr, ct_mk_ptr); }
             //TODO: Handle the case res != 0
         }
     }
@@ -993,9 +1016,9 @@ impl OpCache{
     pub fn clear(&self) {
         let out_map = std::mem::take(&mut *self.out_map.write().unwrap());
         //normally the map is empty, and it should not enter the following loop
-        for ((rdd_id, part_id), data_ptr) in out_map.into_iter() {
+        for ((rdd_id, part_id), (ct_ptr, ct_mk_ptr)) in out_map.into_iter() {
             let mut res = 0;
-            unsafe { ocall_cache_to_outside(&mut res, rdd_id, part_id, data_ptr); }
+            unsafe { ocall_cache_to_outside(&mut res, rdd_id, part_id, ct_ptr, ct_mk_ptr); }
         }
     }
 
@@ -1030,6 +1053,9 @@ pub struct NextOpId {
     pub is_step_para: (bool, bool, bool),
     //used to decide is_step_para
     pub sample_len: usize,
+    //used to decide whether the global filter can be omitted
+    //record if (group by/join/filter appears, aggregate/fold/reduce/count don't appear)
+    pub should_filter: (bool, bool),
 }
 
 impl<'a> NextOpId {
@@ -1054,6 +1080,7 @@ impl<'a> NextOpId {
             para_range: None,
             is_step_para: (true, true, true),
             sample_len: 0,
+            should_filter: (false, true),
         }
     }
 
@@ -1246,7 +1273,7 @@ impl OpVals {
 pub trait OpBase: Send + Sync {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo);
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo);
-    fn call_free_res_enc(&self, res_ptr: *mut u8, is_enc: bool, dep_info: &DepInfo);
+    fn call_free_res_enc(&self, data: *mut u8, marks: *mut u8, is_enc: bool, dep_info: &DepInfo);
     fn fix_split_num(&self, split_num: usize) {
         unreachable!()
     }
@@ -1330,14 +1357,14 @@ pub trait OpBase: Send + Sync {
     fn partitioner(&self) -> Option<Box<dyn Partitioner>> {
         None
     }
-    fn iterator_start(&self, call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8;
-    fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
+    fn iterator_start(&self, call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8);
+    fn randomize_in_place(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
         unreachable!()
     }
     fn set_sampler(&self, with_replacement: bool, fraction: f64) {
         unreachable!()
     }
-    fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
+    fn etake(&self, input: *mut u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
         unreachable!()
     }
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
@@ -1386,8 +1413,8 @@ impl<I: Op + ?Sized> OpBase for SerArc<I> {
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo) {
         (**self).clone_enc_data_out(p_out, p_data_enc, dep_info);
     }
-    fn call_free_res_enc(&self, res_ptr: *mut u8, is_enc: bool, dep_info: &DepInfo) {
-        (**self).call_free_res_enc(res_ptr, is_enc, dep_info);
+    fn call_free_res_enc(&self, data: *mut u8, marks: *mut u8, is_enc: bool, dep_info: &DepInfo) {
+        (**self).call_free_res_enc(data, marks, is_enc, dep_info);
     }
     fn fix_split_num(&self, split_num: usize) {
         (**self).fix_split_num(split_num)
@@ -1410,16 +1437,16 @@ impl<I: Op + ?Sized> OpBase for SerArc<I> {
     fn number_of_splits(&self) -> usize {
         (**self).get_op_base().number_of_splits()
     }
-    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8) {
         (**self).get_op_base().iterator_start(call_seq, input, dep_info)
     }
-    fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
+    fn randomize_in_place(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
         (**self).randomize_in_place(input, seed, num)
     }
     fn set_sampler(&self, with_replacement: bool, fraction: f64) {
         (**self).set_sampler(with_replacement, fraction)
     }
-    fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
+    fn etake(&self, input: *mut u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
         (**self).etake(input, should_take, have_take)
     }
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
@@ -1435,10 +1462,10 @@ impl<I: Op + ?Sized> Op for SerArc<I> {
     fn get_op_base(&self) -> Arc<dyn OpBase> {
         (**self).get_op_base()
     }
-    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), (Vec<Vec<Self::Item>>, Vec<Vec<bool>>)>>> {
         (**self).get_cache_space()
     }
-    fn compute_start(&self, call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn compute_start(&self, call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8) {
         (**self).compute_start(call_seq, input, dep_info)
     }
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
@@ -1454,13 +1481,28 @@ pub trait Op: OpBase + 'static {
     type Item: Data;
     fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>>;
     fn get_op_base(&self) -> Arc<dyn OpBase>;
-    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), (Vec<Vec<Self::Item>>, Vec<Vec<bool>>)>>> {
         unreachable!()
     }
-    fn compute_start(&self, call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8;
-    //the deault is for narrow begin
+    fn compute_start(&self, call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8) {
+        match dep_info.dep_type() {
+            0 => { 
+                self.narrow(call_seq, input, true)
+            },
+            1 => {
+                self.shuffle(call_seq, input, dep_info)
+            },
+            24 | 25 | 26 | 27 => {
+                self.sort(call_seq, input, dep_info)
+            },
+            _ => panic!("Invalid is_shuffle"),
+        }
+    }
+    //the default is for narrow begin
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
         let data_ptr = input.data;
+        let marks_ptr = input.marks;
+
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
         let is_caching_final_rdd = call_seq.is_caching_final_rdd();
@@ -1471,7 +1513,8 @@ pub trait Op: OpBase + 'static {
         }
         
         let data_enc = input.get_enc_data::<Vec<ItemE>>();
-        let res_iter = self.parallel_control(call_seq, data_enc);
+        let marks_enc = input.get_enc_marks::<Vec<ItemE>>();
+        let res_iter = self.parallel_control(call_seq, data_enc, marks_enc);
         
         if need_cache {
             return self.set_cached_data(
@@ -1485,10 +1528,11 @@ pub trait Op: OpBase + 'static {
     fn cache(&self, data: Vec<Self::Item>) {
         ()
     }
-    fn cache_from_outside(&self, key: (usize, usize)) -> Option<&'static Vec<ItemE>> {
-        let mut ptr: usize = 0;
+    fn cache_from_outside(&self, key: (usize, usize)) -> Option<(&'static Vec<ItemE>, &'static Vec<ItemE>)> {
+        let mut ct_ptr: usize = 0;
+        let mut ct_mk_ptr: usize = 0;
         let sgx_status = unsafe { 
-            ocall_cache_from_outside(&mut ptr, key.0, key.1)
+            ocall_cache_from_outside(&mut ct_ptr, key.0, key.1, &mut ct_mk_ptr)
         };
         match sgx_status {
             sgx_status_t::SGX_SUCCESS => {},
@@ -1496,7 +1540,7 @@ pub trait Op: OpBase + 'static {
                 panic!("[-] OCALL Enclave Failed {}!", sgx_status.as_str());
             }
         }
-        if ptr == 0 {
+        if ct_ptr == 0 {
             return None;
         }
         /*
@@ -1508,27 +1552,30 @@ pub trait Op: OpBase + 'static {
         batch_decrypt(*ct)
         */
         Some(unsafe {
-            (ptr as *const u8 as *const Vec<ItemE>).as_ref()
-        }.unwrap())
+            ((ct_ptr as *const u8 as *const Vec<ItemE>).as_ref().unwrap(),
+            (ct_mk_ptr as *const u8 as *const Vec<ItemE>).as_ref().unwrap())
+        })
     }
 
-    fn cache_to_outside(&self, key: (usize, usize), value: &Vec<Self::Item>) -> Option<PThread> {
+    fn cache_to_outside(&self, key: (usize, usize), value: &Vec<Self::Item>, marks: &Vec<bool>) -> Option<PThread> {
         //let handle = unsafe {
         //    PThread::new(Box::new(move || {
-        let ct = batch_encrypt(value, true);
+        let (ct, ct_mk) = batch_encrypt_and_align_marks(value, marks);
         //println!("finish encryption, memory usage {:?} B", crate::ALLOCATOR.get_memory_usage());
         let mut out_map = CACHE.out_map.write().unwrap();
-        let acc = match out_map.remove(&key) {
-            Some(ptr) => {
+        let ct_pair = match out_map.remove(&key) {
+            Some((ct_ptr, ct_mk_ptr)) => {
                 crate::ALLOCATOR.set_switch(true);
-                let mut acc = *unsafe { Box::from_raw(ptr as *mut Vec<ItemE>) };
-                combine_enc(&mut acc, ct);
+                let mut acc_ct = *unsafe { Box::from_raw(ct_ptr as *mut Vec<ItemE>) };
+                let mut acc_ct_mk = *unsafe { Box::from_raw(ct_mk_ptr as *mut Vec<ItemE>) };
+                combine_enc(&mut acc_ct, ct);
+                combine_enc(&mut acc_ct_mk, ct_mk);
                 crate::ALLOCATOR.set_switch(false);
-                to_ptr(acc)
+                (to_ptr(acc_ct), to_ptr(acc_ct_mk)) 
             },
-            None => to_ptr(ct), 
-        } as usize;
-        out_map.insert(key, acc);
+            None => (to_ptr(ct), to_ptr(ct_mk)), 
+        };
+        out_map.insert(key, (ct_pair.0 as usize, ct_pair.1 as usize));
         //println!("finish copy out, memory usage {:?} B", crate::ALLOCATOR.get_memory_usage());
         //    }))
         //}.unwrap();
@@ -1549,43 +1596,44 @@ pub trait Op: OpBase + 'static {
             //another version of parallel_control, there are no decryption step
             match std::mem::take(&mut call_seq.para_range) {
                 Some((b, e)) => {
-                    let r = e - b;
+                    let r = e.saturating_sub(b);
                     if r == 0 {
                         Box::new(vec![].into_iter()) 
                     } else {
                         let cache_space = self.get_cache_space();
                         let mut l = cache_space.lock().unwrap();
-                        let (data, is_empty) = {
+                        let (data, marks, is_empty) = {
                             let v = l.get_mut(&key).unwrap();
-                            let data = v.split_off(v.len() - r);
-                            (data, v.is_empty())
+                            let data = v.0.split_off(v.0.len() - r);
+                            let marks = v.1.split_off(v.1.len() - r);
+                            (data, marks, v.0.is_empty())
                         };
                         if is_empty {
                             println!("remove cache key");
                             l.remove(&key).unwrap();
                         }
-                        Box::new(data.into_iter().map(|item| Box::new(item.into_iter()) as Box<dyn Iterator<Item = _>>))
+                        Box::new(data.into_iter().zip(marks.into_iter()).map(|(bl, blmarks)| (Box::new(bl.into_iter()) as Box<dyn Iterator<Item = _>>, blmarks)))
                     }
                 },
                 None => {
-                    let sample_data = {
+                    let (sample_data, sample_marks) = {
                         let cache_space = self.get_cache_space();
                         let mut cache_space = cache_space.lock().unwrap();
                         let entry = cache_space.get_mut(&key).unwrap();
-                        call_seq.para_range = Some((0, entry.len() - 1));
-                        entry.pop().unwrap()
+                        call_seq.para_range = Some((0, entry.0.len().saturating_sub(1)));
+                        (entry.0.pop().unwrap_or(Vec::new()), entry.1.pop().unwrap_or(Vec::new()))
                     };
                     call_seq.sample_len = sample_data.len();
                     //profile begin
                     crate::ALLOCATOR.reset_alloc_cnt();
-                    Box::new(vec![sample_data].into_iter().map(move |data| {
-                        Box::new(data.into_iter()) as Box<dyn Iterator<Item = _>>
+                    Box::new(vec![(sample_data, sample_marks)].into_iter().map(move |(bl, blmarks)| {
+                        (Box::new(bl.into_iter()) as Box<dyn Iterator<Item = _>>, blmarks)
                     }))
                 }
             }
         } else {
-            let data_enc = self.cache_from_outside(key).unwrap();
-            self.parallel_control(call_seq, data_enc)
+            let (data_enc, marks_enc) = self.cache_from_outside(key).unwrap();
+            self.parallel_control(call_seq, data_enc, marks_enc)
         }
     }
 
@@ -1595,21 +1643,22 @@ pub trait Op: OpBase + 'static {
         let key = call_seq.get_caching_doublet();
         let cache_space = self.get_cache_space();
 
-        Box::new(res_iter.map(move |iter| {
+        Box::new(res_iter.map(move |(bl_iter, blmarks)| {
             //cache outside enclave
             if is_caching_final_rdd {
-                iter
+                (bl_iter, blmarks)
             } else {
-                let res = iter.collect::<Vec<_>>();
+                let bl = bl_iter.collect::<Vec<_>>();
                 //cache inside enclave
                 if ENABLE_CACHE_INSIDE {
                     let mut cache_space = cache_space.lock().unwrap();
-                    let data = cache_space.entry(key).or_insert(Vec::new());
-                    data.push(res.clone());
+                    let (data, marks) = cache_space.entry(key).or_insert((Vec::new(), Vec::new()));
+                    data.push(bl.clone());
+                    marks.push(blmarks.clone());
                 } 
                 //it should be always cached outside for inter-machine communcation
-                let _handle = ope.cache_to_outside(key, &res);
-                Box::new(res.into_iter()) as Box<dyn Iterator<Item = _>>
+                let _handle = ope.cache_to_outside(key, &bl, &blmarks);
+                (Box::new(bl.into_iter()) as Box<dyn Iterator<Item = _>>, blmarks)
             }
         }))
     }
@@ -1660,46 +1709,74 @@ pub trait Op: OpBase + 'static {
         }  
     }
 
-    fn free_res_enc(&self, res_ptr: *mut u8, is_enc: bool) {
+    fn free_res_enc(&self, data: *mut u8, marks: *mut u8, is_enc: bool) {
         if is_enc {
             crate::ALLOCATOR.set_switch(true);
-            let res = unsafe { Box::from_raw(res_ptr as *mut Vec<ItemE>) };
-            drop(res);
+            let data = unsafe { Box::from_raw(data as *mut Vec<ItemE>) };
+            drop(data);
+            if 0 != marks as usize {
+                let marks = unsafe { Box::from_raw(marks as *mut Vec<ItemE>) };
+                drop(marks);
+            }
             crate::ALLOCATOR.set_switch(false);
         } else {
-            let _res = unsafe { Box::from_raw(res_ptr as *mut Vec<Self::Item>) };
+            let _data = unsafe { Box::from_raw(data as *mut Vec<Self::Item>) };
+            if 0 != marks as usize {
+                let _marks = unsafe { Box::from_raw(marks as *mut Vec<bool>) };
+            }
         }
     }
 
     //note that data_enc is outside enclave
-    fn parallel_control(&self, call_seq: &mut NextOpId, data_enc: &Vec<ItemE>) -> ResIter<Self::Item> {
+    fn parallel_control(&self, call_seq: &mut NextOpId, data_enc: &Vec<ItemE>, marks_enc: &Vec<ItemE>) -> ResIter<Self::Item> {
+        assert!(data_enc.len() == marks_enc.len() || marks_enc.is_empty());
         match std::mem::take(&mut call_seq.para_range) {
             Some((b, e)) => {
-                let mut data = data_enc[b..e].iter().map(|x| ser_decrypt::<Vec<Self::Item>>(&x.clone())).collect::<Vec<_>>();
+                let mut data = if let Some(data_enc) = data_enc.get(b..e) {
+                    data_enc.iter().map(|x| ser_decrypt::<Vec<Self::Item>>(&x.clone())).collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                let mut marks = if marks_enc.is_empty() {
+                    vec![Vec::new(); e.saturating_sub(b)]
+                } else {
+                    marks_enc[b..e].iter().map(|x| ser_decrypt::<Vec<bool>>(&x.clone())).collect::<Vec<_>>()
+                };
                 if call_seq.is_step_para.0 ^ call_seq.is_step_para.1 {
                     
                     let key = (call_seq.get_cur_rdd_id(), call_seq.get_part_id());
                     //originally it cannot happen that call_seq.get_caching_doublet() == call_seq.get_cached_doublet()
                     //however, in parallel processing, since we manually set cached key for special use, the situation can occur 
                     if key == call_seq.get_caching_doublet() {
-                        for block in &data {
-                            let _handle = self.cache_to_outside(key, &block);
+                        for (bl, blmarks) in data.iter().zip(marks.iter()) {
+                            let _handle = self.cache_to_outside(key, bl, blmarks);
                         }
                     }
                     //cache the data inside enclave for parallel processing
                     let cache_space = self.get_cache_space();
                     let mut cache_space = cache_space.lock().unwrap();
-                    let entry = cache_space.entry(key).or_insert(Vec::new());
-                    entry.append(&mut data);
+                    let entry = cache_space.entry(key).or_insert((Vec::new(), Vec::new()));
+                    entry.0.append(&mut data);
+                    entry.1.append(&mut marks);
                     Box::new(Vec::new().into_iter())
                 } else {
-                    Box::new(data.into_iter().map(|item| Box::new(item.into_iter()) as Box<dyn Iterator<Item = _>>))
+                    Box::new(data.into_iter().zip(marks.into_iter()).map(|(bl, blmarks)| (Box::new(bl.into_iter()) as Box<dyn Iterator<Item = _>>, blmarks)))
                 }
             },
             None => {
                 //for profile
                 crate::ALLOCATOR.reset_alloc_cnt();
-                let data = ser_decrypt::<Vec<Self::Item>>(&data_enc[0].clone());
+                
+                let data = if data_enc.is_empty() {
+                    Vec::new()
+                } else {
+                    ser_decrypt::<Vec<Self::Item>>(&data_enc[0].clone())
+                };
+                let marks = if marks_enc.is_empty() {
+                    Vec::new()
+                } else {
+                    ser_decrypt::<Vec<bool>>(&marks_enc[0].clone())
+                };
                 let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
                 call_seq.sample_len = data.len();
                 let alloc_cnt_ratio = alloc_cnt as f64/(call_seq.sample_len as f64);
@@ -1709,115 +1786,143 @@ pub trait Op: OpBase + 'static {
 
                 //profile begin
                 crate::ALLOCATOR.reset_alloc_cnt();
-                Box::new(vec![data].into_iter().map(move |data| {
-                    Box::new(data.into_iter()) as Box<dyn Iterator<Item = _>>
+                Box::new(vec![(data, marks)].into_iter().map(move |(bl, blmarks)| {
+                    (Box::new(bl.into_iter()) as Box<dyn Iterator<Item = _>>, blmarks)
                 }))
             }
         }
     }
 
-    fn spawn_enc_thread(&self, mut results: Vec<Vec<Self::Item>>, handlers: &mut Vec<JoinHandle<Vec<ItemE>>>) {
-        let mut remaining = results.len();
+    fn spawn_enc_thread(&self, should_filter: bool, mut res: Vec<(Vec<Self::Item>, Vec<bool>)>, handlers: &mut Vec<JoinHandle<(Vec<ItemE>, Vec<ItemE>)>>) {
+        let mut remaining = res.len();
         let r = remaining.saturating_sub(1) / MAX_THREAD + 1;
         for _ in 0..MAX_THREAD {
-            let data = results.split_off(results.len() - std::cmp::min(r, remaining));
+            let res_local = res.split_off(res.len() - std::cmp::min(r, remaining));
             remaining = remaining.saturating_sub(r);
             let handler = thread::Builder::new()
                 .spawn(move || {
-                    let mut acc = create_enc();
-                    for block in data {
-                        combine_enc(&mut acc, batch_encrypt(&block, true));
-                    }
-                    acc
-                }).unwrap();
-            handlers.push(handler);
-        }
-    }
-
-    fn spawn_dec_nar_thread(&self, call_seq: &NextOpId, input: Input, handlers: &mut Vec<JoinHandle<Vec<Vec<Self::Item>>>>, only_dec: bool) {
-        let (s, len) = call_seq.para_range.as_ref().unwrap();
-        let r = (len - s).saturating_sub(1) / MAX_THREAD + 1;
-        let mut b = *s;
-        let mut e = std::cmp::min(b + r, *len);
-        for _ in 0..MAX_THREAD {
-            let op = self.get_op();
-            let mut call_seq = call_seq.clone();
-            call_seq.para_range = Some((b, e));
-            b = e;
-            e = std::cmp::min(b + r, *len);
-            let handler = thread::Builder::new()
-                .spawn(move || {
-                    let results = op.compute(&mut call_seq, input).map(|result| result.collect::<Vec<_>>()).collect::<Vec<_>>();
-                    if only_dec {
-                        assert!(results.into_iter().flatten().collect::<Vec<_>>().is_empty());
-                        Vec::new()
-                    } else {
-                        results
-                    }
-                }).unwrap();
-            handlers.push(handler);
-        }
-    }
-
-    fn spawn_dec_nar_enc_thread(&self, call_seq: &NextOpId, input: Input, handlers: &mut Vec<JoinHandle<Vec<ItemE>>>, only_dec: bool) {
-        let (s, len) = call_seq.para_range.as_ref().unwrap();
-        let r = (len - s).saturating_sub(1) / MAX_THREAD + 1;
-        let mut b = *s;
-        let mut e = std::cmp::min(b + r, *len);
-        for _ in 0..MAX_THREAD {
-            let op = self.get_op();
-            let mut call_seq = call_seq.clone();
-            call_seq.para_range = Some((b, e));
-            b = e;
-            e = std::cmp::min(b + r, *len);
-            let handler = thread::Builder::new()
-                .spawn(move || {
-                    let results = op.compute(&mut call_seq, input).map(|result| result.collect::<Vec<_>>()).collect::<Vec<_>>();
-                    if only_dec {
-                        assert!(results.into_iter().flatten().collect::<Vec<_>>().is_empty());
-                        Vec::new()
-                    } else {
-                        let mut acc = create_enc();
-                        for result in results {
-                            combine_enc(&mut acc, batch_encrypt(&result, true));
+                    let mut acc_data = create_enc();
+                    let mut acc_marks = create_enc();
+                    for (bl, blmarks) in res_local {
+                        if should_filter {
+                            let bl_enc = align_marks_and_batch_encrypt(bl, blmarks);
+                            combine_enc(&mut acc_data, bl_enc);
+                        } else {
+                            let (bl_enc, blmarks_enc) = batch_encrypt_and_align_marks(&bl, &blmarks);
+                            combine_enc(&mut acc_data, bl_enc);
+                            combine_enc(&mut acc_marks, blmarks_enc);
                         }
-                        acc
+                    }
+                    (acc_data, acc_marks)
+                }).unwrap();
+            handlers.push(handler);
+        }
+    }
+
+    fn spawn_dec_nar_thread(&self, call_seq: &NextOpId, input: Input, handlers: &mut Vec<JoinHandle<Vec<(Vec<Self::Item>, Vec<bool>)>>>, only_dec: bool) {
+        let (s, len) = call_seq.para_range.as_ref().unwrap();
+        let r = (len.saturating_sub(*s)).saturating_sub(1) / MAX_THREAD + 1;
+        let mut b = *s;
+        let mut e = std::cmp::min(b + r, *len);
+        for _ in 0..MAX_THREAD {
+            let op = self.get_op();
+            let mut call_seq = call_seq.clone();
+            call_seq.para_range = Some((b, e));
+            b = e;
+            e = std::cmp::min(b + r, *len);
+            let handler = thread::Builder::new()
+                .spawn(move || {
+                    let res_local = op.compute(&mut call_seq, input).map(|(bl_iter, blmarks)| (bl_iter.collect::<Vec<_>>(), blmarks)).collect::<Vec<_>>();
+                    if only_dec {
+                        assert!(res_local.into_iter().map(|(x, _)| x).flatten().collect::<Vec<_>>().is_empty());
+                        Vec::new()
+                    } else {
+                        res_local
                     }
                 }).unwrap();
             handlers.push(handler);
         }
     }
 
-    fn narrow(&self, mut call_seq: NextOpId, mut input: Input, need_enc: bool) -> *mut u8 {
-        let mut acc = create_enc();
+    fn spawn_dec_nar_enc_thread(&self, should_filter: bool, call_seq: &NextOpId, input: Input, handlers: &mut Vec<JoinHandle<(Vec<ItemE>, Vec<ItemE>)>>, only_dec: bool) {
+        let (s, len) = call_seq.para_range.as_ref().unwrap();
+        let r = (len.saturating_sub(*s)).saturating_sub(1) / MAX_THREAD + 1;
+        let mut b = *s;
+        let mut e = std::cmp::min(b + r, *len);
+        for _ in 0..MAX_THREAD {
+            let op = self.get_op();
+            let mut call_seq = call_seq.clone();
+            call_seq.para_range = Some((b, e));
+            b = e;
+            e = std::cmp::min(b + r, *len);
+            let handler = thread::Builder::new()
+                .spawn(move || {
+                    let res_local = op.compute(&mut call_seq, input).map(|(bl_iter, blmarks)| (bl_iter.collect::<Vec<_>>(), blmarks)).collect::<Vec<_>>();
+                    if only_dec {
+                        assert!(res_local.into_iter().map(|(x, _)| x).flatten().collect::<Vec<_>>().is_empty());
+                        (Vec::new(), Vec::new())
+                    } else {
+                        let mut acc_data = create_enc();
+                        let mut acc_marks = create_enc();
+                        for (bl, blmarks) in res_local {
+                            if should_filter {
+                                let bl_enc = align_marks_and_batch_encrypt(bl, blmarks);
+                                combine_enc(&mut acc_data, bl_enc);
+                            } else {
+                                let (bl_enc, blmarks_enc) = batch_encrypt_and_align_marks(&bl, &blmarks); 
+                                combine_enc(&mut acc_data, bl_enc);
+                                combine_enc(&mut acc_marks, blmarks_enc);
+                            }
+                        }
+                        (acc_data, acc_marks)
+                    }
+                }).unwrap();
+            handlers.push(handler);
+        }
+    }
+
+    fn narrow(&self, mut call_seq: NextOpId, mut input: Input, need_enc: bool) -> (*mut u8, *mut u8) {
+        let mut acc_data = create_enc();
+        let mut acc_marks = create_enc();
         //run the first block for profiling
-        let mut results = Vec::new();
-        {
+        let mut res = Vec::new();
+        let should_filter = {
             let mut call_seq_sample = call_seq.clone();
             assert!(call_seq_sample.para_range.is_none());
-            let sample_data = self.compute(&mut call_seq_sample, input).collect::<Vec<_>>().remove(0).collect::<Vec<_>>();
+            let (sample_data_iter, sample_marks) = self.compute(&mut call_seq_sample, input).collect::<Vec<_>>().remove(0);
+            let sample_data = sample_data_iter.collect::<Vec<_>>();
             let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
             let alloc_cnt_ratio = alloc_cnt as f64/(call_seq_sample.sample_len as f64);
             println!("for narrow processing, alloc_cnt per len = {:?}", alloc_cnt_ratio);
             call_seq.para_range = call_seq_sample.para_range;
             call_seq.is_step_para.0 = call_seq_sample.is_step_para.0;
             call_seq.is_step_para.1 = alloc_cnt_ratio < PARA_THRESHOLD;
+            call_seq.should_filter = call_seq_sample.should_filter;
+            let should_filter = call_seq.should_filter.0 && call_seq.should_filter.1;
             //narrow specific
-            if need_enc {
-                let block_enc = batch_encrypt(&sample_data, true);
-                combine_enc(&mut acc, block_enc);
+            if need_enc && should_filter {
+                println!("should filter");
+                let bl_enc = align_marks_and_batch_encrypt(sample_data, sample_marks);
+                combine_enc(&mut acc_data, bl_enc);
+            } else if need_enc {
+                println!("do not need filter");
+                let (bl_enc, blmarks_enc) = batch_encrypt_and_align_marks(&sample_data, &sample_marks);
+                combine_enc(&mut acc_data, bl_enc);
+                combine_enc(&mut acc_marks, blmarks_enc);
             } else {
-                results.push(sample_data);
+                res.push((sample_data, sample_marks));
             }
+            should_filter
         };
 
         let mut handlers_pt =  Vec::with_capacity(MAX_THREAD);
         let mut handlers_ct = Vec::with_capacity(MAX_THREAD);
         if !call_seq.is_step_para.0 && !call_seq.is_step_para.1 {
-            results.append(&mut self.compute(&mut call_seq, input).map(|result| result.collect::<Vec<_>>()).collect::<Vec<_>>());
+            let mut res_bl = self.compute(&mut call_seq, input).map(|(bl_iter, blmarks)| (bl_iter.collect::<Vec<_>>(), blmarks)).collect::<Vec<_>>();
+            res.append(&mut res_bl);
             if need_enc {
-                self.spawn_enc_thread(results, &mut handlers_ct);
-                results = Vec::new();
+                self.spawn_enc_thread(should_filter, res, &mut handlers_ct);
+                res = Vec::new();
             }
         } else if call_seq.is_step_para.0 ^ call_seq.is_step_para.1 {
             //for cache inside, range begin = 0, and for cache outside or no cache, range begin = 1;
@@ -1826,10 +1931,10 @@ pub trait Op: OpBase + 'static {
                 //decryption needed
                 if !call_seq.is_step_para.0 {
                     let mut call_seq = call_seq.clone();
-                    assert!(self.compute(&mut call_seq, input).flatten().collect::<Vec<_>>().is_empty());
+                    assert!(self.compute(&mut call_seq, input).map(|(x, _)| x).flatten().collect::<Vec<_>>().is_empty());
                 } else {
                     if need_enc {
-                        self.spawn_dec_nar_enc_thread(&call_seq, input, &mut handlers_ct, true); 
+                        self.spawn_dec_nar_enc_thread(should_filter, &call_seq, input, &mut handlers_ct, true); 
                     } else {
                         self.spawn_dec_nar_thread(&call_seq, input, &mut handlers_pt, true); 
                     }
@@ -1843,7 +1948,7 @@ pub trait Op: OpBase + 'static {
                 //narrow
                 if !call_seq.is_step_para.1 {
                     for handler in handlers_ct {
-                        assert!(handler.join().unwrap().is_empty());
+                        assert!(handler.join().unwrap().0.is_empty());
                     }
                     for handler in handlers_pt {
                         handler.join().unwrap();
@@ -1851,14 +1956,14 @@ pub trait Op: OpBase + 'static {
                     handlers_ct = Vec::with_capacity(MAX_THREAD);
                     handlers_pt = Vec::with_capacity(MAX_THREAD);
                     let mut call_seq = call_seq.clone();
-                    results.append(&mut self.compute(&mut call_seq, input).map(|result| result.collect::<Vec<_>>()).collect::<Vec<_>>());
+                    res.append(&mut self.compute(&mut call_seq, input).map(|(bl_iter, blmarks)| (bl_iter.collect::<Vec<_>>(), blmarks)).collect::<Vec<_>>());
                     if need_enc {
-                        self.spawn_enc_thread(results, &mut handlers_ct);
-                        results = Vec::new();
+                        self.spawn_enc_thread(should_filter, res, &mut handlers_ct);
+                        res = Vec::new();
                     }
                 } else {
                     if need_enc {
-                        self.spawn_dec_nar_enc_thread(&call_seq, input, &mut handlers_ct, false);
+                        self.spawn_dec_nar_enc_thread(should_filter, &call_seq, input, &mut handlers_ct, false);
                     } else {
                         self.spawn_dec_nar_thread(&call_seq, input, &mut handlers_pt, false);
                     }
@@ -1866,32 +1971,41 @@ pub trait Op: OpBase + 'static {
             }
         } else {
             if need_enc {
-                self.spawn_dec_nar_enc_thread(&call_seq, input, &mut handlers_ct, false);
+                self.spawn_dec_nar_enc_thread(should_filter, &call_seq, input, &mut handlers_ct, false);
             } else {
                 self.spawn_dec_nar_thread(&call_seq, input, &mut handlers_pt, false);
             }
         }
         for handler in handlers_ct {
-            combine_enc(&mut acc, handler.join().unwrap());
+            let (bl_enc, blmarks_enc) = handler.join().unwrap();
+            combine_enc(&mut acc_data, bl_enc);
+            combine_enc(&mut acc_marks, blmarks_enc);
         }
         for handler in handlers_pt {
-            results.append(&mut handler.join().unwrap());
+            res.append(&mut handler.join().unwrap());
         }
         //cache to outside
         let key = call_seq.get_caching_doublet();
         CACHE.send(key);
-        if need_enc {
-            to_ptr(acc)
-        } else {
-            acc.is_empty();
+        if need_enc && should_filter {
+            assert!(acc_marks.is_empty());
             crate::ALLOCATOR.set_switch(true);
-            drop(acc);
+            drop(acc_marks);
             crate::ALLOCATOR.set_switch(false);
-            Box::into_raw(Box::new(results)) as *mut u8
+            (to_ptr(acc_data), 0usize as *mut u8)
+        } else if need_enc {
+            (to_ptr(acc_data), to_ptr(acc_marks))
+        } else {
+            assert!(acc_data.is_empty() && acc_marks.is_empty());
+            crate::ALLOCATOR.set_switch(true);
+            drop(acc_data);
+            drop(acc_marks);
+            crate::ALLOCATOR.set_switch(false);
+            (Box::into_raw(Box::new(res)) as *mut u8, 0usize as *mut u8)
         }
     } 
 
-    fn shuffle(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn shuffle(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8) {
         let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
         let tid = call_seq.tid;
         let now = Instant::now();
@@ -1901,11 +2015,31 @@ pub trait Op: OpBase + 'static {
 
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("tid: {:?}, shuffle write: {:?}s", tid, dur);
-        result_ptr
+        (result_ptr, 0usize as *mut u8)
     }
 
-    fn randomize_in_place_(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
-        let sample_enc = unsafe{ (input as *const Vec<ItemE>).as_ref() }.unwrap(); 
+    fn sort(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8) {
+        let max_value = (Default::default(), false);
+        let cmp_f = |a: &(Self::Item, bool), b: &(Self::Item, bool)| {
+            a.1.cmp(&b.1).reverse()  //sort dummy value to the end
+        };
+        match dep_info.dep_type() {
+            24 => {
+                (combined_column_sort_step_2(call_seq.tid, input, self.get_op_id(), call_seq.get_part_id(), self.number_of_splits(), max_value, cmp_f), 0 as *mut u8)
+            },
+            25 | 26 | 27 => {
+                let filter_f = |data: Vec<(Self::Item, bool)>| data.into_iter()
+                    .filter(|(v, m)| *m)
+                    .map(|(v, m)| v)
+                    .collect::<Vec<_>>();
+                (combined_column_sort_step_4_6_8(call_seq.tid, input, dep_info, self.get_op_id(), call_seq.get_part_id(), self.number_of_splits(), max_value, cmp_f, filter_f), 0 as *mut u8)
+            }
+            _ => panic!("Invalid is_shuffle")
+        }
+    }
+
+    fn randomize_in_place_(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
+        let sample_enc = unsafe { (input as *const Vec<ItemE>).as_ref() }.unwrap();
         let mut sample: Vec<Self::Item> = batch_decrypt(sample_enc, true);
         let mut rng = if let Some(seed) = seed {
             rand_pcg::Pcg64::seed_from_u64(seed)
@@ -1919,8 +2053,8 @@ pub trait Op: OpBase + 'static {
         to_ptr(sample_enc)
     }
 
-    fn take_(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
-        let data_enc = unsafe{ (input as *const Vec<ItemE>).as_ref() }.unwrap(); 
+    fn take_(&self, input: *mut u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
+        let data_enc = unsafe { (input as *const Vec<ItemE>).as_ref() }.unwrap();
         let mut data: Vec<Self::Item> = batch_decrypt(data_enc, true);
         data = data.into_iter().take(should_take).collect();
         *have_take = data.len();

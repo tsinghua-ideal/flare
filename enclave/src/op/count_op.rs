@@ -59,11 +59,12 @@ where
         }
     }
 
-    fn call_free_res_enc(&self, res_ptr: *mut u8, is_enc: bool, dep_info: &DepInfo) {
+    fn call_free_res_enc(&self, data: *mut u8, marks: *mut u8, is_enc: bool, dep_info: &DepInfo) {
         match dep_info.dep_type() {
             4 => {
+                assert_eq!(marks as usize, 0usize);
                 crate::ALLOCATOR.set_switch(true);
-                let res = unsafe { Box::from_raw(res_ptr as *mut Vec<u64>) };
+                let res = unsafe { Box::from_raw(data as *mut Vec<u64>) };
                 drop(res);
                 crate::ALLOCATOR.set_switch(false);
             },
@@ -79,7 +80,7 @@ where
         self.vals.context.upgrade().unwrap()
     }
 
-    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8) {
         
 		self.compute_start(call_seq, input, dep_info)
     }
@@ -99,7 +100,7 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
   
-    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8{
+    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8) {
         //3 is only for global reduce & fold (cf)
         //4 is only for local reduce & fold (sf + cf)
         if dep_info.dep_type() == 3 {
@@ -107,15 +108,24 @@ where
             unreachable!()
         } else if dep_info.dep_type() == 4 {
             let data_enc = input.get_enc_data::<Vec<ItemE>>();
-            let len = data_enc.len();
-            let mut count = 0;
-            for i in 0..len {
-                let block = ser_decrypt::<Vec<T>>(&data_enc[i].clone());
-                count += block.len(); 
-            }
+            let marks_enc = input.get_enc_marks::<Vec<ItemE>>();
+            assert_eq!(data_enc.len(), marks_enc.len());
+
+            let count = data_enc.iter().zip(marks_enc.iter())
+                .map(|(bl_enc, blmarks_enc)| {
+                    let mut bl = ser_decrypt::<Vec<T>>(&bl_enc.clone());
+                    let blmarks = ser_decrypt::<Vec<bool>>(&blmarks_enc.clone());
+                    if blmarks.is_empty() {
+                        bl.len()
+                    } else {
+                        assert_eq!(blmarks.len(), bl.len());
+                        blmarks.into_iter().filter(|m| *m).count()
+                    }
+                }).sum::<usize>();
             let res = vec![count as u64];
-            res_enc_to_ptr(res)
+            (res_enc_to_ptr(res), 0usize as *mut u8)
         } else {
+            call_seq.should_filter.1 = false;
             let opb = call_seq.get_next_op().clone();
             if opb.get_op_id() == self.prev.get_op_id() {
                 self.prev.compute_start(call_seq, input, dep_info)

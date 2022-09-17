@@ -16,7 +16,7 @@ where
     pub(crate) next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     pub(crate) first: Arc<dyn Op<Item = T>>,
     pub(crate) second: Arc<dyn Op<Item = U>>,
-    pub(crate) cache_space: Arc<Mutex<HashMap<(usize, usize), Vec<Vec<(T, U)>>>>>,
+    pub(crate) cache_space: Arc<Mutex<HashMap<(usize, usize), (Vec<Vec<(T, U)>>, Vec<Vec<bool>>)>>>,
 }
 
 impl<T, U> Zipped<T, U> 
@@ -84,12 +84,20 @@ where
         }   
     }
 
-    fn call_free_res_enc(&self, res_ptr: *mut u8, is_enc: bool, dep_info: &DepInfo) {
+    fn call_free_res_enc(&self, data: *mut u8, marks: *mut u8, is_enc: bool, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 2 => self.free_res_enc(res_ptr, is_enc),
+            0 | 2 => self.free_res_enc(data, marks, is_enc),
             1 => {
+                assert_eq!(marks as usize, 0usize);
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
-                shuf_dep.free_res_enc(res_ptr, is_enc);
+                shuf_dep.free_res_enc(data, is_enc);
+            },
+            24 | 25 | 26 | 27 => {
+                assert_eq!(marks as usize, 0usize);
+                crate::ALLOCATOR.set_switch(true);
+                let res = unsafe { Box::from_raw(data as *mut Vec<Vec<ItemE>>) };
+                drop(res);
+                crate::ALLOCATOR.set_switch(false);
             },
             _ => panic!("invalid is_shuffle"),
         }
@@ -123,16 +131,16 @@ where
         self.vals.in_loop
     }
     
-    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8{
+    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8) {
         
 		self.compute_start(call_seq, input, dep_info)
     }
     
-    fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
+    fn randomize_in_place(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
         self.randomize_in_place_(input, seed, num)
     }
 
-    fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
+    fn etake(&self, input: *mut u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
         self.take_(input ,should_take, have_take)
     }
 
@@ -169,11 +177,11 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), (Vec<Vec<Self::Item>>, Vec<Vec<bool>>)>>> {
         self.cache_space.clone()
     }
 
-    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8) {
         match dep_info.dep_type() {
             0 => {       //narrow
                 self.narrow(call_seq, input, true)
@@ -184,6 +192,9 @@ where
             2 => {       //zip
                 println!("secure_zip ");
                 let (first, second) = input.get_enc_data::<(Vec<ItemE>, Vec<ItemE>)>();
+                let (first_marks, second_marks) = input.get_enc_marks::<(Vec<ItemE>, Vec<ItemE>)>();
+                assert!(first_marks.len() == first.len() && second_marks.len() == second.len());
+                assert!(batch_decrypt::<bool>(first_marks, true).is_empty() && batch_decrypt::<bool>(second_marks, true).is_empty());
                 let mut cur_f = 0; 
                 let mut cur_s = 0;
 
@@ -207,8 +218,11 @@ where
                     cur_f += 1;
                     cur_s += 1;
                 }
-                to_ptr(acc)
-            }
+                (to_ptr(acc), res_enc_to_ptr(Vec::<ItemE>::new()))
+            },
+            24 | 25 | 26 | 27 => {
+                self.sort(call_seq, input, dep_info)
+            },
             _ => panic!("Invalid is_shuffle")
         }
     }

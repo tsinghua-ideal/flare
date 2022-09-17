@@ -177,26 +177,41 @@ where
     fn do_shuffle_task(&self, tid: u64, opb: Arc<dyn OpBase>, call_seq: NextOpId, input: Input) -> *mut u8 {
         let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
 
-        let mut sub_parts: Vec<Vec<(Option<K>, V)>> = Vec::new();
+        let mut sub_parts: Vec<Vec<((Option<K>, V), bool)>> = Vec::new();
         let mut sub_part_size = 0;
-        let results = *unsafe{ Box::from_raw(op.narrow(call_seq, input, false) as *mut Vec<Vec<(K, V)>>) };
-        for block in results {
-            let mut block = block.into_iter().map(|(k, v)| (Some(k), v)).collect::<Vec<_>>();
-            let block_size = block.deep_size_of();
+        let results = {
+            let (ptr, null_ptr) = op.narrow(call_seq, input, false);
+            assert_eq!(0usize, null_ptr as usize);
+            *unsafe{ Box::from_raw(ptr as *mut Vec<(Vec<(K, V)>, Vec<bool>)>) }
+        };
+        for (bl, mut blmarks) in results {
+            if blmarks.is_empty() {
+                blmarks.resize(bl.len(), true);
+            }
+            assert_eq!(bl.len(), blmarks.len());
+            let block_size = bl.deep_size_of();
+            let mut bl = bl.into_iter().map(|(k, v)| (Some(k), v)).zip(blmarks.into_iter()).collect::<Vec<_>>();
             let mut should_create_new = true;
             if let Some(sub_part) = sub_parts.last_mut() {
                 if sub_part_size + block_size <= CACHE_LIMIT/MAX_THREAD/input.get_parallel() {
-                    sub_part.append(&mut block);
+                    sub_part.append(&mut bl);
                     sub_part_size += block_size;
                     should_create_new = false;
-                } 
-            } 
+                }
+            }
             if should_create_new {
-                sub_parts.push(block);
+                sub_parts.push(bl);
                 sub_part_size = block_size;
             }
         }
 
+        let cmp_f = |a: &((Option<K>, V), bool), b: &((Option<K>, V), bool)| {
+            if a.0.0.is_some() && b.0.0.is_some() {
+                (a.1, &a.0.0).cmp(&(b.1, &b.0.0))
+            } else {
+                a.0.0.cmp(&b.0.0).reverse()
+            }
+        };
         let mut handlers = Vec::with_capacity(MAX_THREAD);
         let r = sub_parts.len().saturating_sub(1) / MAX_THREAD + 1;
         for _ in 0..MAX_THREAD {
@@ -205,7 +220,7 @@ where
                 .spawn(move || {
                     let mut local_max_len = 0;
                     for sub_part in sub_parts.iter_mut() {
-                        sub_part.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+                        sub_part.sort_unstable_by(cmp_f);
                         local_max_len = std::cmp::max(local_max_len, sub_part.len()); 
                     }
                     (sub_parts, local_max_len)
@@ -222,9 +237,15 @@ where
         }).flatten().collect::<Vec<_>>();
 
         //partition sort (local sort), and pad so that each sub partition should have the same number of (K, V)
-        let mut sort_helper = SortHelper::<K, V>::new(sub_parts, max_len, true);
-        sort_helper.sort();
-        let (sorted_data, num_real_elem) = sort_helper.take();
+        let (sorted_data, num_real_elem) = if max_len == 0 {
+            (Vec::new(), 0)
+        } else {
+            let max_value = ((None, Default::default()), false);
+            let mut sort_helper = SortHelper::new(sub_parts, max_len, max_value, true, cmp_f);
+            sort_helper.sort();
+            sort_helper.take()
+        };
+        
         let num_output_splits = self.partitioner.read().unwrap().get_num_of_partitions();
         let chunk_size = num_real_elem.saturating_sub(1) / num_output_splits + 1;
         let buckets_enc = if self.is_cogroup {
@@ -234,8 +255,7 @@ where
             }
             buckets_enc
         } else {
-            //TODO: 
-            column_sort_step_2::<(Option<K>, V)>(tid, sorted_data, max_len, num_output_splits)
+            column_sort_step_2(tid, sorted_data, max_len, num_output_splits)
         };
         to_ptr(buckets_enc)
     }

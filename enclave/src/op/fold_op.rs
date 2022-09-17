@@ -66,9 +66,9 @@ where
         }
     }
 
-    fn call_free_res_enc(&self, res_ptr: *mut u8, is_enc: bool, dep_info: &DepInfo) {
+    fn call_free_res_enc(&self, data: *mut u8, marks: *mut u8, is_enc: bool, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            3 | 4 => self.free_res_enc(res_ptr, is_enc),
+            3 | 4 => self.free_res_enc(data, marks, is_enc),
             _ => unreachable!(),
         };
     }
@@ -81,7 +81,7 @@ where
         self.vals.context.upgrade().unwrap()
     }
 
-    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8) {
         
 		self.compute_start(call_seq, input, dep_info)
     }
@@ -102,25 +102,38 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
   
-    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8{
+    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8) {
         //3 is only for global reduce & fold (cf)
         //4 is only for local reduce & fold (sf + cf)
         if dep_info.dep_type() == 3 {
             let data_enc = input.get_enc_data::<Vec<ItemE>>();
+            let marks_enc = input.get_enc_marks::<Vec<ItemE>>();
+            assert!(marks_enc.is_empty());
+
             let t = (self.f)(Box::new(data_enc.clone()
                 .into_iter()
                 .map(|x| ser_decrypt::<T>(&x))
                 .collect::<Vec<_>>()
                 .into_iter()));
             let ue = vec![ser_encrypt(&t)];
-            res_enc_to_ptr(ue)
+            (res_enc_to_ptr(ue), 0usize as *mut u8)
         } else if dep_info.dep_type() == 4 {
             let data_enc = input.get_enc_data::<Vec<ItemE>>();
+            let marks_enc = input.get_enc_marks::<Vec<ItemE>>();
+            assert_eq!(data_enc.len(), marks_enc.len());
+
             let data = batch_decrypt(data_enc, true);
-            let t = (self.f)(Box::new(data.into_iter()));
+            let marks = batch_decrypt(marks_enc, true);
+            let t = if marks.is_empty() {
+                (self.f)(Box::new(data.into_iter()))
+            } else {
+                assert_eq!(data.len(), marks.len());
+                (self.f)(Box::new(data.into_iter().zip(marks.into_iter()).filter(|(_, m)| *m).map(|(x, _)| x)))
+            };
             let ue = vec![ser_encrypt(&t)];
-            res_enc_to_ptr(ue)
+            (res_enc_to_ptr(ue), 0usize as *mut u8)
         } else {
+            call_seq.should_filter.1 = false;
             let opb = call_seq.get_next_op().clone();
             if call_seq.need_cache() {
                 if opb.get_op_id() == self.prev.get_op_id() {
@@ -131,13 +144,6 @@ where
                 }
             } else {
                 self.narrow(call_seq, input, true)
-                // let result_iter = self.compute(&mut call_seq, input);
-                // let mut acc = create_enc();
-                // for result in result_iter {
-                //     let block_enc = batch_encrypt(&result.collect::<Vec<_>>(), true);
-                //     combine_enc(&mut acc, block_enc);
-                // }
-                // to_ptr(acc)
             }
         }
     }
@@ -146,8 +152,13 @@ where
         //move some parts in compute start to this part
         let res_iter = self.prev.compute(call_seq, input);
         let f = self.f.clone();
-        Box::new(res_iter.map(move |res_iter|
-            Box::new(vec![(f)(res_iter)].into_iter()) as Box<dyn Iterator<Item = _>>))
+        Box::new(res_iter.map(move |(bl_iter, blmarks)| {
+            if blmarks.is_empty() {
+                (Box::new(vec![(f)(bl_iter)].into_iter()) as Box<dyn Iterator<Item = _>>, blmarks)
+            } else {
+                (Box::new(vec![(f)(Box::new(bl_iter.zip(blmarks.into_iter()).filter(|(_, m)| *m).map(|(x, _)| x)))].into_iter()) as Box<dyn Iterator<Item = _>>, Vec::new())
+            }
+        }))
     }
 
 }

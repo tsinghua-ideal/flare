@@ -136,20 +136,29 @@ where
     where
         W: Data,
     {
-        let f = Box::new(|v: (Vec<V>, Vec<W>)| {
-            let (vs, ws) = v;
-            let combine = vs
-                .into_iter()
-                .flat_map(move |v| ws.clone().into_iter().map(move |w| (v.clone(), w)));
-            Box::new(combine) as Box<dyn Iterator<Item = (V, W)>>
-        });
+        // let f = Box::new(|v: (Vec<V>, Vec<W>)| {
+        //     let (vs, ws) = v;
+        //     let combine = vs
+        //         .into_iter()
+        //         .flat_map(move |v| ws.clone().into_iter().map(move |w| (v.clone(), w)));
+        //     Box::new(combine) as Box<dyn Iterator<Item = (V, W)>>
+        // });
 
-        let cogrouped = self.cogroup(
-            other,
+        // let cogrouped = self.cogroup(
+        //     other,
+        //     Box::new(HashPartitioner::<K>::new(num_splits)) as Box<dyn Partitioner>,
+        // );
+        // self.get_context().add_num(1);
+        // cogrouped.flat_map_values(Box::new(f))
+        let new_op = SerArc::new(Joined::new(
+            self.get_op(),
+            other.get_op(),
             Box::new(HashPartitioner::<K>::new(num_splits)) as Box<dyn Partitioner>,
-        );
-        self.get_context().add_num(1);
-        cogrouped.flat_map_values(Box::new(f))
+        ));
+        if !self.get_context().get_is_tail_comp() {
+            insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        }
+        new_op
     }
 
     #[track_caller]
@@ -161,8 +170,7 @@ where
     where
         W: Data,
     {
-        let mut cogrouped = CoGrouped::new(self.get_op(), other.get_op(), partitioner);
-        cogrouped.is_for_join = true;
+        let cogrouped = CoGrouped::new(self.get_op(), other.get_op(), partitioner);
         let new_op = SerArc::new(cogrouped);
         if !self.get_context().get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
@@ -195,7 +203,7 @@ where
     vals: Arc<OpVals>,
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     prev: Arc<dyn Op<Item = (K, V)>>,
-    cache_space: Arc<Mutex<HashMap<(usize, usize), Vec<Vec<V>>>>>,
+    cache_space: Arc<Mutex<HashMap<(usize, usize), (Vec<Vec<V>>, Vec<Vec<bool>>)>>>,
 }
 
 impl<K, V> Clone for Values<K, V>
@@ -262,12 +270,19 @@ where
         }   
     }
 
-    fn call_free_res_enc(&self, res_ptr: *mut u8, is_enc: bool, dep_info: &DepInfo) {
+    fn call_free_res_enc(&self, data: *mut u8, marks: *mut u8, is_enc: bool, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 => self.free_res_enc(res_ptr, is_enc),
+            0 => self.free_res_enc(data, marks, is_enc),
             1 => {
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
-                shuf_dep.free_res_enc(res_ptr, is_enc);
+                shuf_dep.free_res_enc(data, is_enc);
+            },
+            24 | 25 | 26 | 27 => {
+                assert_eq!(marks as usize, 0usize);
+                crate::ALLOCATOR.set_switch(true);
+                let res = unsafe { Box::from_raw(data as *mut Vec<Vec<ItemE>>) };
+                drop(res);
+                crate::ALLOCATOR.set_switch(false);
             },
             _ => panic!("invalid is_shuffle"),
         }
@@ -301,16 +316,16 @@ where
         self.vals.split_num.load(atomic::Ordering::SeqCst)
     }
 
-    fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
+    fn etake(&self, input: *mut u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
         self.take_(input ,should_take, have_take)
     }
     
-    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8) {
         
 		self.compute_start(call_seq, input, dep_info)
     }
 
-    fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
+    fn randomize_in_place(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
         self.randomize_in_place_(input, seed, num)
     }
 
@@ -348,20 +363,8 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), (Vec<Vec<Self::Item>>, Vec<Vec<bool>>)>>> {
         self.cache_space.clone()
-    }
-
-    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
-        match dep_info.dep_type() {
-            0 => {
-                self.narrow(call_seq, input, true)
-            },
-            1 => {
-                self.shuffle(call_seq, input, dep_info)
-            },
-            _ => panic!("Invalid is_shuffle")
-        }
     }
     
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
@@ -382,8 +385,8 @@ where
             let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
             op.compute(call_seq, input)
         };
-        let res_iter = Box::new(res_iter.map(|res_iter| 
-            Box::new(res_iter.map(move |(k, v)| v)) as Box<dyn Iterator<Item = _>>
+        let res_iter = Box::new(res_iter.map(|(bl_iter, blmarks)| 
+            (Box::new(bl_iter.map(move |(k, v)| v)) as Box<dyn Iterator<Item = _>>, blmarks)
         ));
 
         let key = call_seq.get_caching_doublet();
@@ -410,7 +413,7 @@ where
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     prev: Arc<dyn Op<Item = (K, V)>>,
     f: F,
-    cache_space: Arc<Mutex<HashMap<(usize, usize), Vec<Vec<(K, U)>>>>>,
+    cache_space: Arc<Mutex<HashMap<(usize, usize), (Vec<Vec<(K, U)>>, Vec<Vec<bool>>)>>>,
 }
 
 impl<K, V, U, F> Clone for MappedValues<K, V, U, F>
@@ -485,12 +488,19 @@ where
         }   
     }
 
-    fn call_free_res_enc(&self, res_ptr: *mut u8, is_enc: bool, dep_info: &DepInfo) {
+    fn call_free_res_enc(&self, data: *mut u8, marks: *mut u8, is_enc: bool, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 => self.free_res_enc(res_ptr, is_enc),
+            0 => self.free_res_enc(data, marks, is_enc),
             1 => {
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
-                shuf_dep.free_res_enc(res_ptr, is_enc);
+                shuf_dep.free_res_enc(data, is_enc);
+            },
+            24 | 25 | 26 | 27 => {
+                assert_eq!(marks as usize, 0usize);
+                crate::ALLOCATOR.set_switch(true);
+                let res = unsafe { Box::from_raw(data as *mut Vec<Vec<ItemE>>) };
+                drop(res);
+                crate::ALLOCATOR.set_switch(false);
             },
             _ => panic!("invalid is_shuffle"),
         }
@@ -524,16 +534,16 @@ where
         self.vals.split_num.load(atomic::Ordering::SeqCst)
     }
     
-    fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
+    fn etake(&self, input: *mut u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
         self.take_(input ,should_take, have_take)
     }
 
-    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8) {
         
 		self.compute_start(call_seq, input, dep_info)
     }
 
-    fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
+    fn randomize_in_place(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
         self.randomize_in_place_(input, seed, num)
     }
 
@@ -573,20 +583,8 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), (Vec<Vec<Self::Item>>, Vec<Vec<bool>>)>>> {
         self.cache_space.clone()
-    }
-
-    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
-        match dep_info.dep_type() {
-            0 => {
-                self.narrow(call_seq, input, true)
-            },
-            1 => {
-                self.shuffle(call_seq, input, dep_info)
-            },
-            _ => panic!("Invalid is_shuffle")
-        }
     }
     
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
@@ -612,9 +610,9 @@ where
             let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
             op.compute(call_seq, input)
         };
-        let res_iter = Box::new(res_iter.map(move |res_iter| {
+        let res_iter = Box::new(res_iter.map(move |(bl_iter, blmarks)| {
             let f = f.clone();
-            Box::new(res_iter.map(move |(k, v)| (k, f(v)))) as Box<dyn Iterator<Item = _>>
+            (Box::new(bl_iter.map(move |(k, v)| (k, f(v)))) as Box<dyn Iterator<Item = _>>, blmarks)
         }));
 
         let key = call_seq.get_caching_doublet();
@@ -640,7 +638,7 @@ where
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     prev: Arc<dyn Op<Item = (K, V)>>,
     f: F,    
-    cache_space: Arc<Mutex<HashMap<(usize, usize), Vec<Vec<(K, U)>>>>>,
+    cache_space: Arc<Mutex<HashMap<(usize, usize), (Vec<Vec<(K, U)>>, Vec<Vec<bool>>)>>>,
 }
 
 impl<K, V, U, F> Clone for FlatMappedValues<K, V, U, F>
@@ -715,12 +713,19 @@ where
         }   
     }
 
-    fn call_free_res_enc(&self, res_ptr: *mut u8, is_enc: bool, dep_info: &DepInfo) {
+    fn call_free_res_enc(&self, data: *mut u8, marks: *mut u8, is_enc: bool, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 => self.free_res_enc(res_ptr, is_enc),
+            0 => self.free_res_enc(data, marks, is_enc),
             1 => {
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
-                shuf_dep.free_res_enc(res_ptr, is_enc);
+                shuf_dep.free_res_enc(data, is_enc);
+            },
+            24 | 25 | 26 | 27 => {
+                assert_eq!(marks as usize, 0usize);
+                crate::ALLOCATOR.set_switch(true);
+                let res = unsafe { Box::from_raw(data as *mut Vec<Vec<ItemE>>) };
+                drop(res);
+                crate::ALLOCATOR.set_switch(false);
             },
             _ => panic!("invalid is_shuffle"),
         }
@@ -754,16 +759,16 @@ where
         self.vals.split_num.load(atomic::Ordering::SeqCst)
     }
 
-    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8) {
         
 		self.compute_start(call_seq, input, dep_info)
     }
 
-    fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
+    fn randomize_in_place(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
         self.randomize_in_place_(input, seed, num)
     }
 
-    fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
+    fn etake(&self, input: *mut u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
         self.take_(input ,should_take, have_take)
     }
 
@@ -801,20 +806,8 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), (Vec<Vec<Self::Item>>, Vec<Vec<bool>>)>>> {
         self.cache_space.clone()
-    }
-
-    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
-        match dep_info.dep_type() {
-            0 => {       //narrow
-                self.narrow(call_seq, input, true)
-            },
-            1 => {      //Shuffle write
-                self.shuffle(call_seq, input, dep_info)
-            },
-            _ => panic!("Invalid is_shuffle")
-        }
     }
 
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
@@ -841,9 +834,17 @@ where
             op.compute(call_seq, input)
         };
 
-        let res_iter = Box::new(res_iter.map(move |res_iter| {
+        let res_iter = Box::new(res_iter.map(move |(bl_iter, blmarks)| {
             let f = f.clone();
-            Box::new(res_iter.flat_map(move |(k, v)| f(v).map(move |x| (k.clone(), x)))) as Box<dyn Iterator<Item = _>>
+            if blmarks.is_empty() {
+                (Box::new(bl_iter.flat_map(move |(k, v)| f(v).map(move |x| (k.clone(), x)))) as Box<dyn Iterator<Item = _>>, blmarks)
+            } else {
+                (Box::new(bl_iter.zip(blmarks.into_iter())
+                    .filter(|(_, m)| *m)
+                    .map(|(x, _)| x)
+                    .flat_map(move |(k, v)| f(v).map(move |x| (k.clone(), x)))) as Box<dyn Iterator<Item = _>>, Vec::new())
+            }
+            
         }));
 
         let key = call_seq.get_caching_doublet();

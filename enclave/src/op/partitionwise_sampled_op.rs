@@ -10,7 +10,7 @@ where
     prev: Arc<dyn Op<Item = T>>,
     sampler: Arc<RwLock<Arc<dyn RandomSampler<T>>>>,
     preserves_partitioning: bool,
-    cache_space: Arc<Mutex<HashMap<(usize, usize), Vec<Vec<T>>>>>,
+    cache_space: Arc<Mutex<HashMap<(usize, usize), (Vec<Vec<T>>, Vec<Vec<bool>>)>>>,
 }
 
 impl<T> PartitionwiseSampled<T> 
@@ -84,12 +84,19 @@ where
         } 
     }
 
-    fn call_free_res_enc(&self, res_ptr: *mut u8, is_enc: bool, dep_info: &DepInfo) {
+    fn call_free_res_enc(&self, data: *mut u8, marks: *mut u8, is_enc: bool, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 => self.free_res_enc(res_ptr, is_enc),
+            0 => self.free_res_enc(data, marks, is_enc),
             1 => {
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
-                shuf_dep.free_res_enc(res_ptr, is_enc);
+                shuf_dep.free_res_enc(data, is_enc);
+            },
+            24 | 25 | 26 | 27 => {
+                assert_eq!(marks as usize, 0usize);
+                crate::ALLOCATOR.set_switch(true);
+                let res = unsafe { Box::from_raw(data as *mut Vec<Vec<ItemE>>) };
+                drop(res);
+                crate::ALLOCATOR.set_switch(false);
             },
             _ => panic!("invalid is_shuffle"),
         }
@@ -123,12 +130,12 @@ where
         self.vals.split_num.load(atomic::Ordering::SeqCst)
     }
 
-    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
+    fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8) {
         
 		self.compute_start(call_seq, input, dep_info)
     }
     
-    fn randomize_in_place(&self, input: *const u8, seed: Option<u64>, num: u64) -> *mut u8 {
+    fn randomize_in_place(&self, input: *mut u8, seed: Option<u64>, num: u64) -> *mut u8 {
         self.randomize_in_place_(input, seed, num)
     }
 
@@ -141,7 +148,7 @@ where
         *self.sampler.write().unwrap() = sampler;
     }
 
-    fn etake(&self, input: *const u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
+    fn etake(&self, input: *mut u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
         self.take_(input ,should_take, have_take)
     }
 
@@ -185,20 +192,8 @@ where
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
 
-    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), Vec<Vec<Self::Item>>>>> {
+    fn get_cache_space(&self) -> Arc<Mutex<HashMap<(usize, usize), (Vec<Vec<Self::Item>>, Vec<Vec<bool>>)>>> {
         self.cache_space.clone()
-    }
-
-    fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> *mut u8 {
-        match dep_info.dep_type() {
-            0 => {
-                self.narrow(call_seq, input, true)
-            },
-            1 => {
-                self.shuffle(call_seq, input, dep_info)
-            },
-            _ => panic!("Invalid is_shuffle"),
-        }
     }
 
     fn compute(&self, call_seq: &mut NextOpId, input: Input) -> ResIter<Self::Item> {
@@ -221,9 +216,13 @@ where
         };
 
         let sampler = self.sampler.read().unwrap().clone();
-        let res_iter = Box::new(res_iter.map(move |res_iter| {
+        let res_iter = Box::new(res_iter.map(move |(bl_iter, blmarks)| {
             let sampler_func = sampler.get_sampler(None);
-            Box::new(sampler_func(res_iter).into_iter()) as Box<dyn Iterator<Item = _>>
+            if blmarks.is_empty() {
+                (Box::new(sampler_func(bl_iter).into_iter()) as Box<dyn Iterator<Item = _>>, blmarks)
+            } else {
+                (Box::new(sampler_func(Box::new(bl_iter.zip(blmarks.into_iter()).filter(|(_, m)| *m).map(|(x, _)| x))).into_iter()) as Box<dyn Iterator<Item = _>>, Vec::new())
+            }
         }));
         
         let key = call_seq.get_caching_doublet();
