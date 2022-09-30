@@ -85,6 +85,7 @@ mod utils;
 #[global_allocator]
 static ALLOCATOR: Allocator = Allocator;
 static immediate_cout: bool = true;
+const NUM_PARTS: usize = 1;
 
 lazy_static! {
     static ref CACHE: OpCache = OpCache::new();

@@ -1,9 +1,9 @@
+use crate::*;
 use rand::Rng;
 use serde_derive::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
 use std::{collections::HashMap, env::temp_dir};
-use vega::*;
 
 fn parse_vector(line: String) -> Vec<f64> {
     line.split(' ')
@@ -77,7 +77,7 @@ pub fn kmeans_sec_0() -> Result<()> {
             //    .collect::<Vec<_>>();
             (closest_point(&p, &k_points_), (p, 1))
         }));
-        let point_stats = closest.reduce_by_key(Fn!(|(a, b)| merge_results(a, b)), 1);
+        let point_stats = closest.reduce_by_key(Fn!(|(a, b)| merge_results(a, b)), NUM_PARTS);
         let new_points = point_stats
             .map(Fn!(|pair: (usize, (Vec<f64>, i32))| (
                 pair.0,
@@ -140,7 +140,7 @@ pub fn kmeans_unsec_0() -> Result<()> {
     while temp_dist > converge_dist && iter < 5 {
         let k_points_c = k_points.clone();
         let closest = data_rdd.map(Fn!(move |p| { (closest_point(&p, &k_points_c), (p, 1)) }));
-        let point_stats = closest.reduce_by_key(Fn!(|(a, b)| merge_results(a, b)), 1);
+        let point_stats = closest.reduce_by_key(Fn!(|(a, b)| merge_results(a, b)), NUM_PARTS);
         let new_points = point_stats
             .map(Fn!(|pair: (usize, (Vec<f64>, i32))| (
                 pair.0,

@@ -1,7 +1,7 @@
+use crate::*;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::time::Instant;
-use vega::*;
 
 fn custom_split_nodes_text_file(
     node: (usize, usize, Option<String>),
@@ -115,7 +115,7 @@ pub fn dijkstra_sec_0() -> Result<()> {
             }
             Box::new(res.into_iter()) as Box<dyn Iterator<Item = _>>
         }));
-        let reducer = mapper.reduce_by_key(Fn!(|(x, y)| min_distance(x, y)), 1);
+        let reducer = mapper.reduce_by_key(Fn!(|(x, y)| min_distance(x, y)), NUM_PARTS);
         nodes = reducer.map(Fn!(|node| custom_split_nodes_iterative(node)));
         nodes.cache();
         new = nodes
@@ -197,7 +197,7 @@ pub fn dijkstra_unsec_0() -> Result<()> {
             }
             Box::new(res.into_iter()) as Box<dyn Iterator<Item = _>>
         }));
-        let reducer = mapper.reduce_by_key(Fn!(|(x, y)| min_distance(x, y)), 1);
+        let reducer = mapper.reduce_by_key(Fn!(|(x, y)| min_distance(x, y)), NUM_PARTS);
         nodes = reducer.map(Fn!(|node| custom_split_nodes_iterative(node)));
         //result = nodes.collect().unwrap();
         //nodes = sc.parallelize(result.clone(), vec![], fe_mp.clone(), fd_mp.clone(), 1);

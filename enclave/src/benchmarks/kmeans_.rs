@@ -77,7 +77,7 @@ pub fn kmeans_sec_0_(tail_info: &mut TailCompInfo) -> Result<()> {
         //    .collect::<Vec<_>>();
         (closest_point(&p, &k_points_), (p, 1))
     }));
-    let point_stats = closest.reduce_by_key(Fn!(|(a, b)| merge_results(a, b)), 1);
+    let point_stats = closest.reduce_by_key(Fn!(|(a, b)| merge_results(a, b)), NUM_PARTS);
     let new_points = point_stats
         .map(Fn!(|pair: (usize, (Vec<f64>, i32))| (
             pair.0,

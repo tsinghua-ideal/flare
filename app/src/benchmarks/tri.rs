@@ -1,8 +1,8 @@
+use crate::*;
 use rand::Rng;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
-use vega::*;
 
 pub fn triangle_counting_sec_0() -> Result<()> {
     let sc = Context::new()?;
@@ -24,16 +24,16 @@ pub fn triangle_counting_sec_0() -> Result<()> {
             true => edge,
             false => (edge.1, edge.0),
         }))
-        .distinct(); //7
+        .distinct();
     graph.cache();
     let count = graph
-        .join(graph.clone(), 1) //8, 9
+        .join(graph.clone(), NUM_PARTS) //8, 9
         .key_by(Fn!(|item: &(u32, (u32, u32))| item.1)) //10
         .join(
             graph
                 .clone() //12, 13
                 .map(Fn!(|edge| (edge, 1 as i32))), //11
-            1,
+            NUM_PARTS,
         )
         .secure_count()
         .unwrap();
@@ -69,9 +69,9 @@ pub fn triangle_counting_unsec_0() -> Result<()> {
         .distinct();
     graph.cache();
     let count = graph
-        .join(graph.clone(), 1)
+        .join(graph.clone(), NUM_PARTS)
         .key_by(Fn!(|item: &(u32, (u32, u32))| item.1))
-        .join(graph.clone().map(Fn!(|edge| (edge, 1 as i32))), 1)
+        .join(graph.clone().map(Fn!(|edge| (edge, 1 as i32))), NUM_PARTS)
         .count()
         .unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;

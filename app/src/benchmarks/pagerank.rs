@@ -1,7 +1,7 @@
+use crate::*;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::time::Instant;
-use vega::*;
 
 // secure mode
 pub fn pagerank_sec_0() -> Result<()> {
@@ -24,23 +24,22 @@ pub fn pagerank_sec_0() -> Result<()> {
             let parts = line.split(" ").collect::<Vec<_>>();
             (parts[0].to_string(), parts[1].to_string())
         }))
-        .distinct_with_num_partitions(1)
-        .group_by_key(1);
+        .distinct_with_num_partitions(NUM_PARTS)
+        .group_by_key(NUM_PARTS);
     links.cache();
     let mut ranks = links.map_values(Fn!(|_| 1.0));
 
     for _ in 0..iters {
-        let contribs =
-            links
-                .join(ranks, 1)
-                .values()
-                .flat_map(Fn!(|(urls, rank): (Vec<String>, f64)| {
-                    let size = urls.len() as f64;
-                    Box::new(urls.into_iter().map(move |url| (url, rank / size)))
-                        as Box<dyn Iterator<Item = _>>
-                }));
+        let contribs = links
+            .join(ranks, NUM_PARTS)
+            .values()
+            .flat_map(Fn!(|(urls, rank): (Vec<String>, f64)| {
+                let size = urls.len() as f64;
+                Box::new(urls.into_iter().map(move |url| (url, rank / size)))
+                    as Box<dyn Iterator<Item = _>>
+            }));
         ranks = contribs
-            .reduce_by_key(Fn!(|(x, y)| x + y), 1)
+            .reduce_by_key(Fn!(|(x, y)| x + y), NUM_PARTS)
             .map_values(Fn!(|v| 0.15 + 0.85 * v));
     }
 
@@ -85,23 +84,22 @@ pub fn pagerank_unsec_0() -> Result<()> {
                 (parts[0].to_string(), parts[1].to_string())
             })) as Box<dyn Iterator<Item = _>>
         }))
-        .distinct_with_num_partitions(1)
-        .group_by_key(1);
+        .distinct_with_num_partitions(NUM_PARTS)
+        .group_by_key(NUM_PARTS);
     links.cache();
     let mut ranks = links.map_values(Fn!(|_| 1.0));
 
     for _ in 0..iters {
-        let contribs =
-            links
-                .join(ranks, 1)
-                .values()
-                .flat_map(Fn!(|(urls, rank): (Vec<String>, f64)| {
-                    let size = urls.len() as f64;
-                    Box::new(urls.into_iter().map(move |url| (url, rank / size)))
-                        as Box<dyn Iterator<Item = _>>
-                }));
+        let contribs = links
+            .join(ranks, NUM_PARTS)
+            .values()
+            .flat_map(Fn!(|(urls, rank): (Vec<String>, f64)| {
+                let size = urls.len() as f64;
+                Box::new(urls.into_iter().map(move |url| (url, rank / size)))
+                    as Box<dyn Iterator<Item = _>>
+            }));
         ranks = contribs
-            .reduce_by_key(Fn!(|(x, y)| x + y), 1)
+            .reduce_by_key(Fn!(|(x, y)| x + y), NUM_PARTS)
             .map_values(Fn!(|v| 0.15 + 0.85 * v));
     }
 

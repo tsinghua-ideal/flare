@@ -1,10 +1,10 @@
+use crate::*;
 use deepsize::DeepSizeOf;
 use rand::Rng;
 use rand_distr::{Distribution, Normal};
 use serde_derive::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
-use vega::*;
 
 #[derive(Serialize, Deserialize, DeepSizeOf, Default, Clone, Debug)]
 pub struct Point {

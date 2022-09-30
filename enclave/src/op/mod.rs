@@ -1105,7 +1105,7 @@ pub trait Op: OpBase + 'static {
             //another version of parallel_control, there are no decryption step
             match std::mem::take(&mut call_seq.para_range) {
                 Some((b, e)) => {
-                    let r = e - b;
+                    let r = e.saturating_sub(b);
                     if r == 0 {
                         Box::new(vec![].into_iter()) 
                     } else {
@@ -1128,7 +1128,7 @@ pub trait Op: OpBase + 'static {
                         let cache_space = self.get_cache_space();
                         let mut cache_space = cache_space.lock().unwrap();
                         let entry = cache_space.get_mut(&key).unwrap();
-                        call_seq.para_range = Some((0, entry.len() - 1));
+                        call_seq.para_range = Some((0, entry.len().saturating_sub(1)));
                         entry.pop().unwrap()
                     };
                     call_seq.sample_len = sample_data.len();
@@ -1231,7 +1231,11 @@ pub trait Op: OpBase + 'static {
     fn parallel_control(&self, call_seq: &mut NextOpId, data_enc: &Vec<ItemE>) -> ResIter<Self::Item> {
         match std::mem::take(&mut call_seq.para_range) {
             Some((b, e)) => {
-                let mut data = data_enc[b..e].iter().map(|x| ser_decrypt::<Vec<Self::Item>>(&x.clone())).collect::<Vec<_>>();
+                let mut data = if let Some(data_enc) = data_enc.get(b..e) {
+                    data_enc.iter().map(|x| ser_decrypt::<Vec<Self::Item>>(&x.clone())).collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
                 if call_seq.is_step_para.0 ^ call_seq.is_step_para.1 {
                     
                     let key = (call_seq.get_cur_rdd_id(), call_seq.get_part_id());
@@ -1255,7 +1259,11 @@ pub trait Op: OpBase + 'static {
             None => {
                 //for profile
                 crate::ALLOCATOR.reset_alloc_cnt();
-                let data = ser_decrypt::<Vec<Self::Item>>(&data_enc[0].clone());
+                let data = if data_enc.is_empty() {
+                    Vec::new()
+                } else {
+                    ser_decrypt::<Vec<Self::Item>>(&data_enc[0].clone())
+                };
                 let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
                 call_seq.sample_len = data.len();
                 let alloc_cnt_ratio = alloc_cnt as f64/(call_seq.sample_len as f64);
@@ -1292,7 +1300,7 @@ pub trait Op: OpBase + 'static {
 
     fn spawn_dec_nar_thread(&self, call_seq: &NextOpId, input: Input, handlers: &mut Vec<JoinHandle<Vec<Vec<Self::Item>>>>, only_dec: bool) {
         let (s, len) = call_seq.para_range.as_ref().unwrap();
-        let r = (len - s).saturating_sub(1) / MAX_THREAD + 1;
+        let r = (len.saturating_sub(*s)).saturating_sub(1) / MAX_THREAD + 1;
         let mut b = *s;
         let mut e = std::cmp::min(b + r, *len);
         for _ in 0..MAX_THREAD {
@@ -1317,7 +1325,7 @@ pub trait Op: OpBase + 'static {
 
     fn spawn_dec_nar_enc_thread(&self, call_seq: &NextOpId, input: Input, handlers: &mut Vec<JoinHandle<Vec<ItemE>>>, only_dec: bool) {
         let (s, len) = call_seq.para_range.as_ref().unwrap();
-        let r = (len - s).saturating_sub(1) / MAX_THREAD + 1;
+        let r = (len.saturating_sub(*s)).saturating_sub(1) / MAX_THREAD + 1;
         let mut b = *s;
         let mut e = std::cmp::min(b + r, *len);
         for _ in 0..MAX_THREAD {

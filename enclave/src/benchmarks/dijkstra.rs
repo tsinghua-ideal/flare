@@ -115,7 +115,7 @@ pub fn dijkstra_sec_0() -> Result<()> {
         }
         Box::new(res.into_iter()) as Box<dyn Iterator<Item = _>>
     }));
-    let reducer = mapper.reduce_by_key(Fn!(|(x, y)| min_distance(x, y)), 1);
+    let reducer = mapper.reduce_by_key(Fn!(|(x, y)| min_distance(x, y)), NUM_PARTS);
     nodes = reducer.map(Fn!(|node| custom_split_nodes_iterative(node)));
     
     new = nodes

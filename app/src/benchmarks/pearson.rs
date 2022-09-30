@@ -1,7 +1,7 @@
+use crate::*;
 use rand::Rng;
 use std::path::PathBuf;
 use std::time::Instant;
-use vega::*;
 
 // secure mode
 pub fn pearson_sec_0() -> Result<()> {

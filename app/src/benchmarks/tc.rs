@@ -1,8 +1,8 @@
+use crate::*;
 use rand::Rng;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
-use vega::*;
 
 pub fn transitive_closure_sec_0() -> Result<()> {
     //may lead to core dump, but don't know why
@@ -29,11 +29,11 @@ pub fn transitive_closure_sec_0() -> Result<()> {
         old_count = next_count;
         tc = tc
             .union(
-                tc.join(edges.clone(), 1)
+                tc.join(edges.clone(), NUM_PARTS)
                     .map(Fn!(|x: (u32, (u32, u32))| (x.1 .1, x.1 .0)))
                     .into(),
             )
-            .distinct_with_num_partitions(1);
+            .distinct_with_num_partitions(NUM_PARTS);
         tc.cache();
         next_count = tc.secure_count().unwrap();
         iter += 1;
@@ -63,7 +63,7 @@ pub fn transitive_closure_sec_1() -> Result<()> {
     let data_enc = batch_encrypt(&hset.into_iter().collect::<Vec<_>>());
 
     let now = Instant::now();
-    let mut tc = sc.parallelize(vec![], data_enc.clone(), 1);
+    let mut tc = sc.parallelize(vec![], data_enc.clone(), NUM_PARTS);
     let edges = tc.map(Fn!(|x: (u32, u32)| (x.1, x.0)));
 
     let mut old_count = 0;
@@ -72,11 +72,11 @@ pub fn transitive_closure_sec_1() -> Result<()> {
         old_count = next_count;
         tc = tc
             .union(
-                tc.join(edges.clone(), 1)
+                tc.join(edges.clone(), NUM_PARTS)
                     .map(Fn!(|x: (u32, (u32, u32))| (x.1 .1, x.1 .0)))
                     .into(),
             )
-            .distinct_with_num_partitions(1);
+            .distinct_with_num_partitions(NUM_PARTS);
         tc.cache();
         next_count = tc.secure_count().unwrap();
         println!("next_count = {:?}", next_count);
@@ -115,11 +115,11 @@ pub fn transitive_closure_unsec_0() -> Result<()> {
         old_count = next_count;
         tc = tc
             .union(
-                tc.join(edges.clone(), 1)
+                tc.join(edges.clone(), NUM_PARTS)
                     .map(Fn!(|x: (u32, (u32, u32))| (x.1 .1, x.1 .0)))
                     .into(),
             )
-            .distinct_with_num_partitions(1);
+            .distinct_with_num_partitions(NUM_PARTS);
         tc.cache();
         next_count = tc.count().unwrap();
         iter += 1;
@@ -149,7 +149,7 @@ pub fn transitive_closure_unsec_1() -> Result<()> {
     let data = hset.into_iter().collect::<Vec<_>>();
 
     let now = Instant::now();
-    let mut tc = sc.parallelize(data, vec![], 1);
+    let mut tc = sc.parallelize(data, vec![], NUM_PARTS);
     // Linear transitive closure: each round grows paths by one edge,
     // by joining the graph's edges with the already-discovered paths.
     // e.g. join the path (y, z) from the TC with the edge (x, y) from
@@ -165,7 +165,7 @@ pub fn transitive_closure_unsec_1() -> Result<()> {
         old_count = next_count;
         tc = tc
             .union(
-                tc.join(edges.clone(), 1)
+                tc.join(edges.clone(), NUM_PARTS)
                     .map(Fn!(|x: (u32, (u32, u32))| (x.1 .1, x.1 .0)))
                     .into(),
             )
