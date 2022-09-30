@@ -27,13 +27,13 @@ pub fn triangle_counting_sec_0() -> Result<()> {
         .distinct(); 
     
     let count = graph
-        .join(graph.clone(), 1) //8, 9
+        .join(graph.clone(), NUM_PARTS) //8, 9
         .key_by(Fn!(|item: &(u32, (u32, u32))| item.1)) //10
         .join(
             graph
                 .clone() //12, 13
                 .map(Fn!(|edge| (edge, 1 as i32))), //11
-            1,
+            NUM_PARTS,
         )
         .count()
         .unwrap();

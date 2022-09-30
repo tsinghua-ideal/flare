@@ -29,11 +29,11 @@ pub fn transitive_closure_sec_0() -> Result<()> {
     old_count = next_count;
     tc = tc
         .union(
-            tc.join(edges.clone(), 1)
+            tc.join(edges.clone(), NUM_PARTS)
                 .map(Fn!(|x: (u32, (u32, u32))| (x.1 .1, x.1 .0)))
                 .into(),
         )
-        .distinct_with_num_partitions(1);
+        .distinct_with_num_partitions(NUM_PARTS);
 
     next_count = tc.count().unwrap();
 
@@ -63,7 +63,7 @@ pub fn transitive_closure_sec_1() -> Result<()> {
 
 
 
-    let mut tc = sc.make_op(1);
+    let mut tc = sc.make_op(NUM_PARTS);
     let edges = tc.map(Fn!(|x: (u32, u32)| (x.1, x.0)));
 
     let mut old_count = 0;
@@ -72,11 +72,11 @@ pub fn transitive_closure_sec_1() -> Result<()> {
     old_count = next_count;
     tc = tc
         .union(
-            tc.join(edges.clone(), 1)
+            tc.join(edges.clone(), NUM_PARTS)
                 .map(Fn!(|x: (u32, (u32, u32))| (x.1 .1, x.1 .0)))
                 .into(),
         )
-        .distinct_with_num_partitions(1);
+        .distinct_with_num_partitions(NUM_PARTS);
 
     next_count = tc.count().unwrap();
 

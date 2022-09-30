@@ -30,13 +30,13 @@ pub fn mm_sec_0() -> Result<()> {
         .map(Fn!(|b: ((u32, u32), f64)| (b.0 .0, (b.0 .1, b.1))));
 
     let temp = ma
-        .join(mb, 1)
+        .join(mb, NUM_PARTS)
         .map(Fn!(|n: (u32, ((u32, f64), (u32, f64)))| (
             (n.1 .0 .0, n.1 .1 .0),
             n.1 .0 .1 * n.1 .1 .1
         )));
 
-    let mc = temp.reduce_by_key(Fn!(|(x, y)| x + y), 1);
+    let mc = temp.reduce_by_key(Fn!(|(x, y)| x + y), NUM_PARTS);
 
     let output = mc.count().unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;

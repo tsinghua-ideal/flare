@@ -1766,7 +1766,6 @@ pub trait Op: OpBase + 'static {
             None => {
                 //for profile
                 crate::ALLOCATOR.reset_alloc_cnt();
-                
                 let data = if data_enc.is_empty() {
                     Vec::new()
                 } else {
@@ -1777,6 +1776,7 @@ pub trait Op: OpBase + 'static {
                 } else {
                     ser_decrypt::<Vec<bool>>(&marks_enc[0].clone())
                 };
+
                 let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
                 call_seq.sample_len = data.len();
                 let alloc_cnt_ratio = alloc_cnt as f64/(call_seq.sample_len as f64);

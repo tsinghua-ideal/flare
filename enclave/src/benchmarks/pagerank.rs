@@ -24,15 +24,14 @@ pub fn pagerank_sec_0() -> Result<()> {
             let parts = line.split(" ").collect::<Vec<_>>();
             (parts[0].to_string(), parts[1].to_string())
         }))
-        .distinct_with_num_partitions(1)
-        .group_by_key(1);
+        .distinct_with_num_partitions(NUM_PARTS)
+        .group_by_key(NUM_PARTS);
     
     let mut ranks = links.map_values(Fn!(|_| 1.0));
 
     sc.enter_loop();
-        let contribs =
-            links
-                .join(ranks, 1)
+        let contribs = links
+                .join(ranks, NUM_PARTS)
                 .values()
                 .flat_map(Fn!(|(urls, rank): (Vec<String>, f64)| {
                     let size = urls.len() as f64;
@@ -40,7 +39,7 @@ pub fn pagerank_sec_0() -> Result<()> {
                         as Box<dyn Iterator<Item = _>>
                 }));
         ranks = contribs
-            .reduce_by_key(Fn!(|(x, y)| x + y), 1)
+            .reduce_by_key(Fn!(|(x, y)| x + y), NUM_PARTS)
             .map_values(Fn!(|v| 0.15 + 0.85 * v));
     sc.leave_loop();
 

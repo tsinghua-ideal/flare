@@ -24,6 +24,8 @@ use vega::*;
 pub mod benchmarks;
 use benchmarks::*;
 
+const NUM_PARTS: usize = 1;
+
 macro_rules! numin {
     () => {{
         let mut input = String::new();
