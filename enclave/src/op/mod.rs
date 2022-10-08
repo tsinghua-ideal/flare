@@ -24,10 +24,12 @@ use deepsize::DeepSizeOf;
 use sgx_types::*;
 use rand::{Rng, SeedableRng};
 
-use crate::{CACHE, Fn, OP_MAP, CNT_PER_PARTITION};
+use crate::aggregator::Aggregator;
+use crate::{CACHE, Fn, OP_MAP};
 use crate::basic::{AnyData, Arc as SerArc, Data, Func, SerFunc};
 use crate::custom_thread::PThread;
 use crate::dependency::{Dependency, OneToOneDependency, ShuffleDependencyTrait};
+use crate::obliv_comp::{VALID_BIT, stage_comm, obliv_global_filter_stage1, obliv_global_filter_stage2, obliv_global_filter_stage3, obliv_global_filter_stage3_kv, obliv_agg_stage1};
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use crate::utils;
@@ -246,141 +248,109 @@ fn get_text_loc_id() -> u64 {
     id
 }
 
-// prepare for column step 2, shuffle (transpose)
-pub fn column_sort_step_2<T>(tid: u64, sorted_data: Vec<T>, max_len: usize, num_output_splits: usize) -> Vec<Vec<ItemE>>
-where
-    T: Data,
-{
-    let mut buckets_enc = create_enc();
-
-    let mut i = 0;
-    let mut buckets = vec![Vec::with_capacity(sorted_data.len().saturating_sub(1) / num_output_splits + 1); num_output_splits];
-
-    for kc in sorted_data {
-        buckets[i % num_output_splits].push(kc);
-        i += 1;
+pub fn read_sorted_bucket<T: Data>(buckets_enc: &Vec<Vec<ItemE>>, outer_parallel: usize) -> (Vec<Vec<Vec<T>>>, usize) {
+    let mut parts = Vec::with_capacity(buckets_enc.len());
+    let mut max_len = 0;
+    for bucket_enc in buckets_enc {
+        let bucket = Box::new(bucket_enc.clone().into_iter().map(|bl_enc| ser_decrypt::<Vec<T>>(&bl_enc)));
+        let (sub_parts, local_max_len) = compose_subpart(bucket, outer_parallel, false, |a, b| Ordering::Equal);
+        //sub_parts is already sorted
+        max_len = std::cmp::max(max_len, local_max_len);
+        parts.push(sub_parts);
     }
-
-    for bucket in buckets {
-        let bucket_enc = batch_encrypt(&bucket, true);
-        crate::ALLOCATOR.set_switch(true);
-        buckets_enc.push(bucket_enc);
-        crate::ALLOCATOR.set_switch(false);
-    }
-    buckets_enc
+    (parts, max_len)
 }
 
-pub fn column_sort_step_4_6_8<T>(tid: u64, sorted_data: Vec<T>, cnt_per_partition: usize, step: u8, num_output_splits: usize) -> Vec<Vec<ItemE>>
+pub fn compose_subpart<T, F>(data: Box<dyn Iterator<Item = Vec<T>>>, outer_parallel: usize, need_sort: bool, cmp_f: F) -> (Vec<Vec<T>>, usize) 
 where
     T: Data,
-{
-    let chunk_size = cnt_per_partition.saturating_sub(1) / num_output_splits + 1;
-
-    crate::ALLOCATOR.set_switch(true);
-    let mut buckets_enc = vec![Vec::new(); num_output_splits];
-    crate::ALLOCATOR.set_switch(false);
-
-    for (i, bucket) in sorted_data.chunks(chunk_size).enumerate() {
-        let bucket_enc = batch_encrypt(bucket, true);
-        crate::ALLOCATOR.set_switch(true);
-        buckets_enc[i] = bucket_enc;
-        crate::ALLOCATOR.set_switch(false);
-    }
-    buckets_enc
-}
-
-pub fn combined_column_sort_step_2<T, F>(tid: u64, input: Input, op_id: OpId, part_id: usize, num_output_splits: usize, max_value: T, cmp_f: F) -> *mut u8
-where
-    T: Data, 
     F: FnMut(&T, &T) -> Ordering + Clone,
 {
-    let data_enc = input.get_enc_data::<Vec<ItemE>>();
-
-    let mut data = Vec::new();
+    let mut sub_parts: Vec<Vec<T>> = Vec::new();
+    let mut sub_part_size = 0;
     let mut max_len = 0;
-    let mut sub_part: Vec<T> = Vec::new();
-    for block_enc in data_enc {
-        sub_part.append(&mut ser_decrypt(&block_enc.clone()));
-        if sub_part.deep_size_of() > CACHE_LIMIT/input.get_parallel() {
+    for mut bl in data {
+        let block_size = bl.deep_size_of();
+        let mut should_create_new = true;
+        if let Some(sub_part) = sub_parts.last_mut() {
+            if sub_part_size + block_size <= CACHE_LIMIT/MAX_THREAD/outer_parallel {
+                sub_part.append(&mut bl);
+                sub_part_size += block_size;
+                should_create_new = false;
+            }
+        }
+        if should_create_new {
+            max_len = std::cmp::max(sub_parts.last().map_or(0, |sub_part| sub_part.len()), max_len);
+            if need_sort && sub_parts.len() > 0 {
+                sub_parts.last_mut().unwrap().sort_by(cmp_f.clone());
+            }
+            sub_parts.push(bl);
+            sub_part_size = block_size;
+        }
+    }
+    max_len = std::cmp::max(sub_parts.last().map_or(0, |sub_part| sub_part.len()), max_len);
+    if need_sort && sub_parts.len() > 0 {
+        sub_parts.last_mut().unwrap().sort_by(cmp_f);
+    }
+    (sub_parts, max_len)
+}
+
+pub fn split_with_interval<T, F>(mut data: Vec<T>, cache_limit: usize, cmp_f: F) -> (Vec<Vec<T>>, usize) 
+where
+    T: Data,
+    F: FnMut(&T, &T) -> Ordering + Clone,
+{
+    let mut sub_parts = Vec::new();
+    let mut max_len = 0;
+    let mut sub_part = Vec::new();
+    while !data.is_empty() {
+        let b = data.len().saturating_sub(MAX_ENC_BL);
+        let mut block = data.split_off(b);
+        sub_part.append(&mut block);
+        if sub_part.deep_size_of() > cache_limit {
             sub_part.sort_unstable_by(cmp_f.clone());
             max_len = std::cmp::max(max_len, sub_part.len());
-            data.push(sub_part);
+            sub_parts.push(sub_part);
             sub_part = Vec::new();
         }
     }
     if !sub_part.is_empty() {
         sub_part.sort_unstable_by(cmp_f.clone());
         max_len = std::cmp::max(max_len, sub_part.len());
-        data.push(sub_part);
+        sub_parts.push(sub_part);
     }
-
-    if max_len == 0 {
-        assert!(CNT_PER_PARTITION.lock().unwrap().insert((op_id, part_id), 0).is_none());
-        //although the type is incorrect, it is ok because it is empty.
-        crate::ALLOCATOR.set_switch(true);
-        let buckets_enc: Vec<Vec<ItemE>> = Vec::new();
-        crate::ALLOCATOR.set_switch(false);
-        to_ptr(buckets_enc)
-    } else {
-        let mut sort_helper = SortHelper::new(data, max_len, max_value, true, cmp_f);
-        sort_helper.sort();
-        let (sorted_data, num_real_elem) = sort_helper.take();
-        assert!(CNT_PER_PARTITION.lock().unwrap().insert((op_id, part_id), num_real_elem).is_none());
-        let buckets_enc = column_sort_step_2(tid, sorted_data, max_len, num_output_splits);
-        to_ptr(buckets_enc)
-    }
+    (sub_parts, max_len)
 }
 
-pub fn combined_column_sort_step_4_6_8<T, R, F, G>(tid: u64, input: Input, dep_info: &DepInfo, op_id: OpId, part_id: usize, num_output_splits: usize, max_value: T, cmp_f: F, mut filter_f: G) -> *mut u8
+//the results are encrypted and stay outside enclave
+pub fn filter_3_agg_1<K, V>(buckets_enc: &Vec<Vec<ItemE>>, outer_parallel: usize, part_id: usize, partitioner: &Box<dyn Partitioner>) -> (Vec<ItemE>, Vec<Vec<ItemE>>) 
 where
-    T: Data, 
-    R: Data,
-    F: FnMut(&T, &T) -> Ordering + Clone,
-    G: FnMut(Vec<T>) -> Vec<R> + Clone,
+    K: Data + Eq + Hash + Ord,
+    V: Data,
 {
-    let data_enc_ref = input.get_enc_data::<Vec<Vec<ItemE>>>();
-    let mut max_len = 0;
-    let mut data = Vec::with_capacity(data_enc_ref.len());
-    for part_enc in data_enc_ref {
-        let mut part = Vec::new();
-        let mut sub_part: Vec<T> = Vec::new();
-        for block_enc in part_enc.iter() {
-            //we can derive max_len from the first sub partition in each partition
-            sub_part.append(&mut ser_decrypt(&block_enc.clone()));
-            if sub_part.deep_size_of() > CACHE_LIMIT/input.get_parallel() {
-                max_len = std::cmp::max(max_len, sub_part.len());
-                part.push(sub_part);
-                sub_part = Vec::new();
-            }
-        }
-        if !sub_part.is_empty() {
-            max_len = std::cmp::max(max_len, sub_part.len());
-            part.push(sub_part);
-        }
-        data.push(part);
+    let (parts, max_len) = read_sorted_bucket::<((K, V), u64)>(buckets_enc, outer_parallel);
+    let part = obliv_global_filter_stage3_kv(parts, max_len);
+    //group count
+    let create_combiner = Box::new(|v: i64| v);
+    let merge_value = Box::new(move |(buf, v)| { buf + v });
+    let merge_combiners = Box::new(move |(b1, b2)| { b1 + b2 });
+    let aggregator = Arc::new(Aggregator::new(create_combiner, merge_value, merge_combiners));
+
+    let buckets = obliv_agg_stage1(
+        part.iter()
+            .map(|(k, _)| ((k.clone(), 1i64), 1 << VALID_BIT))
+            .collect::<Vec<_>>(),
+        part_id,
+        true,
+        &aggregator,
+        partitioner,
+    );
+    let mut buckets_enc = create_enc();
+    for bucket in buckets {
+        merge_enc(&mut buckets_enc, &batch_encrypt(&bucket, false));
     }
-    if max_len == 0 {
-        if dep_info.dep_type() == 23 || dep_info.dep_type() == 27 {
-            CNT_PER_PARTITION.lock().unwrap().remove(&(op_id, part_id)).unwrap();
-        }
-        res_enc_to_ptr(Vec::<Vec<ItemE>>::new())
-    } else {
-        let mut sort_helper = SortHelper::new_with(data, max_len, max_value, true, cmp_f);
-        sort_helper.sort();
-        let (sorted_data, num_real_elem) = sort_helper.take();
-        let cnt_per_partition = *CNT_PER_PARTITION.lock().unwrap().get(&(op_id, part_id)).unwrap();
-        let buckets_enc = match dep_info.dep_type() {
-            21 | 25 => column_sort_step_4_6_8(tid, sorted_data, cnt_per_partition, dep_info.dep_type(), num_output_splits),
-            22 | 26 => column_sort_step_4_6_8(tid, sorted_data, cnt_per_partition, dep_info.dep_type(), 2),
-            23 | 27 => {
-                CNT_PER_PARTITION.lock().unwrap().remove(&(op_id, part_id)).unwrap();
-                let sorted_data = filter_f(sorted_data);
-                column_sort_step_4_6_8(tid, sorted_data, cnt_per_partition, dep_info.dep_type(), 2)
-            }
-            _ => unreachable!(),
-        };
-        to_ptr(buckets_enc)
-    }
+    let mut part_enc = batch_encrypt(&part, true);
+    (part_enc, buckets_enc)
 }
 
 //require each vec (ItemE) is sorted
@@ -656,6 +626,9 @@ where
     }
 
     pub fn take(&mut self) -> (Vec<T>, usize) {
+        if self.data.is_empty() {
+            return (Vec::new(), 0);
+        }
         let num_padding = self.num_padding.load(atomic::Ordering::SeqCst);
         let num_real_elem = self.data.len() * self.max_len - num_padding;
         let num_real_sub_part = self.data.len() - num_padding / self.max_len;
@@ -769,7 +742,7 @@ impl DepInfo {
     }
 
     /// 0 for narrow, 1 for shuffle write, 2 for shuffle read, 3, 4 for action
-    /// 20-23, 24-27 for first/second column sort, 28 for aggregate again, 29 for group by and join
+    /// 20-22 for shuffle_op, 20-25 for join_op , 26/27 for global filter
     pub fn dep_type(&self) -> u8 {
         self.is_shuffle
     }
@@ -1041,6 +1014,7 @@ impl OpId {
 #[derive(Clone, Debug)]
 pub struct NextOpId {
     tid: u64,
+    pub stage_id: usize,
     rdd_ids: Vec<usize>,
     op_ids: Vec<OpId>,
     part_ids: Vec<usize>,
@@ -1058,8 +1032,9 @@ pub struct NextOpId {
     pub should_filter: (bool, bool),
 }
 
-impl<'a> NextOpId {
-    pub fn new(tid: u64, 
+impl NextOpId {
+    pub fn new(tid: u64,
+        stage_id: usize,
         rdd_ids: Vec<usize>, 
         op_ids: Vec<OpId>, 
         part_ids: Vec<usize>, 
@@ -1070,6 +1045,7 @@ impl<'a> NextOpId {
         let is_shuffle = dep_info.is_shuffle == 1;
         NextOpId {
             tid,
+            stage_id,
             rdd_ids,
             op_ids,
             part_ids,
@@ -1092,7 +1068,7 @@ impl<'a> NextOpId {
         self.op_ids[self.cur_idx]
     }
     
-    fn get_part_id(&self) -> usize {
+    pub fn get_part_id(&self) -> usize {
         self.part_ids[self.cur_idx]
     }
 
@@ -1492,8 +1468,8 @@ pub trait Op: OpBase + 'static {
             1 => {
                 self.shuffle(call_seq, input, dep_info)
             },
-            24 | 25 | 26 | 27 => {
-                self.sort(call_seq, input, dep_info)
+            26 | 27 => {
+                self.remove_dummy(call_seq, input, dep_info)
             },
             _ => panic!("Invalid is_shuffle"),
         }
@@ -2018,21 +1994,38 @@ pub trait Op: OpBase + 'static {
         (result_ptr, 0usize as *mut u8)
     }
 
-    fn sort(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8) {
-        let max_value = (Default::default(), false);
-        let cmp_f = |a: &(Self::Item, bool), b: &(Self::Item, bool)| {
+    fn remove_dummy(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8) {
+        //since the invalid ones will be filtered out, and they are sorted to the end
+        //we do no not need to use DUMMY_BIT, directly use the VALID_BIT=0
+        let max_value = (Default::default(), 0);
+        let cmp_f = |a: &(Self::Item, u64), b: &(Self::Item, u64)| {
             a.1.cmp(&b.1).reverse()  //sort dummy value to the end
         };
+        let num_splits = self.number_of_splits();
+        let part_id = call_seq.get_part_id();
+
         match dep_info.dep_type() {
-            24 => {
-                (combined_column_sort_step_2(call_seq.tid, input, self.get_op_id(), call_seq.get_part_id(), self.number_of_splits(), max_value, cmp_f), 0 as *mut u8)
+            26 => {
+                let data_enc_len = input.get_enc_data::<Vec<ItemE>>().len();
+                let data_iter = Box::new((0..data_enc_len).map(move |i| input.get_enc_data::<Vec<ItemE>>()[i].clone()).map(|bl_enc| {
+                    ser_decrypt::<Vec<(Self::Item, bool)>>(&bl_enc).into_iter()
+                        .map(|(t, m)| (t, (m as u64) << VALID_BIT))
+                        .collect::<Vec<_>>()
+                }));
+                let (data, num_invalids) = obliv_global_filter_stage1(data_iter);
+                let nums_invalids = stage_comm(num_invalids, call_seq.stage_id, 0, num_splits, part_id);
+                let buckets = obliv_global_filter_stage2(data, cmp_f, max_value, part_id, num_splits, nums_invalids, input.get_parallel());
+                let mut buckets_enc = create_enc();
+                for bucket in buckets {
+                    merge_enc(&mut buckets_enc, &batch_encrypt(&bucket, false));
+                }
+                (to_ptr(buckets_enc), 0 as *mut u8)
             },
-            25 | 26 | 27 => {
-                let filter_f = |data: Vec<(Self::Item, bool)>| data.into_iter()
-                    .filter(|(v, m)| *m)
-                    .map(|(v, m)| v)
-                    .collect::<Vec<_>>();
-                (combined_column_sort_step_4_6_8(call_seq.tid, input, dep_info, self.get_op_id(), call_seq.get_part_id(), self.number_of_splits(), max_value, cmp_f, filter_f), 0 as *mut u8)
+            27 => {
+                let (parts, max_len) = read_sorted_bucket::<(Self::Item, u64)>(input.get_enc_data::<Vec<Vec<ItemE>>>(), input.get_parallel());
+                let part = obliv_global_filter_stage3(parts, cmp_f, max_value, max_len);
+                let part_enc = batch_encrypt(&part, true);
+                (to_ptr(part_enc), 0 as *mut u8)
             }
             _ => panic!("Invalid is_shuffle")
         }

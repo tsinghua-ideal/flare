@@ -79,6 +79,7 @@ use benchmarks::*;
 mod custom_thread;
 mod dependency;
 mod partitioner;
+mod obliv_comp;
 mod op;
 use op::*;
 mod serialization_free;
@@ -92,7 +93,6 @@ const NUM_PARTS: usize = 1;
 
 lazy_static! {
     static ref CACHE: OpCache = OpCache::new();
-    static ref CNT_PER_PARTITION: Arc<Mutex<HashMap<(OpId, usize), usize>>> = Arc::new(Mutex::new(HashMap::new()));
     static ref OP_MAP: AtomicPtrWrapper<BTreeMap<OpId, Arc<dyn OpBase>>> = AtomicPtrWrapper::new(Box::into_raw(Box::new(BTreeMap::new()))); 
     static ref init: Result<()> = {
         /* dijkstra */
@@ -211,6 +211,7 @@ pub extern "C" fn secure_execute_pre(tid: u64,
 
 #[no_mangle]
 pub extern "C" fn secure_execute(tid: u64, 
+    stage_id: usize,
     rdd_ids: *const u8,
     op_ids: *const u8,
     part_ids: *const u8,
@@ -230,23 +231,13 @@ pub extern "C" fn secure_execute(tid: u64,
     println!("tid: {:?}, rdd ids = {:?}, op ids = {:?}, part_ids = {:?}, dep_info = {:?}, cache_meta = {:?}", tid, rdd_ids, op_ids, part_ids, dep_info, cache_meta);
 
     let now = Instant::now();
-    let mut call_seq = NextOpId::new(tid, rdd_ids, op_ids, part_ids, cache_meta.clone(), captured_vars, &dep_info);
+    let mut call_seq = NextOpId::new(tid, stage_id, rdd_ids, op_ids, part_ids, cache_meta.clone(), captured_vars, &dep_info);
     let final_op = call_seq.get_cur_op();
     let (result_ptr, addi_fields_ptr) = final_op.iterator_start(call_seq, input, &dep_info); //shuffle need dep_info
     *addi_fields = addi_fields_ptr as usize;
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("tid: {:?}, secure_execute {:?} s", tid, dur);
     return result_ptr as usize
-}
-
-#[no_mangle]
-pub extern "C" fn get_cnt_per_partition(op_id: OpId, part_id: usize) -> usize {
-    CNT_PER_PARTITION.lock().unwrap().remove(&(op_id, part_id)).unwrap()
-}
-
-#[no_mangle]
-pub extern "C" fn set_cnt_per_partition(op_id: OpId, part_id: usize, cnt_per_partition: usize) {
-    CNT_PER_PARTITION.lock().unwrap().insert((op_id, part_id), cnt_per_partition);
 }
 
 #[no_mangle]
@@ -343,15 +334,6 @@ pub extern "C" fn tail_compute(input: *mut u8) -> usize {
     let ptr = Box::into_raw(Box::new(tail_info.clone()));
     ALLOCATOR.set_switch(false);
     ptr as *mut u8 as usize
-}
-
-#[no_mangle]
-pub extern "C" fn reveal_cnt(input: *const u8, max_cnt_prod: *mut u64) -> u64 {
-    let encrypted_cnt = unsafe{ (input as *const Vec<ItemE>).as_ref() }.unwrap();
-    let max_cnt_prod = unsafe{ max_cnt_prod.as_mut() }.unwrap();
-    let cnts: Vec<u64> = batch_decrypt(encrypted_cnt, true);
-    *max_cnt_prod = cnts.iter().product::<u64>();
-    cnts.iter().sum::<u64>()
 }
 
 #[no_mangle]

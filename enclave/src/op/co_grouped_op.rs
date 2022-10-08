@@ -1,7 +1,6 @@
 use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 
-use crate::CNT_PER_PARTITION;
 use crate::aggregator::Aggregator;
 use crate::dependency::{
     NarrowDependencyTrait, OneToOneDependency, ShuffleDependency,
@@ -122,49 +121,7 @@ where
     }
 
     pub fn compute_inner(&self, tid: u64, input: Input) -> (Vec<ItemE>, Vec<ItemE>) {
-        let data_enc = input.get_enc_data::<Vec<ItemE>>();
-        let mut res = create_enc();
-        let mut part_cnt = 0u64;
-
-        let mut max_a_k = None;
-        let mut max_a_cnt: (u64, u64) = (0, 0);  //(Ta, Tb)
-        let mut max_b_k = None;
-        let mut max_b_cnt: (u64, u64) = (0, 0);  //(Ta, Tb)
-        let mut first_k = None;
-        let mut first_cnt = (0, 0); // (Ta, Tb)
-        let mut last_k = None;
-        let mut last_cnt = (0, 0);  // (Ta, Tb)
-        for sub_part in data_enc {
-            let sub_part: Vec<(K, (Option<V>, Option<W>))> = ser_decrypt(&sub_part.clone());
-            part_cnt += sub_part.len() as u64;
-            for (k, v) in sub_part {
-                if last_k.as_ref().map_or(false, |lk| lk == &k) {
-                    last_cnt.0 += v.0.is_some() as u64;
-                    last_cnt.1 += v.1.is_some() as u64;
-                } else {
-                    if max_a_cnt.0 < last_cnt.0 {
-                        max_a_k = last_k.clone();
-                        max_a_cnt = last_cnt;
-                    } 
-                    if max_b_cnt.1 < last_cnt.1 {
-                        max_b_k = last_k.clone();
-                        max_b_cnt = last_cnt;
-                    }
-                    if first_k.is_none() {
-                        first_k = last_k;
-                        first_cnt = last_cnt;
-                    }
-                    last_k = Some(k);
-                    last_cnt = (v.0.is_some() as u64, v.1.is_some() as u64);
-                }
-            }
-        }       
-        let pairs = vec![(first_k, first_cnt), (last_k, last_cnt), (max_a_k, max_a_cnt), (max_b_k, max_b_cnt)];
-        merge_enc(&mut res, &ser_encrypt(&pairs));
-        let mut cnts = batch_encrypt(&vec![max_a_cnt.0, max_b_cnt.1], true);
-        assert_eq!(cnts.len(), 1);
-        merge_enc(&mut cnts, &part_cnt.to_le_bytes().to_vec());
-        (res, cnts)
+        todo!()
     }
 }
 
@@ -190,13 +147,13 @@ where
 
     fn call_free_res_enc(&self, data: *mut u8, marks: *mut u8, is_enc: bool, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 2 | 28 | 29 => self.free_res_enc(data, marks, is_enc),
+            0 | 2 | 27 => self.free_res_enc(data, marks, is_enc),
             1 => {
                 assert_eq!(marks as usize, 0usize);
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
                 shuf_dep.free_res_enc(data, is_enc);
             },
-            20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 => {
+            26 => {
                 assert_eq!(marks as usize, 0usize);
                 crate::ALLOCATOR.set_switch(true);
                 let res = unsafe { Box::from_raw(data as *mut Vec<Vec<ItemE>>) };
@@ -292,14 +249,7 @@ where
     }
 
     fn compute_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8) {
-        let max_value = ((None, Default::default()), false);
-        let cmp_f = |a: &((Option<K>, (Option<V>, Option<W>)), bool), b: &((Option<K>, (Option<V>, Option<W>)), bool)| {
-            if a.0.0.is_some() && b.0.0.is_some() {
-                (a.1, (&a.0.0, a.0.1.1.is_some())).cmp(&(b.1, (&b.0.0, b.0.1.1.is_some())))
-            } else {
-                a.0.0.cmp(&b.0.0).reverse()
-            }
-        };
+        todo!();
         match dep_info.dep_type() {
             0 => {       //narrow
                 self.narrow(call_seq, input, true)
@@ -310,193 +260,6 @@ where
             2 => {       //shuffle read
                 let (data, cnt) = self.compute_inner(call_seq.tid, input);
                 (to_ptr(data), to_ptr(cnt))
-            },
-            20 => {      //column sort, step 1 + step 2
-                let data_enc_ref = input.get_enc_data::<(
-                    (Vec<ItemE>, Vec<ItemE>), 
-                    Vec<Vec<ItemE>>, 
-                    (Vec<ItemE>, Vec<ItemE>), 
-                    Vec<Vec<ItemE>>
-                )>();
-                // sub_parts[i][j] < sub_parts[i][j+1] in sub_parts[i]
-                let mut data = Vec::new();
-                let mut max_len = 0;
-
-                // (Option<K>, V) -> (Option<K>, (Option<V>, Option<W>))
-                for (sub_part_enc, sub_part_marks_enc) in data_enc_ref.0.0.iter().zip(data_enc_ref.0.1.iter()) {
-                    //not sure about the type of the fed key, Option<K> or <K>
-                    let mut sub_part: Vec<(K, V)> = ser_decrypt(&sub_part_enc.clone());
-                    max_len = std::cmp::max(max_len, sub_part.len());
-                    unimplemented!()
-                }
-                for part_enc in &data_enc_ref.1 {
-                    let mut part = Vec::new();
-                    let mut sub_part = Vec::new();
-                    for block_enc in part_enc {
-                        sub_part.append(&mut ser_decrypt::<Vec<((Option<K>, V), bool)>>(&block_enc.clone()).into_iter()
-                            .map(|((k, v), m)| ((k, (Some(v), None::<W>)), m))
-                            .collect::<Vec<_>>());
-                        if sub_part.deep_size_of() > CACHE_LIMIT/input.get_parallel() {
-                            max_len = std::cmp::max(max_len, sub_part.len());
-                            part.push(sub_part);
-                            sub_part = Vec::new();
-                        } 
-                    }
-                    if !sub_part.is_empty() {
-                        max_len = std::cmp::max(max_len, sub_part.len());
-                        part.push(sub_part);
-                    }
-                    data.push(part);
-                }
-
-                // (Option<K>, W) -> (Option<K>, (Option<V>, Option<W>))
-                for (sub_part_enc, sub_part_marks_enc) in data_enc_ref.2.0.iter().zip(data_enc_ref.2.1.iter()) {
-                    let mut sub_part: Vec<(K, W)> = ser_decrypt(&sub_part_enc.clone());
-                    max_len = std::cmp::max(max_len, sub_part.len());
-                    unimplemented!();
-                }
-
-                for part_enc in &data_enc_ref.3 {
-                    let mut part = Vec::new();
-                    let mut sub_part = Vec::new();
-                    for block_enc in part_enc {
-                        sub_part.append(&mut ser_decrypt::<Vec<((Option<K>, W), bool)>>(&block_enc.clone()).into_iter()
-                            .map(|((k, w), m)| ((k, (None::<V>, Some(w))), m))
-                            .collect::<Vec<_>>());
-                        if sub_part.deep_size_of() > CACHE_LIMIT/input.get_parallel() {
-                            max_len = std::cmp::max(max_len, sub_part.len());
-                            part.push(sub_part);
-                            sub_part = Vec::new();
-                        } 
-                    }
-                    if !sub_part.is_empty() {
-                        max_len = std::cmp::max(max_len, sub_part.len());
-                        part.push(sub_part);
-                    }
-                    data.push(part);
-                }
-                let op_id = self.get_op_id();
-                if max_len == 0 {
-                    assert!(CNT_PER_PARTITION.lock().unwrap().insert((op_id, call_seq.get_part_id()), 0).is_none());
-                    (res_enc_to_ptr(Vec::<Vec<ItemE>>::new()), 0 as *mut u8)
-                } else {
-                    let mut sort_helper = SortHelper::new_with(data, max_len, max_value, true, cmp_f);
-                    sort_helper.sort();
-                    let (sorted_data, num_real_elem) = sort_helper.take();
-                    assert!(CNT_PER_PARTITION.lock().unwrap().insert((op_id, call_seq.get_part_id()), num_real_elem).is_none());
-                    let num_output_splits = self.number_of_splits();
-                    let buckets_enc = column_sort_step_2(call_seq.tid, sorted_data, max_len, num_output_splits);
-                    (to_ptr(buckets_enc), 0 as *mut u8)
-                }
-            },
-            21 | 22 | 23 => {     //column sort, remaining steps
-                let filter_f = |data: Vec<((Option<K>, (Option<V>, Option<W>)), bool)>| data.into_iter()
-                    .filter(|((k, c), m)| *m && k.is_some())
-                    .map(|((k, c), m)| (k.unwrap(), c))
-                    .collect::<Vec<_>>();
-                (combined_column_sort_step_4_6_8(call_seq.tid, input, dep_info, self.get_op_id(), call_seq.get_part_id(), self.number_of_splits(), max_value, cmp_f, filter_f), 0 as *mut u8)
-            },
-            24 | 25 | 26 | 27 => {
-                self.sort(call_seq, input, dep_info)
-            },
-            28 => { //aggregate again with the agg info from other servers
-                let ser = call_seq.get_ser_captured_var().unwrap();
-                let agg_data_ref = input.get_enc_data::<Vec<ItemE>>();
-                let mut res = create_enc();
-                let mut sup_data: Vec<(Option<K>, (u64, u64))> = batch_decrypt(ser, true);
-                let mut agg_data: Vec<(Option<K>, (u64, u64))> = batch_decrypt(agg_data_ref, true);
-                assert!(sup_data.len() == 4 && agg_data.len() == 4);
-                if sup_data[1].0 == agg_data[0].0 {
-                    agg_data[0].1.0 += sup_data[1].1.0;
-                    agg_data[0].1.1 += sup_data[1].1.1;
-                    if agg_data[0].0 == agg_data[1].0 {
-                        agg_data[1] = agg_data[0].clone();
-                    }
-                    if agg_data[0].1.0 > agg_data[2].1.0 {
-                        agg_data[2] = agg_data[0].clone();
-                    } //update a maxw   
-                    if agg_data[0].1.1 > agg_data[3].1.1 {
-                        agg_data[3] = agg_data[0].clone();
-                    } //update b max
-                }
-                if sup_data[2].1.0 > agg_data[2].1.0 {
-                    agg_data[2] = sup_data[2].clone();
-                }
-                if sup_data[3].1.1 > agg_data[3].1.1 {
-                    agg_data[3] = sup_data[3].clone();
-                }
-                merge_enc(&mut res, &ser_encrypt(&agg_data));
-                let encrypted_cnt = batch_encrypt(&vec![agg_data[2].1.0, agg_data[3].1.1], true);
-                (to_ptr(res), to_ptr(encrypted_cnt) as *mut u8)
-            },
-            29 => {
-                fn co_group_by<K, V, W>(data_enc: &[ItemE], mut agg: Vec<(K, (Vec<V>, Vec<W>))>, mut marks: Vec<bool>, res_data: &mut Vec<ItemE>, res_marks: &mut Vec<ItemE>, common_mark: bool) -> (Vec<(K, (Vec<V>, Vec<W>))>, Vec<bool>) 
-                where
-                    K: Data + Eq + Hash + Ord,
-                    V: Data,
-                    W: Data,
-                {
-                    for sub_part in data_enc {
-                        let sub_part: Vec<(K, (Option<V>, Option<W>))> = ser_decrypt(&sub_part.clone());
-                        for (j, group) in sub_part.group_by(|a, b| a.0 == b.0).enumerate() {
-                            let k = group[0].0.clone();
-                            let mut vs = group.iter().filter_map(|(_, (v, _))| {
-                                v.clone()
-                            }).collect::<Vec<_>>();
-                            let mut ws = group.iter().filter_map(|(_, (_, w))| {
-                                w.clone()
-                            }).collect::<Vec<_>>();
-                            if j == 0 && !agg.is_empty() {
-                                let (lk, (lv, lw)) = agg.last_mut().unwrap();
-                                if *lk == k {
-                                    lv.append(&mut vs);
-                                    lw.append(&mut ws);
-                                } else {
-                                    agg.push((k, (vs, ws)));
-                                    marks.push(common_mark);
-                                }
-                            } else {
-                                agg.push((k, (vs, ws)));
-                                marks.push(common_mark);
-                            }
-                        }
-                        let last = agg.pop().unwrap();
-                        let last_m = marks.pop().unwrap();
-                        if !agg.is_empty() {
-                            merge_enc(res_data, &ser_encrypt(&agg));
-                            merge_enc(res_marks, &ser_encrypt(&marks));
-                        }
-                        agg = vec![last];
-                        marks = vec![last_m];
-                    }
-                    (agg, marks)
-                }
-
-                let sup_data_enc = call_seq.get_ser_captured_var().unwrap();
-                let mut res_data = create_enc();
-                let mut res_marks = create_enc();
-                //all groups except the last one are marked invalid
-                let (agg, mut marks) = co_group_by::<K, V, W>(&sup_data_enc[..sup_data_enc.len()-2], Vec::new(), Vec::new(), &mut res_data, &mut res_marks, false);
-                assert_eq!(agg.len(), marks.len());
-                if let Some(m) = marks.last_mut() {
-                    *m = true;
-                }
-
-                let data_enc = input.get_enc_data::<Vec<ItemE>>();
-                let (agg, mut marks) = co_group_by(data_enc, agg, marks, &mut res_data, &mut res_marks, true);
-                //invalid the last group of local partition (except for the last partition)
-                if call_seq.get_part_id() < self.number_of_splits() - 1 {
-                    if let Some(m) = marks.last_mut() {
-                        *m = false;
-                    }
-                }
-
-                if !agg.is_empty() {
-                    merge_enc(&mut res_data, &ser_encrypt(&agg));
-                    merge_enc(&mut res_marks, &ser_encrypt(&marks));
-                }
-
-                (to_ptr(res_data), to_ptr(res_marks))
             },
             _ => panic!("Invalid is_shuffle")
         }

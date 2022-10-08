@@ -5,15 +5,14 @@ use std::hash::Hash;
 use std::mem::forget;
 use std::sync::{Arc, Barrier, SgxMutex as Mutex, SgxRwLock as RwLock, atomic::{self, AtomicBool}};
 use std::time::Instant;
-use std::thread::{self, ThreadId, SgxThread};
 use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
 use crate::basic::{AnyData, Data, Func};
+use crate::obliv_comp::{obliv_agg_presort, obliv_agg_stage1, obliv_global_filter_stage1, stage_comm, obliv_global_filter_stage2_kv, zip_data_marks};
 use crate::op::*;
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
-use deepsize::DeepSizeOf;
 use downcast_rs::DowncastSync;
 use itertools::Itertools;
 
@@ -176,86 +175,40 @@ where
 
     fn do_shuffle_task(&self, tid: u64, opb: Arc<dyn OpBase>, call_seq: NextOpId, input: Input) -> *mut u8 {
         let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
+        
+        let part_id = call_seq.get_part_id();
+        let stage_id = call_seq.stage_id;
+        let part_id_offset = 0;
+        let num_splits_in = op.number_of_splits();
+        let outer_parallel = input.get_parallel();
+    
+        let partitioner = self.partitioner.read().unwrap().clone();
+        let num_splits_out = partitioner.get_num_of_partitions();
 
-        let mut sub_parts: Vec<Vec<((Option<K>, V), bool)>> = Vec::new();
-        let mut sub_part_size = 0;
         let results = {
             let (ptr, null_ptr) = op.narrow(call_seq, input, false);
             assert_eq!(0usize, null_ptr as usize);
             *unsafe{ Box::from_raw(ptr as *mut Vec<(Vec<(K, V)>, Vec<bool>)>) }
         };
-        for (bl, mut blmarks) in results {
-            if blmarks.is_empty() {
-                blmarks.resize(bl.len(), true);
-            }
-            assert_eq!(bl.len(), blmarks.len());
-            let block_size = bl.deep_size_of();
-            let mut bl = bl.into_iter().map(|(k, v)| (Some(k), v)).zip(blmarks.into_iter()).collect::<Vec<_>>();
-            let mut should_create_new = true;
-            if let Some(sub_part) = sub_parts.last_mut() {
-                if sub_part_size + block_size <= CACHE_LIMIT/MAX_THREAD/input.get_parallel() {
-                    sub_part.append(&mut bl);
-                    sub_part_size += block_size;
-                    should_create_new = false;
-                }
-            }
-            if should_create_new {
-                sub_parts.push(bl);
-                sub_part_size = block_size;
-            }
-        }
-
-        let cmp_f = |a: &((Option<K>, V), bool), b: &((Option<K>, V), bool)| {
-            if a.0.0.is_some() && b.0.0.is_some() {
-                (a.1, &a.0.0).cmp(&(b.1, &b.0.0))
-            } else {
-                a.0.0.cmp(&b.0.0).reverse()
-            }
-        };
-        let mut handlers = Vec::with_capacity(MAX_THREAD);
-        let r = sub_parts.len().saturating_sub(1) / MAX_THREAD + 1;
-        for _ in 0..MAX_THREAD {
-            let mut sub_parts = sub_parts.split_off(sub_parts.len().saturating_sub(r));
-            let handler = thread::Builder::new()
-                .spawn(move || {
-                    let mut local_max_len = 0;
-                    for sub_part in sub_parts.iter_mut() {
-                        sub_part.sort_unstable_by(cmp_f);
-                        local_max_len = std::cmp::max(local_max_len, sub_part.len()); 
-                    }
-                    (sub_parts, local_max_len)
-                }).unwrap();
-            handlers.push(handler);
-        }
-        assert!(sub_parts.is_empty());
-
-        let mut max_len = 0;
-        let sub_parts = handlers.into_iter().map(|handler| {
-            let (res, len) = handler.join().unwrap();
-            max_len = std::cmp::max(max_len, len);
-            res.into_iter()
-        }).flatten().collect::<Vec<_>>();
-
-        //partition sort (local sort), and pad so that each sub partition should have the same number of (K, V)
-        let (sorted_data, num_real_elem) = if max_len == 0 {
-            (Vec::new(), 0)
-        } else {
-            let max_value = ((None, Default::default()), false);
-            let mut sort_helper = SortHelper::new(sub_parts, max_len, max_value, true, cmp_f);
-            sort_helper.sort();
-            sort_helper.take()
-        };
         
-        let num_output_splits = self.partitioner.read().unwrap().get_num_of_partitions();
-        let chunk_size = num_real_elem.saturating_sub(1) / num_output_splits + 1;
-        let buckets_enc = if self.is_cogroup {
+        let buckets_enc = if self.aggregator.is_default {
+            let data_iter = zip_data_marks(results);
+            let (data, num_invalids) = obliv_global_filter_stage1(data_iter);
+            let nums_invalids = stage_comm(num_invalids, stage_id, part_id_offset, num_splits_in, part_id);
+            let buckets = obliv_global_filter_stage2_kv(data, part_id, num_splits_out, nums_invalids, outer_parallel);
             let mut buckets_enc = create_enc();
-            for bucket in sorted_data.chunks(chunk_size) {
-                merge_enc(&mut buckets_enc, &batch_encrypt(bucket, false));
+            for bucket in buckets {
+                merge_enc(&mut buckets_enc, &batch_encrypt(&bucket, false));
             }
             buckets_enc
         } else {
-            column_sort_step_2(tid, sorted_data, max_len, num_output_splits)
+            let sorted_data = obliv_agg_presort(results, outer_parallel);
+            let buckets = obliv_agg_stage1(sorted_data, part_id, false, &self.aggregator, &partitioner);
+            let mut buckets_enc = create_enc();
+            for bucket in buckets {
+                merge_enc(&mut buckets_enc, &batch_encrypt(&bucket, false));
+            }
+            buckets_enc
         };
         to_ptr(buckets_enc)
     }

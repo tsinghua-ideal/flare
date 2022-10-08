@@ -14,7 +14,7 @@ pub trait Partitioner: Downcast + dyn_clone::DynClone + Send + Sync {
 
 dyn_clone::clone_trait_object!(Partitioner);
 
-fn hash<T: Hash>(t: &T) -> u64 {
+pub(crate) fn hash<T: Hash>(t: &T) -> u64 {
     let mut s = DefaultHasher::new();
     t.hash(&mut s);
     s.finish()

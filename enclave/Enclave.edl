@@ -59,6 +59,7 @@ enclave {
             [user_check] uint8_t* part_nums,
             struct dep_info_t dep_info);
         public size_t secure_execute(uint64_t tid,
+            size_t stage_id,
             [user_check] uint8_t* rdd_ids,
             [user_check] uint8_t* op_ids,
             [user_check] uint8_t* part_ids,
@@ -67,8 +68,6 @@ enclave {
 		    struct input_t input, 
 		    [user_check] uint8_t* captured_vars,
             [out] size_t* addi_fields);
-        public size_t get_cnt_per_partition(struct op_id_t op_id, size_t part_id);
-        public void set_cnt_per_partition(struct op_id_t op_id, size_t part_id, size_t cnt_per_partition);
         public void free_res_enc(struct op_id_t op_id,
             struct dep_info_t dep_info,
 		    [user_check] uint8_t* data,
@@ -99,7 +98,6 @@ enclave {
             [user_check] size_t* have_take);
         public size_t tail_compute([user_check] uint8_t* input);
         public void free_tail_info([user_check] uint8_t* input);
-        public uint64_t reveal_cnt([user_check] const uint8_t* input, [out] uint64_t* max_cnt_prod);
         public void clear_cache();
         public size_t pre_touching(uint8_t zero);
 
@@ -114,6 +112,13 @@ enclave {
         size_t ocall_cache_from_outside(size_t rdd_id,
             size_t part_id,
             [out] size_t* marks_ptr);
+        size_t ocall_stage_comm(size_t data_ptr,
+            size_t stage_id, 
+            size_t part_id_offset, 
+            size_t num_splits, 
+            size_t part_id
+        );
+        void ocall_stage_comm_post(size_t data_ptr);
         void* sbrk_o(size_t size);  
     };
 
