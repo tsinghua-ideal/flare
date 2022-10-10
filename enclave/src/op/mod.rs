@@ -29,7 +29,7 @@ use crate::{CACHE, Fn, OP_MAP};
 use crate::basic::{AnyData, Arc as SerArc, Data, Func, SerFunc};
 use crate::custom_thread::PThread;
 use crate::dependency::{Dependency, OneToOneDependency, ShuffleDependencyTrait};
-use crate::obliv_comp::{VALID_BIT, stage_comm, obliv_global_filter_stage1, obliv_global_filter_stage2, obliv_global_filter_stage3, obliv_global_filter_stage3_kv, obliv_agg_stage1};
+use crate::obliv_comp::{VALID_BIT, stage_comm, obliv_global_filter_stage1, obliv_global_filter_stage2_t, obliv_global_filter_stage3_t, obliv_global_filter_stage3_kv, obliv_agg_stage1};
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use crate::utils;
@@ -1968,6 +1968,9 @@ pub trait Op: OpBase + 'static {
             crate::ALLOCATOR.set_switch(true);
             drop(acc_marks);
             crate::ALLOCATOR.set_switch(false);
+            if acc_data.is_empty() {
+                merge_enc(&mut acc_data, &Vec::new())  //fix the synchronization issue, otherwise empty partition will skip the global filter
+            }
             (to_ptr(acc_data), 0usize as *mut u8)
         } else if need_enc {
             (to_ptr(acc_data), to_ptr(acc_marks))
@@ -1997,10 +2000,6 @@ pub trait Op: OpBase + 'static {
     fn remove_dummy(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8) {
         //since the invalid ones will be filtered out, and they are sorted to the end
         //we do no not need to use DUMMY_BIT, directly use the VALID_BIT=0
-        let max_value = (Default::default(), 0);
-        let cmp_f = |a: &(Self::Item, u64), b: &(Self::Item, u64)| {
-            a.1.cmp(&b.1).reverse()  //sort dummy value to the end
-        };
         let num_splits = self.number_of_splits();
         let part_id = call_seq.get_part_id();
 
@@ -2008,13 +2007,17 @@ pub trait Op: OpBase + 'static {
             26 => {
                 let data_enc_len = input.get_enc_data::<Vec<ItemE>>().len();
                 let data_iter = Box::new((0..data_enc_len).map(move |i| input.get_enc_data::<Vec<ItemE>>()[i].clone()).map(|bl_enc| {
-                    ser_decrypt::<Vec<(Self::Item, bool)>>(&bl_enc).into_iter()
+                    if bl_enc.is_empty() {
+                        Vec::new()
+                    } else {
+                        ser_decrypt::<Vec<(Self::Item, bool)>>(&bl_enc).into_iter()
                         .map(|(t, m)| (t, (m as u64) << VALID_BIT))
                         .collect::<Vec<_>>()
+                    }
                 }));
                 let (data, num_invalids) = obliv_global_filter_stage1(data_iter);
                 let nums_invalids = stage_comm(num_invalids, call_seq.stage_id, 0, num_splits, part_id);
-                let buckets = obliv_global_filter_stage2(data, cmp_f, max_value, part_id, num_splits, nums_invalids, input.get_parallel());
+                let buckets = obliv_global_filter_stage2_t(data, part_id, num_splits, nums_invalids, input.get_parallel());
                 let mut buckets_enc = create_enc();
                 for bucket in buckets {
                     merge_enc(&mut buckets_enc, &batch_encrypt(&bucket, false));
@@ -2023,7 +2026,7 @@ pub trait Op: OpBase + 'static {
             },
             27 => {
                 let (parts, max_len) = read_sorted_bucket::<(Self::Item, u64)>(input.get_enc_data::<Vec<Vec<ItemE>>>(), input.get_parallel());
-                let part = obliv_global_filter_stage3(parts, cmp_f, max_value, max_len);
+                let part = obliv_global_filter_stage3_t(parts, max_len);
                 let part_enc = batch_encrypt(&part, true);
                 (to_ptr(part_enc), 0 as *mut u8)
             }

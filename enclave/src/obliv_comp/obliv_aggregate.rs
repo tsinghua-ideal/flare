@@ -121,15 +121,20 @@ where
         max_len = std::cmp::max(max_len, buckets[b].1.len());
     }
     //padding with max key
-    for i in 0..n_out {
-        let tmp = buckets[i].1.last().cloned().unwrap_or(Default::default());
-        let mut tmp = ((tmp.0 .0, C::default()), 0);
-        if should_assign_loc {
-            set_field_partid(&mut tmp, id);
-            set_field_loc(&mut tmp, MASK_LOC as usize);
+    println!("part: {:?}, f, max_len = {:?}", id, max_len);
+    if max_len > 0 {
+        for i in 0..n_out {
+            let last_one = buckets[i].1.pop().unwrap_or(Default::default());
+            let mut tmp = ((last_one.0 .0 .clone(), C::default()), 0);
+            if should_assign_loc {
+                set_field_partid(&mut tmp, id);
+                set_field_loc(&mut tmp, MASK_LOC as usize);
+            }
+            buckets[i].1.resize(max_len - 1, tmp);
+            buckets[i].1.push(last_one);
         }
-        buckets[i].1.resize(max_len, tmp);
     }
+    println!("part: {:?}, g", id);
 
     //with OM, the following can be simplified
     // for i in 0..n_out {

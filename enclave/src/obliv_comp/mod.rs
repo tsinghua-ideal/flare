@@ -215,7 +215,7 @@ where
     let mut len = 1;
     data.resize(total_len, padding_value);
 
-    while len * 2 < total_len {
+    while len < total_len {
         for i in len..total_len {
             let p = f(&data[i]);
             if p < i && ((i - p) & len) > 0 {
@@ -228,7 +228,7 @@ where
 
 fn build_buckets<T, F>(
     data: Vec<Vec<(T, u64)>>,
-    cmp_f: F,
+    mut cmp_f: F,
     max_value: (T, u64),
     outer_parallel: usize,
     total_len: usize,
@@ -239,7 +239,7 @@ where
     F: FnMut(&(T, u64), &(T, u64)) -> Ordering + Clone,
 {
     let (sub_parts, max_len) = compose_subpart(Box::new(data.into_iter()), outer_parallel, true, cmp_f.clone());
-    let mut sort_helper = SortHelper::new(sub_parts, max_len, max_value, true, cmp_f);
+    let mut sort_helper = SortHelper::new(sub_parts, max_len, max_value.clone(), true, cmp_f.clone());
     sort_helper.sort();
     let (mut data, num_elems) = sort_helper.take();
     assert_eq!(data.len(), num_elems);
@@ -260,7 +260,7 @@ where
             loc = get_field_bktid(d) + 1;
         }
     }
-    obliv_place(&mut data, total_len, get_field_bktid, Default::default());
+    obliv_place(&mut data, total_len, get_field_bktid, max_value);
     let mut buckets = vec![Vec::new(); n];
     let mut i = n - 1;
     while data.len() > 0 {
@@ -331,7 +331,7 @@ fn coordinate_bin_num<T>(
 fn patch_part_num<K, V, T, F1, F2>(
     part: &mut Vec<Vec<((K, V), u64)>>,
     buckets: Vec<Vec<(T, u64, u64)>>,
-    n_out: usize,
+    n_in: usize,
     mut f_from_bkt: F1,
     mut f_from_part: F2,
 ) where
@@ -341,7 +341,7 @@ fn patch_part_num<K, V, T, F1, F2>(
     F1: FnMut(&mut ((K, V), u64), &(T, u64, u64)) + Clone,
     F2: FnMut(&mut ((K, V), u64), &((K, V), u64)) + Clone,
 {
-    let perm = shuffle_perm(n_out);
+    let perm = shuffle_perm(n_in);
 
     let mut buckets = buckets
         .into_iter()
@@ -394,7 +394,7 @@ pub fn stage_comm<T: Data>(data: T,
 ) -> Vec<T> {
     let data_enc = ser_encrypt(&data);
     crate::ALLOCATOR.set_switch(true);
-    let data_enc_ptr = Box::into_raw(Box::new(data_enc.clone())) as *mut u8 as usize;
+    let data_enc_ptr = Box::into_raw(Box::new(data_enc.clone())) as usize;
     crate::ALLOCATOR.set_switch(false);
 
     let mut res_ptr = 0;
@@ -407,7 +407,14 @@ pub fn stage_comm<T: Data>(data: T,
             panic!("[-] OCALL Enclave Failed {}!", sgx_status.as_str());
         }
     }
-    let res_enc = unsafe { (res_ptr as *const u8 as *const Vec<Vec<u8>>).as_ref() }.unwrap().clone();
+    crate::ALLOCATOR.set_switch(true);
+    let data_enc_out = unsafe { Box::from_raw(data_enc_ptr as *mut u8 as *mut Vec<u8>) };
+    drop(data_enc_out);
+    crate::ALLOCATOR.set_switch(false);
+
+    let res_enc_out = unsafe { Box::from_raw(res_ptr as *mut u8 as *mut Vec<Vec<u8>>) };
+    let res_enc = res_enc_out.clone();
+    std::mem::forget(res_enc_out);
     let sgx_status = unsafe {
         ocall_stage_comm_post(res_ptr)
     };

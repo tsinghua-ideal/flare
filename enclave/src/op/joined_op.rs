@@ -1,5 +1,3 @@
-use std::borrow::ToOwned;
-use std::collections::BTreeSet;
 use std::hash::{Hash, Hasher};
 
 use crate::aggregator::Aggregator;
@@ -9,7 +7,6 @@ use crate::dependency::{
 };
 use crate::obliv_comp::{VALID_BIT, obliv_global_filter_stage3_kv, obliv_agg_stage1, obliv_agg_stage2, obliv_group_by_stage1, stage_comm, obliv_join::*};
 use crate::op::*;
-use crate::partitioner::HashPartitioner;
 
 use deepsize::DeepSizeOf;
 use itertools::Itertools;
@@ -436,7 +433,6 @@ where
                 (to_ptr(data_enc), 0 as *mut u8)
             }
             23 => {
-                let captured_vars = call_seq.get_ser_captured_var().unwrap();
                 let part_group: (usize, usize, usize) =
                     bincode::deserialize(&call_seq.get_ser_captured_var().unwrap()[0]).unwrap();
                 assert_eq!(part_group.0, call_seq.stage_id);
@@ -471,7 +467,6 @@ where
                 }
             },
             24 => {
-                let captured_vars = call_seq.get_ser_captured_var().unwrap();
                 let part_group: (usize, usize, usize) =
                     bincode::deserialize(&call_seq.get_ser_captured_var().unwrap()[0]).unwrap();
                 assert_eq!(part_group.0, call_seq.stage_id);

@@ -67,10 +67,16 @@ where
     let mut bin_num = 0;
     let mut bin_size = 0;
     let mut acc = 0;
+    let mut v_a = 0;
+    let mut v_b = 0;
     for i in (0..data.len()).rev() {
+        //fill the vacant
         let c = i + 1 == data.len() || data[i + 1].0 .0 != data[i].0 .0;
-        if !c {
-            data[i].0 .1 = data[i + 1].0 .1; //fill the vacant
+        if c {
+            v_a = data[i].0 .1 .0;
+            v_b = data[i].0 .1 .1;
+        } else {
+            data[i].0 .1 = (v_a, v_b);
         }
         //avoid repeated count
         let c0 = i + 1 == data.len() || (data[i + 1].0 .0 != data[i].0 .0 && is_valid(&data[i]));
@@ -82,24 +88,22 @@ where
             bin_size,
             None,
         );
+        let is_new_bin = a > bin_num;
         bin_num = a;
         bin_size = b;
         set_field_binid(&mut data[i], bin_num);
         //compute accumulated product for normal items
-        let c1 = bin_size as i64 == data[i].0 .1 .0 + data[i].0 .1 .1 && i + 1 < data.len();
+        let c1 = is_new_bin && i + 1 < data.len();
         let cur_tid = get_field_tid(&data[i]) as i64;
-        let v_a = data[i].0 .1 .0;
-        let v_b = data[i].0 .1 .1;
-        data[i].0 .1 .0 = 0;  //re-interpret as acc_prod
-        data[i].0 .1 .1 = cur_tid * v_a + (1 - cur_tid) * v_b;   //re-interpret as group cnt in the other table
-        if c1 {
-            data[i + 1].0 .1 .0 = acc;
-        }
-        if c0 && c1 {
-            acc = v_a * v_b;
-        }
-        if c0 && !c1 {
-            acc += v_a * v_b;
+        data[i].0 .1 .0 = 0;  //re-interpret as acc_prod 
+        data[i].0 .1 .1 = cur_tid * v_a + (1 - cur_tid) * v_b;   //re-interpret as group cnt in the other table      
+        if c0 {
+            if c1 {
+                data[i + 1].0 .1 .0 = acc;
+                acc = v_a * v_b;
+            } else {
+                acc += v_a * v_b;
+            }
         }
     }
 
@@ -146,7 +150,7 @@ where
         }
     }
     if id != j_sl {
-        acc = -acc - 1;
+        acc = -acc;
     }
 
     let b_last = if !data.is_empty() {
@@ -183,26 +187,33 @@ where
             idx_last = idx;
         }
         if c {
-            data[i] = (i, idx, part[i].0 .1 .0 );
+            data[i] = (i, idx, part[i].0 .1 .0);
             idx += 1;
         }
         let c = (i == 0 || get_field_binid(&part[i]) != get_field_binid(&part[i - 1])) && part[i].0 .1 .0  < 0;
         if c {
-            data[i] = (i, idx_last, part[i].0 .1 .0 );
+            data[i] = (i, idx_last, part[i].0 .1 .0);
         }
     }
-    obliv_place_rev(&mut data, part.len() + 1, |x| x.1, (0, usize::MAX, 0));
+
+    //shift right, data should at least have one item
+    //with OM, it can be simplified
+    if data[0].1 == 1 {
+        data.insert(0, (usize::MAX, usize::MAX, 0));
+        data.pop().unwrap();
+    }
+
+    obliv_place_rev(&mut data, part.len() + 1, |x| x.1, (usize::MAX, usize::MAX, 0));
+
     let mut acc_col = (0..n_out).map(|x| (x, 0)).collect::<Vec<_>>();
     let mut acc_col_rem = (0..n_out).map(|x| (x, usize::MAX)).collect::<Vec<_>>();
     let len = idx - 1 / n_out * n_out;
     for i in 1..data.len() {
         let k = (i - 1) % n_out;
         if i <= len {
-            assert!(data[i].2 >= 0);
             acc_col[k].1 += data[i].2 as usize; //assert data[i].2 >= 0;
         }
         if i > len && data[i].1 != usize::MAX {
-            assert!(data[i].2 >= 0);
             acc_col_rem[k].1 = data[i].2 as usize; //assert data[i].2 >= 0;
         }
     }
@@ -270,7 +281,7 @@ where
             }
         }
     }
-    //data should at least have one item
+    //shift left, data should at least have one item
     if data[0].1 != usize::MAX {
         data[0].2 = last_bin_loc as i64;
     } else {
@@ -364,8 +375,8 @@ where
         a.0 .1 .2 = b.0 .1 .2;
         set_field_bktid(a, get_field_bktid(b));
     };
-    patch_part_num(&mut part_a, buckets_a, n_out, f_from_bkt.clone(), f_from_part.clone());
-    patch_part_num(&mut part_b, buckets_b, n_out, f_from_bkt, f_from_part);
+    patch_part_num(&mut part_a, buckets_a, n_in, f_from_bkt.clone(), f_from_part.clone());
+    patch_part_num(&mut part_b, buckets_b, n_in, f_from_bkt, f_from_part);
     for block in part_a.iter_mut().chain(part_b.iter_mut()) {
         for d in block.iter_mut() {
             if d.0 .1 .2 != 0 {
@@ -481,15 +492,19 @@ where
     for (tid, table) in [&mut data_a, &mut data_b].iter_mut().enumerate() {
         let mut alpha = 0;
         for i in 0..table.len() {
-            if get_field_loc(&table[i]) == MASK_LOC as usize && alpha > 0 {
+            let mut cur_loc = get_field_loc(&table[i]);
+            if cur_loc == MASK_LOC as usize && alpha > 0 {
                 table[i] = table[i-1].clone();
                 alpha -= 1;
             } else {
+                if cur_loc != MASK_LOC as usize {
+                    cur_loc -= tid * padding_len;
+                    set_field_loc(&mut table[i], cur_loc);
+                }
                 alpha = table[i].0 .1 .2 as usize * tid + table[i].0 .1 .3 as usize * (1 - tid) - 1;
             }
         }
     }
-
     //align table B with table A
     {
         let cmp_f = |a: &((K, (V, W, i64, i64)), u64), b: &((K, (V, W, i64, i64)), u64)| {
@@ -499,17 +514,11 @@ where
         let mut q = 0;
         for j in 1..data_b.len() {
             if data_b[j].0 .1 .2 == 0 || data_b[j].0 .1 .3 == 0 {
-                //for debug
-                {
-                    for jj in j..data_b.len() {
-                        assert_eq!(get_field_loc(&data_b[jj]), MASK_LOC as usize);
-                    }
-                }
                 break;
             }
             if data_b[j].0 .0 != data_b[j-1].0 .0 {
                 q = 0;
-                b = (get_field_loc(&data_b[j]) - padding_len) as i64;
+                b = get_field_loc(&data_b[j]) as i64;
             } else {
                 q += 1;
                 let alpha_a = data_b[j].0 .1 .2;

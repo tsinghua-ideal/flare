@@ -91,7 +91,7 @@ where
     let f_from_part = |a: &mut ((K, V), u64), b: &((K, V), u64)| {
         set_field_bktid(a, get_field_bktid(b));
     };
-    patch_part_num(&mut part, buckets, n_out, f_from_bkt, f_from_part);
+    patch_part_num(&mut part, buckets, n_in, f_from_bkt, f_from_part);
 
     let mut lim = (2 * beta + n_in * n_out - 1) / n_in / n_out;
     lim += ((lim as f64).sqrt() * 5.0) as usize;

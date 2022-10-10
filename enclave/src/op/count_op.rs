@@ -109,19 +109,23 @@ where
         } else if dep_info.dep_type() == 4 {
             let data_enc = input.get_enc_data::<Vec<ItemE>>();
             let marks_enc = input.get_enc_marks::<Vec<ItemE>>();
-            assert_eq!(data_enc.len(), marks_enc.len());
 
-            let count = data_enc.iter().zip(marks_enc.iter())
-                .map(|(bl_enc, blmarks_enc)| {
-                    let mut bl = ser_decrypt::<Vec<T>>(&bl_enc.clone());
-                    let blmarks = ser_decrypt::<Vec<bool>>(&blmarks_enc.clone());
-                    if blmarks.is_empty() {
-                        bl.len()
-                    } else {
-                        assert_eq!(blmarks.len(), bl.len());
-                        blmarks.into_iter().filter(|m| *m).count()
-                    }
-                }).sum::<usize>();
+            let count = if marks_enc.is_empty() {
+                data_enc.iter().map(|bl_enc| ser_decrypt::<Vec<T>>(&bl_enc.clone()).len()).sum::<usize>()
+            } else {
+                assert_eq!(data_enc.len(), marks_enc.len());
+                data_enc.iter().zip(marks_enc.iter())
+                    .map(|(bl_enc, blmarks_enc)| {
+                        let bl = ser_decrypt::<Vec<T>>(&bl_enc.clone());
+                        let blmarks = ser_decrypt::<Vec<bool>>(&blmarks_enc.clone());
+                        if blmarks.is_empty() {
+                            bl.len()
+                        } else {
+                            assert_eq!(blmarks.len(), bl.len());
+                            blmarks.into_iter().filter(|m| *m).count()
+                        }
+                    }).sum::<usize>()
+            };
             let res = vec![count as u64];
             (res_enc_to_ptr(res), 0usize as *mut u8)
         } else {
