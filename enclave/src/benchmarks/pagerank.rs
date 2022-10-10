@@ -16,7 +16,7 @@ pub fn pagerank_sec_0() -> Result<()> {
     let dir = PathBuf::from("/opt/data/ct_pr_cit-Patents");
     let links = sc
         .read_source(
-            LocalFsReaderConfig::new(dir).num_partitions_per_executor(1),
+            LocalFsReaderConfig::new(dir).num_partitions_per_executor(NUM_PARTS_LOCAL),
             None,
             Some(deserializer),
         )

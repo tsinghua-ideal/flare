@@ -16,14 +16,14 @@ pub fn mm_sec_0() -> Result<()> {
     let dir_b = PathBuf::from("/opt/data/ct_mm_b_20_2000");
     let ma = sc
         .read_source(
-            LocalFsReaderConfig::new(dir_a).num_partitions_per_executor(1),
+            LocalFsReaderConfig::new(dir_a).num_partitions_per_executor(NUM_PARTS_LOCAL),
             None,
             Some(deserializer.clone()),
         )
         .map(Fn!(|a: ((u32, u32), f64)| (a.0 .1, (a.0 .0, a.1))));
     let mb = sc
         .read_source(
-            LocalFsReaderConfig::new(dir_b).num_partitions_per_executor(1),
+            LocalFsReaderConfig::new(dir_b).num_partitions_per_executor(NUM_PARTS_LOCAL),
             None,
             Some(deserializer),
         )
@@ -57,7 +57,7 @@ pub fn mm_unsec_0() -> Result<()> {
     let dir_b = PathBuf::from("/opt/data/pt_mm_b_20_2000");
     let ma = sc
         .read_source(
-            LocalFsReaderConfig::new(dir_a).num_partitions_per_executor(1),
+            LocalFsReaderConfig::new(dir_a).num_partitions_per_executor(NUM_PARTS_LOCAL),
             Some(deserializer.clone()),
             None,
         )
@@ -66,7 +66,7 @@ pub fn mm_unsec_0() -> Result<()> {
         }));
     let mb = sc
         .read_source(
-            LocalFsReaderConfig::new(dir_b).num_partitions_per_executor(1),
+            LocalFsReaderConfig::new(dir_b).num_partitions_per_executor(NUM_PARTS_LOCAL),
             Some(deserializer),
             None,
         )
