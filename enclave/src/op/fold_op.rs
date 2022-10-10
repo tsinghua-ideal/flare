@@ -120,7 +120,7 @@ where
         } else if dep_info.dep_type() == 4 {
             let data_enc = input.get_enc_data::<Vec<ItemE>>();
             let marks_enc = input.get_enc_marks::<Vec<ItemE>>();
-            assert_eq!(data_enc.len(), marks_enc.len());
+            assert!(data_enc.len() == marks_enc.len() || marks_enc.is_empty());
 
             let data = batch_decrypt(data_enc, true);
             let marks = batch_decrypt(marks_enc, true);

@@ -130,22 +130,29 @@ where
         } else if dep_info.dep_type() == 4 {
             let data_enc = input.get_enc_data::<Vec<ItemE>>();
             let marks_enc = input.get_enc_marks::<Vec<ItemE>>();
-            assert_eq!(data_enc.len(), marks_enc.len());
-
-            let reduced = data_enc.iter().zip(marks_enc.iter())
-                .map(|(bl_enc, blmarks_enc)| {
-                    let mut bl = ser_decrypt::<Vec<T>>(&bl_enc.clone());
-                    let blmarks = ser_decrypt::<Vec<bool>>(&blmarks_enc.clone());
-                    if !blmarks.is_empty() {
-                        assert_eq!(blmarks.len(), bl.len());
-                        bl = bl.into_iter()
-                            .zip(blmarks.into_iter())
-                            .filter(|(_, m)| *m)
-                            .map(|(x, _)| x)
-                            .collect::<Vec<_>>();
-                    }
+            let reduced = if marks_enc.is_empty() {
+                data_enc.iter().map(|bl_enc| {
+                    let bl = ser_decrypt::<Vec<T>>(&bl_enc.clone());
                     (self.sf)(Box::new(bl.into_iter()))
-                }).collect::<Vec<_>>();
+                }).collect::<Vec<_>>()
+            } else {
+                assert_eq!(data_enc.len(), marks_enc.len());
+                data_enc.iter().zip(marks_enc.iter())
+                    .map(|(bl_enc, blmarks_enc)| {
+                        let mut bl = ser_decrypt::<Vec<T>>(&bl_enc.clone());
+                        let blmarks = ser_decrypt::<Vec<bool>>(&blmarks_enc.clone());
+                        if !blmarks.is_empty() {
+                            assert_eq!(blmarks.len(), bl.len());
+                            bl = bl.into_iter()
+                                .zip(blmarks.into_iter())
+                                .filter(|(_, m)| *m)
+                                .map(|(x, _)| x)
+                                .collect::<Vec<_>>();
+                        }
+                        (self.sf)(Box::new(bl.into_iter()))
+                    }).collect::<Vec<_>>()
+            };
+
             let u = (self.cf)(Box::new(reduced.into_iter()));
             let ue = vec![ser_encrypt(&u)];
             (res_enc_to_ptr(ue), 0usize as *mut u8)
