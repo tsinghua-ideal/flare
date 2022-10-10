@@ -77,7 +77,7 @@ pub fn dijkstra_sec_0() -> Result<()> {
     let dir = PathBuf::from("/opt/data/ct_dij_CA");
     let mut nodes = sc
         .read_source(
-            LocalFsReaderConfig::new(dir).num_partitions_per_executor(1),
+            LocalFsReaderConfig::new(dir).num_partitions_per_executor(NUM_PARTS_LOCAL),
             None,
             Some(deserializer),
         )
@@ -154,7 +154,7 @@ pub fn dijkstra_unsec_0() -> Result<()> {
     let dir = PathBuf::from("/opt/data/pt_dij_CA");
     let mut nodes = sc
         .read_source(
-            LocalFsReaderConfig::new(dir).num_partitions_per_executor(1),
+            LocalFsReaderConfig::new(dir).num_partitions_per_executor(NUM_PARTS_LOCAL),
             Some(deserializer),
             None,
         )

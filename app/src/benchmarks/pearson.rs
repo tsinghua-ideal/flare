@@ -15,12 +15,12 @@ pub fn pearson_sec_0() -> Result<()> {
     let dir0 = PathBuf::from("/opt/data/ct_pe_a_108");
     let dir1 = PathBuf::from("/opt/data/ct_pe_b_108");
     let x = sc.read_source(
-        LocalFsReaderConfig::new(dir0).num_partitions_per_executor(1),
+        LocalFsReaderConfig::new(dir0).num_partitions_per_executor(NUM_PARTS_LOCAL),
         None,
         Some(deserializer.clone()),
     );
     let y = sc.read_source(
-        LocalFsReaderConfig::new(dir1).num_partitions_per_executor(1),
+        LocalFsReaderConfig::new(dir1).num_partitions_per_executor(NUM_PARTS_LOCAL),
         None,
         Some(deserializer),
     );
@@ -63,7 +63,7 @@ pub fn pearson_unsec_0() -> Result<()> {
     let dir1 = PathBuf::from("/opt/data/pt_pe_b_108");
     let x = sc
         .read_source(
-            LocalFsReaderConfig::new(dir0).num_partitions_per_executor(1),
+            LocalFsReaderConfig::new(dir0).num_partitions_per_executor(NUM_PARTS_LOCAL),
             Some(deserializer.clone()),
             None,
         )
@@ -72,7 +72,7 @@ pub fn pearson_unsec_0() -> Result<()> {
         ));
     let y = sc
         .read_source(
-            LocalFsReaderConfig::new(dir1).num_partitions_per_executor(1),
+            LocalFsReaderConfig::new(dir1).num_partitions_per_executor(NUM_PARTS_LOCAL),
             Some(deserializer),
             None,
         )

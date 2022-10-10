@@ -1,6 +1,6 @@
+use crate::*;
 use rand::Rng;
 use std::time::Instant;
-use vega::*;
 
 // secure mode
 pub fn zip_sec_0() -> Result<()> {
@@ -16,8 +16,8 @@ pub fn zip_sec_0() -> Result<()> {
     let col0 = batch_encrypt(&col0);
     let col1 = batch_encrypt(&col1);
     let now = Instant::now();
-    let rdd0 = sc.make_rdd::<i32, _, _>(vec![], col0, 1);
-    let rdd1 = sc.make_rdd::<String, _, _>(vec![], col1, 1);
+    let rdd0 = sc.make_rdd::<i32, _, _>(vec![], col0, NUM_PARTS);
+    let rdd1 = sc.make_rdd::<String, _, _>(vec![], col1, NUM_PARTS);
     let zipped_rdd = rdd0.zip(rdd1.into());
     let res = zipped_rdd.secure_collect().unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;

@@ -55,7 +55,7 @@ pub fn kmeans_sec_0() -> Result<()> {
 
     let data_rdd = sc
         .read_source(
-            LocalFsReaderConfig::new(dir).num_partitions_per_executor(1),
+            LocalFsReaderConfig::new(dir).num_partitions_per_executor(NUM_PARTS_LOCAL),
             None,
             Some(deserializer),
         )
@@ -123,7 +123,7 @@ pub fn kmeans_unsec_0() -> Result<()> {
     // TODO: need to change dir
     let dir = PathBuf::from("/opt/data/pt_km_41065");
     let lines = sc.read_source(
-        LocalFsReaderConfig::new(dir).num_partitions_per_executor(1),
+        LocalFsReaderConfig::new(dir).num_partitions_per_executor(NUM_PARTS_LOCAL),
         Some(deserializer),
         None,
     );

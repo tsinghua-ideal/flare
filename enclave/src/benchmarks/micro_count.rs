@@ -8,7 +8,7 @@ pub fn count_sec_0() -> Result<()> {
 
     
     
-    let rdd0 = sc.make_op(1);
+    let rdd0 = sc.make_op(NUM_PARTS);
     let rdd1 = rdd0.map(Fn!(|i: i32|  i % (1 << 10) * 4399 / (i % 71 + 1) ));
     
     let _res = rdd1.count().unwrap();
