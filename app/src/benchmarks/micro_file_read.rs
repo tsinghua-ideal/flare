@@ -1,6 +1,6 @@
+use crate::io::*;
+use crate::*;
 use std::path::PathBuf;
-use vega::io::*;
-use vega::*;
 
 pub fn file_read_sec_0() -> Result<()> {
     let context = Context::new()?;

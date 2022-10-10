@@ -28,7 +28,7 @@ pub fn topk_sec_0() -> Result<()> {
         )))
         .reduce_by_key(
             Fn!(|(v1, v2): ((i64, i64), (i64, i64))| (v1.0 + v2.0, v1.1 + v2.1)),
-            1,
+            NUM_PARTS,
         )
         .map(Fn!(|x: (String, (i64, i64))| (
             ((x.1 .0 as f64) / (x.1 .1 as f64)) as i64,

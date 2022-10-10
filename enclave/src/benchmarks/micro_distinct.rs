@@ -8,7 +8,7 @@ pub fn distinct_sec_0() -> Result<()> {
 
     
 
-    let rdd0 = sc.make_op::<i32>(1);
+    let rdd0 = sc.make_op::<i32>(NUM_PARTS);
     let rdd1 = rdd0.distinct();
     let _res = rdd1.collect().unwrap();
     

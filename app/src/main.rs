@@ -25,6 +25,7 @@ pub mod benchmarks;
 use benchmarks::*;
 
 const NUM_PARTS: usize = 1;
+const NUM_PARTS_LOCAL: u64 = 1;
 
 macro_rules! numin {
     () => {{

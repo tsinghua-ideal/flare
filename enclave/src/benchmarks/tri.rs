@@ -15,7 +15,7 @@ pub fn triangle_counting_sec_0() -> Result<()> {
     let dir = PathBuf::from("/opt/data/ct_tri_soc-Slashdot0811");
     let graph = sc
         .read_source(
-            LocalFsReaderConfig::new(dir).num_partitions_per_executor(1),
+            LocalFsReaderConfig::new(dir).num_partitions_per_executor(NUM_PARTS_LOCAL),
             None,
             Some(deserializer),
         )
@@ -27,12 +27,12 @@ pub fn triangle_counting_sec_0() -> Result<()> {
         .distinct(); 
     
     let count = graph
-        .join(graph.clone(), NUM_PARTS) //8, 9
-        .key_by(Fn!(|item: &(u32, (u32, u32))| item.1)) //10
+        .join(graph.clone(), NUM_PARTS) //8
+        .key_by(Fn!(|item: &(u32, (u32, u32))| item.1)) //9
         .join(
             graph
-                .clone() //12, 13
-                .map(Fn!(|edge| (edge, 1 as i32))), //11
+                .clone() //11
+                .map(Fn!(|edge| (edge, 1 as i32))), //10
             NUM_PARTS,
         )
         .count()
