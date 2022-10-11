@@ -38,3 +38,7 @@ mod topk;
 pub use topk::*;
 mod tri;
 pub use tri::*;
+mod big_data_bench;
+pub use big_data_bench::*;
+mod tpc_h;
+pub use tpc_h::*;

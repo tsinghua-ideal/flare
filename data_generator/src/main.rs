@@ -70,6 +70,64 @@ fn set_up(data: Vec<Vec<u8>>, dir: PathBuf) {
 }
 
 fn main() {
+    //read tpc-h data
+    // let dir = PathBuf::from("/home/lixiang/eval_flare_plus/data_for_flare_plus/tpc_h_1g");
+    // let (customer, supplier) = read_tpc_h_data(dir);
+    // println!(
+    //     "head 1, customer = {:?}, supplier = {:?}",
+    //     customer[0], supplier[0]
+    // );
+    // save_plain_file(
+    //     &customer,
+    //     PathBuf::from("/opt/data/pt_tpch_1g_customer"),
+    //     16,
+    // );
+    // save_encrypted_file(
+    //     &customer,
+    //     PathBuf::from("/opt/data/ct_tpch_1g_customer"),
+    //     16,
+    // );
+    // save_plain_file(
+    //     &supplier,
+    //     PathBuf::from("/opt/data/pt_tpch_1g_supplier"),
+    //     16,
+    // );
+    // save_encrypted_file(
+    //     &supplier,
+    //     PathBuf::from("/opt/data/ct_tpch_1g_supplier"),
+    //     16,
+    // );
+
+    //read BigDataBench data
+    let dir = PathBuf::from("/home/lixiang/eval_flare_plus/data_for_flare_plus/bdb-ect_5g");
+    let (os_order_items, os_order) = read_bdb_data(dir);
+    println!(
+        "head 1, customer = {:?}, supplier = {:?}",
+        os_order_items[0], os_order[0]
+    );
+    save_plain_file(
+        &os_order_items,
+        PathBuf::from("/opt/data/pt_bdb_ec_order_items_5g"),
+        16,
+    );
+    save_encrypted_file(
+        &os_order_items,
+        PathBuf::from("/opt/data/ct_bdb_ec_order_items_5g"),
+        16,
+    );
+    save_plain_file(&os_order, PathBuf::from("/opt/data/pt_bdb_ec_order_5g"), 16);
+    save_encrypted_file(&os_order, PathBuf::from("/opt/data/ct_bdb_ec_order_5g"), 16);
+
+    //read social graph data
+    // let links_anon = generate_tc_data(
+    //     Some("/home/lixiang/eval_flare_plus/data_for_flare_plus/social_graph/links-anon.txt"),
+    //     0,
+    //     0,
+    // );
+    // println!("head 1, links_anon = {:?}", links_anon[0]);
+    // save_plain_file(&links_anon, PathBuf::from("/opt/data/pt_social_graph"), 16);
+    // save_encrypted_file(&links_anon, PathBuf::from("/opt/data/ct_social_graph"), 16);
+
     /* logistic regression */
     // let data = generate_logistic_regression_data(1_000_000, 2);
     // println!("lr data = {:?}", &data[0..10]);
@@ -149,14 +207,130 @@ fn main() {
     // );
 
     //dijkstra
-    let data = generate_dijkstra_data(Some(
-        "/opt/data/dij_opaque_fb/processed_facebook_combined.txt",
-    ));
-    save_plain_file(&data, PathBuf::from("/opt/data/pt_dij_fb"), 16);
-    save_encrypted_file(&data, PathBuf::from("/opt/data/ct_dij_fb"), 16);
+    // let data = generate_dijkstra_data(Some(
+    //     "/opt/data/dij_opaque_fb/processed_facebook_combined.txt",
+    // ));
+    // save_plain_file(&data, PathBuf::from("/opt/data/pt_dij_fb"), 16);
+    // save_encrypted_file(&data, PathBuf::from("/opt/data/ct_dij_fb"), 16);
 
     //topk
     //generate_topk_data();
+}
+
+fn read_tpc_h_data(
+    dir: PathBuf,
+) -> (
+    Vec<(u64, String, String, u32, String, f32, String, String)>,
+    Vec<(u64, String, String, u32, String, f32, String)>,
+) {
+    let customer = {
+        let path = dir.join("customer.tbl");
+        let f = match File::open(path) {
+            // `io::Error` 的 `description` 方法返回一个描述错误的字符串。
+            Err(why) => panic!("couldn't open for {}", why.to_string()),
+            Ok(file) => file,
+        };
+        let lines = io::BufReader::new(f).lines();
+        lines
+            .into_iter()
+            .map(|line| {
+                let line = line.unwrap();
+                let parts = line.split('|').collect::<Vec<_>>();
+                let custkey = parts[0].parse::<u64>().unwrap();
+                let name = parts[1].to_string();
+                let addr = parts[2].to_string();
+                let nationkey = parts[3].parse::<u32>().unwrap();
+                let phone = parts[4].to_string();
+                let acctbal = parts[5].parse::<f32>().unwrap();
+                let mktsegment = parts[6].to_string();
+                let commont = parts[7].to_string();
+                (
+                    custkey, name, addr, nationkey, phone, acctbal, mktsegment, commont,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let supplier = {
+        let path = dir.join("supplier.tbl");
+        let f = match File::open(path) {
+            // `io::Error` 的 `description` 方法返回一个描述错误的字符串。
+            Err(why) => panic!("couldn't open for {}", why.to_string()),
+            Ok(file) => file,
+        };
+        let lines = io::BufReader::new(f).lines();
+        lines
+            .into_iter()
+            .map(|line| {
+                let line = line.unwrap();
+                let parts = line.split('|').collect::<Vec<_>>();
+                let suppkey = parts[0].parse::<u64>().unwrap();
+                let name = parts[1].to_string();
+                let addr = parts[2].to_string();
+                let nationkey = parts[3].parse::<u32>().unwrap();
+                let phone = parts[4].to_string();
+                let acctbal = parts[5].parse::<f32>().unwrap();
+                let commont = parts[6].to_string();
+                (suppkey, name, addr, nationkey, phone, acctbal, commont)
+            })
+            .collect::<Vec<_>>()
+    };
+    (customer, supplier)
+}
+
+fn read_bdb_data(dir: PathBuf) -> (Vec<(u64, u64, u64, u64, f32, f32)>, Vec<(u64, u64, String)>) {
+    let os_order_items = {
+        let path = dir.join("OS_ORDER_ITEM.txt");
+        let f = match File::open(path) {
+            // `io::Error` 的 `description` 方法返回一个描述错误的字符串。
+            Err(why) => panic!("couldn't open for {}", why.to_string()),
+            Ok(file) => file,
+        };
+        let lines = io::BufReader::new(f).lines();
+        let mut iter = lines.into_iter();
+        let _first = iter.next().unwrap(); //remove the table head
+        iter.map(|line| {
+            let line = line.unwrap();
+            let parts = line.split('|').collect::<Vec<_>>();
+            let item_id = parts[0].parse::<u64>().unwrap();
+            let order_id = parts[1].parse::<u64>().unwrap();
+            let goods_id = parts[2].parse::<u64>().unwrap();
+            let goods_number = parts[3].parse::<u64>().unwrap();
+            let goods_price = parts[4].parse::<f32>().unwrap();
+            let goods_amount = parts[5].parse::<f32>().unwrap();
+            (
+                item_id,
+                order_id,
+                goods_id,
+                goods_number,
+                goods_price,
+                goods_amount,
+            )
+        })
+        .collect::<Vec<_>>()
+    };
+
+    let os_order = {
+        let path = dir.join("OS_ORDER.txt");
+        let f = match File::open(path) {
+            // `io::Error` 的 `description` 方法返回一个描述错误的字符串。
+            Err(why) => panic!("couldn't open for {}", why.to_string()),
+            Ok(file) => file,
+        };
+        let lines = io::BufReader::new(f).lines();
+        let mut iter = lines.into_iter();
+        let _first = iter.next().unwrap(); //remove the table head
+        iter.map(|line| {
+            let line = line.unwrap();
+            let parts = line.split('|').collect::<Vec<_>>();
+            let order_id = parts[0].parse::<u64>().unwrap();
+            let buyer_id = parts[1].parse::<u64>().unwrap();
+            let create_dt = parts[2].to_string();
+            (order_id, buyer_id, create_dt)
+        })
+        .collect::<Vec<_>>()
+    };
+    (os_order_items, os_order)
 }
 
 fn generate_dijkstra_data(true_data: Option<&str>) -> Vec<(usize, usize, Option<String>)> {
