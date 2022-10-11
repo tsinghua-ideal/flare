@@ -140,6 +140,16 @@ lazy_static! {
         /* zip */
         //zip_sec_0()?;
 
+        /* big data bench */
+        // aggregate_sec()?;
+        // filter_sec()?;
+        // cross_project_sec()?;
+
+        /* tpc-h */
+        // te1_sec()?;
+        // te2_sec()?;
+        // te3_sec()?;
+
         /* kmeans */
         //kmeans_sec_0()?;
 

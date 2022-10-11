@@ -95,6 +95,22 @@ fn main() -> Result<()> {
     /* zip */
     //zip_sec_0()?;
 
+    /* big data bench */
+    // aggregate_sec()?;
+    // filter_sec()?;
+    // cross_project_sec()?;
+    // aggregate_unsec()?;
+    // filter_unsec()?;
+    // cross_project_unsec()?;
+
+    /* tpc-h */
+    // te1_sec()?;
+    // te2_sec()?;
+    // te3_sec()?;
+    // te1_unsec()?;
+    // te2_unsec()?;
+    // te3_unsec()?;
+
     /* kmeans */
     //kmeans_sec_0()?;
     //kmeans_unsec_0()?;
