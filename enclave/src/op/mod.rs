@@ -41,6 +41,8 @@ mod count_op;
 pub use count_op::*;
 mod co_grouped_op;
 pub use co_grouped_op::*;
+mod filter_op;
+pub use filter_op::*;
 mod flatmapper_op;
 pub use flatmapper_op::*;
 mod fold_op;
@@ -2062,15 +2064,10 @@ pub trait Op: OpBase + 'static {
     #[track_caller]
     fn filter<F>(&self, predicate: F) -> SerArc<dyn Op<Item = Self::Item>>
     where
-        F: Fn(&Self::Item) -> bool + Send + Sync + Clone + Copy + 'static,
+        F: SerFunc(&Self::Item) -> bool + Copy,
         Self: Sized,
     {
-        let filter_fn = Fn!(move |_index: usize, 
-                                  items: Box<dyn Iterator<Item = Self::Item>>|
-              -> Box<dyn Iterator<Item = _>> {
-            Box::new(items.filter(predicate))
-        });
-        let new_op = SerArc::new(MapPartitions::new(self.get_op(), filter_fn));
+        let new_op = SerArc::new(Filter::new(self.get_op(), predicate));
         if !self.get_context().get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         }
