@@ -1,22 +1,22 @@
 use crate::op::*;
 
-pub struct FlatMapper<T: Data, U: Data, F>
+pub struct Filter<T: Data, F>
 where
-    F: Func(T) -> Box<dyn Iterator<Item = U>> + Clone,
+    F: Func(&T) -> bool + Copy,
 {
     vals: Arc<OpVals>,
     next_deps: Arc<RwLock<HashMap<(OpId, OpId), Dependency>>>,
     prev: Arc<dyn Op<Item = T>>,
     f: F,
-    cache_space: Arc<Mutex<HashMap<(usize, usize), (Vec<Vec<U>>, Vec<Vec<bool>>)>>>,
+    cache_space: Arc<Mutex<HashMap<(usize, usize), (Vec<Vec<T>>, Vec<Vec<bool>>)>>>,
 }
 
-impl<T: Data, U: Data, F> Clone for FlatMapper<T, U, F>
+impl<T: Data, F> Clone for Filter<T, F>
 where
-    F: Func(T) -> Box<dyn Iterator<Item = U>> + Clone,
+    F: Func(&T) -> bool + Copy,
 {
     fn clone(&self) -> Self {
-        FlatMapper {
+        Filter {
             vals: self.vals.clone(),
             next_deps: self.next_deps.clone(),
             prev: self.prev.clone(),
@@ -26,13 +26,13 @@ where
     }
 }
 
-impl<T: Data, U: Data, F> FlatMapper<T, U, F>
+impl<T: Data, F> Filter<T, F>
 where
-    F: Func(T) -> Box<dyn Iterator<Item = U>> + Clone,
+    F: Func(&T) -> bool + Copy,
 {
     #[track_caller]
     pub(crate) fn new(prev: Arc<dyn Op<Item = T>>, f: F) -> Self {
-        let mut vals = OpVals::new(prev.get_op_base().get_context(), prev.number_of_splits());
+        let mut vals = OpVals::new(prev.get_context(), prev.number_of_splits());
         let cur_id = vals.id;
         let prev_id = prev.get_op_id();
         vals.deps
@@ -46,19 +46,19 @@ where
                 Arc::new(OneToOneDependency::new(prev_id, cur_id))
             )
         );
-        FlatMapper {
+        Filter {
             vals,
             next_deps: Arc::new(RwLock::new(HashMap::new())),
             prev,
             f,
-            cache_space: Arc::new(Mutex::new(HashMap::new()))
+            cache_space: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
 
-impl<T: Data, U: Data, F> OpBase for FlatMapper<T, U, F>
+impl<T: Data, F> OpBase for Filter<T, F>
 where
-    F: SerFunc(T) -> Box<dyn Iterator<Item = U>>,
+    F: SerFunc(&T) -> bool + Copy,
 {
     fn build_enc_data_sketch(&self, p_buf: *mut u8, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
@@ -69,19 +69,19 @@ where
 
     fn clone_enc_data_out(&self, p_out: usize, p_data_enc: *mut u8, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 1 => self.step1_of_clone(p_out, p_data_enc, dep_info), 
+            0 | 1 => self.step1_of_clone(p_out, p_data_enc, dep_info),
             _ => panic!("invalid is_shuffle"),
-        }   
+        } 
     }
 
     fn call_free_res_enc(&self, data: *mut u8, marks: *mut u8, is_enc: bool, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 => self.free_res_enc(data, marks, is_enc),
+            0 | 27 => self.free_res_enc(data, marks, is_enc),
             1 => {
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
                 shuf_dep.free_res_enc(data, is_enc);
             },
-            24 | 25 | 26 | 27 => {
+            26 => {
                 assert_eq!(marks as usize, 0usize);
                 crate::ALLOCATOR.set_switch(true);
                 let res = unsafe { Box::from_raw(data as *mut Vec<Vec<ItemE>>) };
@@ -99,7 +99,7 @@ where
     fn get_op_id(&self) -> OpId {
         self.vals.id
     }
-    
+
     fn get_context(&self) -> Arc<Context> {
         self.vals.context.upgrade().unwrap()
     }
@@ -121,6 +121,7 @@ where
     }
 
     fn iterator_start(&self, mut call_seq: NextOpId, input: Input, dep_info: &DepInfo) -> (*mut u8, *mut u8) {
+        
 		self.compute_start(call_seq, input, dep_info)
     }
 
@@ -131,10 +132,10 @@ where
     fn etake(&self, input: *mut u8, should_take: usize, have_take: &mut usize) -> *mut u8 {
         self.take_(input ,should_take, have_take)
     }
-
+    
     fn __to_arc_op(self: Arc<Self>, id: TypeId) -> Option<TraitObject> {
-        if id == TypeId::of::<dyn Op<Item = U>>() {
-            let x = std::ptr::null::<Self>() as *const dyn Op<Item = U>;
+        if id == TypeId::of::<dyn Op<Item = T>>() {
+            let x = std::ptr::null::<Self>() as *const dyn Op<Item = T>;
             let vtable = unsafe {
                 std::mem::transmute::<_, TraitObject>(x).vtable
             };
@@ -147,18 +148,19 @@ where
             None
         }
     }
+
 }
 
-impl<T: Data, U: Data, F> Op for FlatMapper<T, U, F>
+impl<T: Data, F> Op for Filter<T, F>
 where
-    F: SerFunc(T) -> Box<dyn Iterator<Item = U>>,
-{ 
-    type Item = U;
-    
+    F: SerFunc(&T) -> bool + Copy,
+{
+    type Item = T;
+        
     fn get_op(&self) -> Arc<dyn Op<Item = Self::Item>> { 
         Arc::new(self.clone())
     }
-    
+
     fn get_op_base(&self) -> Arc<dyn OpBase> {
         Arc::new(self.clone()) as Arc<dyn OpBase>
     }
@@ -172,16 +174,21 @@ where
         let have_cache = call_seq.have_cache();
         let need_cache = call_seq.need_cache();
         let is_caching_final_rdd = call_seq.is_caching_final_rdd();
-        
+
         if have_cache {
-            assert_eq!(data_ptr as usize, 0 as usize);
+            call_seq.should_filter.0 = true;
+            assert_eq!(data_ptr as usize, 0usize);
             return self.get_and_remove_cached_data(call_seq);
         }
-
+        
         let mut f = self.f.clone();
         match call_seq.get_ser_captured_var() {
-            Some(ser) => f.deser_captured_var(ser),
-            None  => (),
+            Some(ser) => {
+                f.deser_captured_var(ser)
+            },
+            None  => {
+                ()
+            },
         }
         let opb = call_seq.get_next_op().clone();
         let res_iter = if opb.get_op_id() == self.prev.get_op_id() {
@@ -190,12 +197,18 @@ where
             let op = opb.to_arc_op::<dyn Op<Item = T>>().unwrap();
             op.compute(call_seq, input)
         };
-        let res_iter = Box::new(res_iter.map(move |(bl_iter, blmarks)| {
+        call_seq.should_filter.0 = true;
+        let res_iter = Box::new(res_iter.map(move |(bl_iter, mut blmarks)| {
+            let bl = bl_iter.collect::<Vec<_>>();
             if blmarks.is_empty() {
-                (Box::new(bl_iter.flat_map(f.clone())) as Box<dyn Iterator<Item = _>>, blmarks)
+                blmarks.resize(bl.len(), true);
             } else {
-                (Box::new(bl_iter.zip(blmarks.into_iter()).filter(|(_, m)| *m).map(|(x, _)| x).flat_map(f.clone())) as Box<dyn Iterator<Item = _>>, Vec::new())
+                assert_eq!(blmarks.len(), bl.len());
             }
+            for (d, m) in bl.iter().zip(blmarks.iter_mut()) {
+                *m &= (f)(d);
+            }
+            (Box::new(bl.into_iter()) as Box<dyn Iterator<Item = _>>, blmarks)
         }));
 
         let key = call_seq.get_caching_doublet();
@@ -206,8 +219,8 @@ where
                 is_caching_final_rdd,
             )
         }
-
         res_iter
     }
 
 }
+
