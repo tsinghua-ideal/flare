@@ -147,13 +147,13 @@ where
 
     fn call_free_res_enc(&self, data: *mut u8, marks: *mut u8, is_enc: bool, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 2 | 27 => self.free_res_enc(data, marks, is_enc),
-            1 => {
+            0 | 2 | 12 | 14 => self.free_res_enc(data, marks, is_enc),
+            1 | 11 => {
                 assert_eq!(marks as usize, 0usize);
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
-                shuf_dep.free_res_enc(data, is_enc);
+                shuf_dep.free_res_enc(data, dep_info, is_enc);
             },
-            26 => {
+            13 => {
                 assert_eq!(marks as usize, 0usize);
                 crate::ALLOCATOR.set_switch(true);
                 let res = unsafe { Box::from_raw(data as *mut Vec<Vec<ItemE>>) };
@@ -254,7 +254,7 @@ where
             0 => {       //narrow
                 self.narrow(call_seq, input, true)
             },
-            1 => {       //shuffle write
+            1 | 11 => {       //shuffle write
                 self.shuffle(call_seq, input, dep_info)
             },
             2 => {       //shuffle read

@@ -29,7 +29,7 @@ use crate::{CACHE, Fn, OP_MAP};
 use crate::basic::{AnyData, Arc as SerArc, Data, Func, SerFunc};
 use crate::custom_thread::PThread;
 use crate::dependency::{Dependency, OneToOneDependency, ShuffleDependencyTrait};
-use crate::obliv_comp::{VALID_BIT, stage_comm, obliv_global_filter_stage1, obliv_global_filter_stage2_t, obliv_global_filter_stage3_t, obliv_global_filter_stage3_kv, obliv_agg_stage1};
+use crate::obliv_comp::{VALID_BIT, obliv_global_filter_stage1, obliv_global_filter_stage2_t, obliv_global_filter_stage3_t, obliv_global_filter_stage3_kv, obliv_agg_stage1};
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use crate::utils;
@@ -744,7 +744,7 @@ impl DepInfo {
     }
 
     /// 0 for narrow, 1 for shuffle write, 2 for shuffle read, 3, 4 for action
-    /// 20-22 for shuffle_op, 20-25 for join_op , 26/27 for global filter
+    /// 20-24 for shuffle_op, 20-27 for join_op , 12/13/14 for global filter
     pub fn dep_type(&self) -> u8 {
         self.is_shuffle
     }
@@ -1467,10 +1467,10 @@ pub trait Op: OpBase + 'static {
             0 => { 
                 self.narrow(call_seq, input, true)
             },
-            1 => {
+            1 | 11 => {
                 self.shuffle(call_seq, input, dep_info)
             },
-            26 | 27 => {
+            12 | 13 | 14 => {
                 self.remove_dummy(call_seq, input, dep_info)
             },
             _ => panic!("Invalid is_shuffle"),
@@ -1991,8 +1991,12 @@ pub trait Op: OpBase + 'static {
         let tid = call_seq.tid;
         let now = Instant::now();
 
-        let opb = self.get_op_base();
-        let result_ptr = shuf_dep.do_shuffle_task(tid, opb, call_seq, input);
+        let result_ptr = if dep_info.dep_type() == 1 {
+            let opb = self.get_op_base();
+            shuf_dep.do_shuffle_task(tid, opb, call_seq, input)
+        } else {
+            shuf_dep.do_shuffle_task_rem(tid, call_seq, input)
+        };
 
         let dur = now.elapsed().as_nanos() as f64 * 1e-9;
         println!("tid: {:?}, shuffle write: {:?}s", tid, dur);
@@ -2006,7 +2010,7 @@ pub trait Op: OpBase + 'static {
         let part_id = call_seq.get_part_id();
 
         match dep_info.dep_type() {
-            26 => {
+            12 => {
                 let data_enc_len = input.get_enc_data::<Vec<ItemE>>().len();
                 let data_iter = Box::new((0..data_enc_len).map(move |i| input.get_enc_data::<Vec<ItemE>>()[i].clone()).map(|bl_enc| {
                     if bl_enc.is_empty() {
@@ -2018,7 +2022,19 @@ pub trait Op: OpBase + 'static {
                     }
                 }));
                 let (data, num_invalids) = obliv_global_filter_stage1(data_iter);
-                let nums_invalids = stage_comm(num_invalids, call_seq.stage_id, 0, num_splits, part_id);
+                let data_ptr = Box::into_raw(Box::new(data)) as *mut u8 as usize;
+                let mut info = create_enc();
+                merge_enc(&mut info, &ser_encrypt(&data_ptr));
+                merge_enc(&mut info, &ser_encrypt(&num_invalids));
+                (to_ptr(info), 0 as *mut u8)
+            },
+            13 => {
+                let (data_ptr, num_invalids) = input.get_enc_data::<(ItemE, Vec<ItemE>)>();
+                let data_ptr: usize = ser_decrypt(&data_ptr.clone());
+                let nums_invalids = num_invalids.iter().map(|x| ser_decrypt::<usize>(&x.clone())).collect::<Vec<_>>();
+                let data = *unsafe {
+                    Box::from_raw(data_ptr as *mut u8 as *mut Vec<Vec<(Self::Item, u64)>>)
+                };
                 let buckets = obliv_global_filter_stage2_t(data, part_id, num_splits, nums_invalids, input.get_parallel());
                 let mut buckets_enc = create_enc();
                 for bucket in buckets {
@@ -2026,7 +2042,7 @@ pub trait Op: OpBase + 'static {
                 }
                 (to_ptr(buckets_enc), 0 as *mut u8)
             },
-            27 => {
+            14 => {
                 let (parts, max_len) = read_sorted_bucket::<(Self::Item, u64)>(input.get_enc_data::<Vec<Vec<ItemE>>>(), input.get_parallel());
                 let part = obliv_global_filter_stage3_t(parts, max_len);
                 let part_enc = batch_encrypt(&part, true);

@@ -5,7 +5,7 @@ use crate::dependency::{
     NarrowDependencyTrait, OneToOneDependency, ShuffleDependency,
     ShuffleDependencyTrait,
 };
-use crate::obliv_comp::{VALID_BIT, obliv_global_filter_stage3_kv, obliv_agg_stage1, obliv_agg_stage2, obliv_group_by_stage1, stage_comm, obliv_join::*};
+use crate::obliv_comp::{VALID_BIT, obliv_global_filter_stage3_kv, obliv_agg_stage1, obliv_agg_stage2, obliv_group_by_stage1, obliv_join::*};
 use crate::op::*;
 
 use deepsize::DeepSizeOf;
@@ -155,11 +155,11 @@ where
 
     fn call_free_res_enc(&self, data: *mut u8, marks: *mut u8, is_enc: bool, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 2 | 22 | 23 | 27 => self.free_res_enc(data, marks, is_enc),
-            1 => {
+            0 | 2 | 21 | 24 | 25 | 12 | 14 => self.free_res_enc(data, marks, is_enc),
+            1 | 11 => {
                 assert_eq!(marks as usize, 0usize);
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
-                shuf_dep.free_res_enc(data, is_enc);
+                shuf_dep.free_res_enc(data, dep_info, is_enc);
             },
             20 => {
                 //different from that in shuffled_op, because here are two tables, so an additional layer of vector
@@ -170,15 +170,15 @@ where
                 drop(cnt_buckets);
                 crate::ALLOCATOR.set_switch(false);
             },
-            21 => {
+            22 => {
                 crate::ALLOCATOR.set_switch(true);
-                let data = unsafe { Box::from_raw(data as *mut Vec<Vec<ItemE>>) };
+                let data = unsafe { Box::from_raw(data as *mut Vec<ItemE>) };
                 drop(data);
                 let marks = unsafe { Box::from_raw(marks as *mut ItemE) };
                 drop(marks);
                 crate::ALLOCATOR.set_switch(false);
             },
-            24 | 25 | 26 => {
+            23 | 26 | 27 | 13 => {
                 assert_eq!(marks as usize, 0usize);
                 crate::ALLOCATOR.set_switch(true);
                 let res = unsafe { Box::from_raw(data as *mut Vec<Vec<ItemE>>) };
@@ -278,7 +278,7 @@ where
             0 => {       //narrow
                 self.narrow(call_seq, input, true)
             },
-            1 => {       //shuffle write
+            1 | 11 => {       //shuffle write
                 self.shuffle(call_seq, input, dep_info)
             },
             2 => {       //shuffle read
@@ -311,15 +311,10 @@ where
                 (to_ptr(part_enc), to_ptr(buckets_enc))
             },
             21 => {
-                let part_group: (usize, usize, usize) =
-                    bincode::deserialize(&call_seq.get_ser_captured_var().unwrap()[0]).unwrap();
-                assert_eq!(part_group.0, call_seq.stage_id);
-                let part_id = call_seq.get_part_id();
-                let outer_parallel = input.get_parallel();
-                let cache_limit = CACHE_LIMIT / MAX_THREAD / outer_parallel;
                 let buckets_enc_set = input.get_enc_data::<Vec<Vec<Vec<ItemE>>>>();
                 assert_eq!(buckets_enc_set.len(), 2);
-            
+                let outer_parallel = input.get_parallel();
+
                 //continue group count
                 let create_combiner = Box::new(|v: i64| v);
                 let merge_value = Box::new(move |(buf, v)| buf + v);
@@ -339,10 +334,27 @@ where
                     part_set.push(part);
                     info.push((a, cnt));
                 }
-            
-                let (alpha, beta): (Vec<usize>, Vec<usize>) =
-                    stage_comm(info, part_group.0, part_group.1, part_group.2, part_id)
-                        .into_iter()
+
+                let part_ptr = Box::into_raw(Box::new(part_set)) as *mut u8 as usize;
+                let mut buf = create_enc();
+                merge_enc(&mut buf, &ser_encrypt(&part_ptr));
+                merge_enc(&mut buf, &ser_encrypt(&info));
+                (to_ptr(buf), 0 as *mut u8)
+            },
+            22 => {
+                let part_group: (usize, usize, usize) =
+                    bincode::deserialize(&call_seq.get_ser_captured_var().unwrap()[0]).unwrap();
+                assert_eq!(part_group.0, call_seq.stage_id);
+                let outer_parallel = input.get_parallel();
+                let cache_limit = CACHE_LIMIT / MAX_THREAD / outer_parallel;
+
+                let (part_ptr, stat) = input.get_enc_data::<(ItemE, Vec<ItemE>)>();
+                let part_ptr: usize = ser_decrypt(&part_ptr.clone());
+                let mut part_set = *unsafe {
+                    Box::from_raw(part_ptr as *mut u8 as *mut Vec<Vec<((K, i64), u64)>>)
+                };
+                let stat = stat.iter().map(|x| ser_decrypt::<Vec<(usize, usize)>>(&x.clone())).collect::<Vec<_>>();
+                let (alpha, beta): (Vec<usize>, Vec<usize>) = stat.into_iter()
                         .fold(vec![(0, 0), (0, 0)], |x, y| {
                             assert!(x.len() == 2 && y.len() == 2);
                             x.into_iter()
@@ -365,17 +377,29 @@ where
                     part_group.2,
                     cache_limit,
                 );
-                let last_bin_info = stage_comm(
-                    (last_bin_num, last_bin_size, acc_prod),
-                    part_group.0,
-                    part_group.1,
-                    part_group.2,
-                    part_id,
-                );
-                assert_eq!(
-                    last_bin_info[part_id],
-                    (last_bin_num, last_bin_size, acc_prod)
-                );
+
+                let part_ptr = Box::into_raw(Box::new(part)) as *mut u8 as usize;
+                let mut buf = create_enc();
+                merge_enc(&mut buf, &ser_encrypt(&part_ptr));
+                merge_enc(&mut buf, &ser_encrypt(&(last_bin_num, last_bin_size, acc_prod)));
+                let meta_data = bincode::serialize(&(alpha, beta, n_out_prime)).unwrap();
+                crate::ALLOCATOR.set_switch(true);
+                let meta_data_ptr = Box::into_raw(Box::new(meta_data.clone()));
+                crate::ALLOCATOR.set_switch(false);
+                (to_ptr(buf), meta_data_ptr as *mut u8)
+            },
+            23 => {
+                let (alpha, n_out_prime): (Vec<usize>, usize) = bincode::deserialize(&call_seq.get_ser_captured_var().unwrap()[0]).unwrap();
+
+                let part_id = call_seq.get_part_id();
+                let cache_limit = CACHE_LIMIT/MAX_THREAD/input.get_parallel();
+
+                let (part_ptr, last_bin_info) = input.get_enc_data::<(ItemE, Vec<ItemE>)>();
+                let part_ptr: usize = ser_decrypt(&part_ptr.clone());
+                let part = *unsafe {
+                    Box::from_raw(part_ptr as *mut u8 as *mut Vec<((K, (i64, i64)), u64, u64)>)
+                };
+                let last_bin_info = last_bin_info.iter().map(|x| ser_decrypt::<(usize, usize, i64)>(&x.clone())).collect::<Vec<_>>();
                 let (part, data, acc_col, num_bins, idx_last, acc_col_rem) = obliv_join_stage2(
                     part,
                     cache_limit,
@@ -393,13 +417,9 @@ where
                     &mut data_set_enc,
                     &vec![ser_encrypt(&(acc_col, num_bins, idx_last))],
                 );
-                let meta_data = bincode::serialize(&(alpha, beta, n_out_prime)).unwrap();
-                crate::ALLOCATOR.set_switch(true);
-                let meta_data_ptr = Box::into_raw(Box::new(meta_data.clone()));
-                crate::ALLOCATOR.set_switch(false);
-                (to_ptr(data_set_enc), meta_data_ptr as *mut u8)
+                (to_ptr(data_set_enc), 0 as *mut u8)
             },
-            22 => {
+            24 => {
                 let n_out_prime: usize =
                     bincode::deserialize(&call_seq.get_ser_captured_var().unwrap()[0]).unwrap();
                 let acc_col_rem = input.get_enc_data::<Vec<ItemE>>();
@@ -432,7 +452,7 @@ where
 
                 (to_ptr(data_enc), 0 as *mut u8)
             }
-            23 => {
+            25 => {
                 let part_group: (usize, usize, usize) =
                     bincode::deserialize(&call_seq.get_ser_captured_var().unwrap()[0]).unwrap();
                 assert_eq!(part_group.0, call_seq.stage_id);
@@ -466,7 +486,7 @@ where
                     (to_ptr(data_enc), 0 as *mut u8)
                 }
             },
-            24 => {
+            26 => {
                 let part_group: (usize, usize, usize) =
                     bincode::deserialize(&call_seq.get_ser_captured_var().unwrap()[0]).unwrap();
                 assert_eq!(part_group.0, call_seq.stage_id);
@@ -483,7 +503,7 @@ where
                 
                 (to_ptr(buckets_enc), 0 as *mut u8)
             },
-            25 => {
+            27 => {
                 let (part_group, beta, n_out_prime): ((usize, usize, usize), Vec<usize>, usize) =
                     bincode::deserialize(&call_seq.get_ser_captured_var().unwrap()[0]).unwrap();
                 assert_eq!(part_group.0, call_seq.stage_id);
@@ -501,7 +521,7 @@ where
 
                 (to_ptr(buckets_enc), 0 as *mut u8)
             },
-            26 | 27 => {
+            12 | 13 | 14 => {
                 self.remove_dummy(call_seq, input, dep_info)
             },
             _ => panic!("Invalid is_shuffle")

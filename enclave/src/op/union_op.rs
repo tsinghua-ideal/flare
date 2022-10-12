@@ -127,12 +127,12 @@ impl<T: Data> OpBase for Union<T>
 
     fn call_free_res_enc(&self, data: *mut u8, marks: *mut u8, is_enc: bool, dep_info: &DepInfo) {
         match dep_info.dep_type() {
-            0 | 27 => self.free_res_enc(data, marks, is_enc),
-            1 => {
+            0 | 12 | 14 => self.free_res_enc(data, marks, is_enc),
+            1 | 11 => {
                 let shuf_dep = self.get_next_shuf_dep(dep_info).unwrap();
-                shuf_dep.free_res_enc(data, is_enc);
+                shuf_dep.free_res_enc(data, dep_info, is_enc);
             },
-            26 => {
+            13 => {
                 assert_eq!(marks as usize, 0usize);
                 crate::ALLOCATOR.set_switch(true);
                 let res = unsafe { Box::from_raw(data as *mut Vec<Vec<ItemE>>) };

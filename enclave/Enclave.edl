@@ -112,13 +112,6 @@ enclave {
         size_t ocall_cache_from_outside(size_t rdd_id,
             size_t part_id,
             [out] size_t* marks_ptr);
-        size_t ocall_stage_comm(size_t data_ptr,
-            size_t stage_id, 
-            size_t part_id_offset, 
-            size_t num_splits, 
-            size_t part_id
-        );
-        void ocall_stage_comm_post(size_t data_ptr);
         void* sbrk_o(size_t size);  
     };
 

@@ -9,7 +9,7 @@ use std::untrusted::time::InstantEx;
 use std::vec::Vec;
 use crate::aggregator::Aggregator;
 use crate::basic::{AnyData, Data, Func};
-use crate::obliv_comp::{obliv_agg_presort, obliv_agg_stage1, obliv_global_filter_stage1, stage_comm, obliv_global_filter_stage2_kv, zip_data_marks};
+use crate::obliv_comp::{obliv_agg_presort, obliv_agg_stage1, obliv_global_filter_stage1, obliv_global_filter_stage2_kv, zip_data_marks};
 use crate::op::*;
 use crate::partitioner::Partitioner;
 use crate::serialization_free::{Construct, Idx, SizeBuf};
@@ -107,9 +107,10 @@ impl NarrowDependencyTrait for RangeDependency {
 pub trait ShuffleDependencyTrait: DowncastSync + Send + Sync  { 
     fn change_partitioner(&self, reduce_num: usize);
     fn do_shuffle_task(&self, tid: u64, opb: Arc<dyn OpBase>, call_seq: NextOpId, input: Input) -> *mut u8;
+    fn do_shuffle_task_rem(&self, tid: u64, call_seq: NextOpId, input: Input) -> *mut u8;
     fn send_sketch(&self, buf: &mut SizeBuf, p_data_enc: *mut u8);
     fn send_enc_data(&self, p_out: usize, p_data_enc: *mut u8);
-    fn free_res_enc(&self, res_ptr: *mut u8, is_enc: bool);
+    fn free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo, is_enc: bool);
     fn get_parent(&self) -> OpId;
     fn get_child(&self) -> OpId;
     fn get_identifier(&self) -> usize;
@@ -177,9 +178,6 @@ where
         let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
         
         let part_id = call_seq.get_part_id();
-        let stage_id = call_seq.stage_id;
-        let part_id_offset = 0;
-        let num_splits_in = op.number_of_splits();
         let outer_parallel = input.get_parallel();
     
         let partitioner = self.partitioner.read().unwrap().clone();
@@ -191,16 +189,14 @@ where
             *unsafe{ Box::from_raw(ptr as *mut Vec<(Vec<(K, V)>, Vec<bool>)>) }
         };
         
-        let buckets_enc = if self.aggregator.is_default {
+        if self.aggregator.is_default {
             let data_iter = zip_data_marks(results);
             let (data, num_invalids) = obliv_global_filter_stage1(data_iter);
-            let nums_invalids = stage_comm(num_invalids, stage_id, part_id_offset, num_splits_in, part_id);
-            let buckets = obliv_global_filter_stage2_kv(data, part_id, num_splits_out, nums_invalids, outer_parallel);
-            let mut buckets_enc = create_enc();
-            for bucket in buckets {
-                merge_enc(&mut buckets_enc, &batch_encrypt(&bucket, false));
-            }
-            buckets_enc
+            let data_ptr = Box::into_raw(Box::new(data)) as *mut u8 as usize;
+            let mut info = create_enc();
+            merge_enc(&mut info, &ser_encrypt(&data_ptr));
+            merge_enc(&mut info, &ser_encrypt(&num_invalids));
+            to_ptr(info)
         } else {
             let sorted_data = obliv_agg_presort(results, outer_parallel);
             let buckets = obliv_agg_stage1(sorted_data, part_id, false, &self.aggregator, &partitioner);
@@ -208,8 +204,29 @@ where
             for bucket in buckets {
                 merge_enc(&mut buckets_enc, &batch_encrypt(&bucket, false));
             }
-            buckets_enc
+            to_ptr(buckets_enc)
+        }
+    }
+
+    fn do_shuffle_task_rem(&self, tid: u64, call_seq: NextOpId, input: Input) -> *mut u8 {
+        let part_id = call_seq.get_part_id();
+        let outer_parallel = input.get_parallel();
+    
+        let partitioner = self.partitioner.read().unwrap().clone();
+        let num_splits_out = partitioner.get_num_of_partitions();
+
+        assert!(self.aggregator.is_default);
+        let (data_ptr, num_invalids) = input.get_enc_data::<(ItemE, Vec<ItemE>)>();
+        let data_ptr: usize = ser_decrypt(&data_ptr.clone());
+        let nums_invalids = num_invalids.iter().map(|x| ser_decrypt::<usize>(&x.clone())).collect::<Vec<_>>();
+        let data = *unsafe {
+            Box::from_raw(data_ptr as *mut u8 as *mut Vec<Vec<((K, V), u64)>>)
         };
+        let buckets = obliv_global_filter_stage2_kv(data, part_id, num_splits_out, nums_invalids, outer_parallel);
+        let mut buckets_enc = create_enc();
+        for bucket in buckets {
+            merge_enc(&mut buckets_enc, &batch_encrypt(&bucket, false));
+        }
         to_ptr(buckets_enc)
     }
 
@@ -228,12 +245,20 @@ where
         //and free encrypted buckets
     }
 
-    fn free_res_enc(&self, res_ptr: *mut u8, is_enc: bool) {
-        assert!(is_enc);
-        crate::ALLOCATOR.set_switch(true);
-        let res = unsafe { Box::from_raw(res_ptr as *mut Vec<Vec<ItemE>>) };
-        drop(res);
-        crate::ALLOCATOR.set_switch(false);
+    fn free_res_enc(&self, res_ptr: *mut u8, dep_info: &DepInfo, is_enc: bool) {
+        if self.aggregator.is_default && dep_info.dep_type() == 1 {
+            assert!(is_enc);
+            crate::ALLOCATOR.set_switch(true);
+            let res = unsafe { Box::from_raw(res_ptr as *mut Vec<ItemE>) };
+            drop(res);
+            crate::ALLOCATOR.set_switch(false);
+        } else {
+            assert!(is_enc);
+            crate::ALLOCATOR.set_switch(true);
+            let res = unsafe { Box::from_raw(res_ptr as *mut Vec<Vec<ItemE>>) };
+            drop(res);
+            crate::ALLOCATOR.set_switch(false);
+        }
     }
 
     fn get_parent(&self) -> OpId {

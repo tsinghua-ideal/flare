@@ -121,7 +121,6 @@ where
         max_len = std::cmp::max(max_len, buckets[b].1.len());
     }
     //padding with max key
-    println!("part: {:?}, f, max_len = {:?}", id, max_len);
     if max_len > 0 {
         for i in 0..n_out {
             let last_one = buckets[i].1.pop().unwrap_or(Default::default());
@@ -134,7 +133,6 @@ where
             buckets[i].1.push(last_one);
         }
     }
-    println!("part: {:?}, g", id);
 
     //with OM, the following can be simplified
     // for i in 0..n_out {
