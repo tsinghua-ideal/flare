@@ -207,7 +207,7 @@ where
 
     let mut acc_col = (0..n_out).map(|x| (x, 0)).collect::<Vec<_>>();
     let mut acc_col_rem = (0..n_out).map(|x| (x, usize::MAX)).collect::<Vec<_>>();
-    let len = idx - 1 / n_out * n_out;
+    let len = (idx - 1) / n_out * n_out;
     for i in 1..data.len() {
         let k = (i - 1) % n_out;
         if i <= len {
@@ -239,14 +239,15 @@ pub fn obliv_join_stage3(
     acc_col_rec.sort_by_key(|x| x.0);
     acc_col_own.sort_by_key(|x| x.0);
 
+    let last_bin_loc = *last_bin_loc_own; 
     for s in acc_col_own.iter() {
-        let c = *last_bin_loc_own > 0 && *last_bin_loc_own <= num_bins && (*last_bin_loc_own - 1) % n_out == s.0;
+        let c = last_bin_loc > 0 && last_bin_loc <= num_bins && (last_bin_loc - 1) % n_out == s.0;
         if c {
             *last_bin_loc_own = s.1;
         }
     }
     for s in acc_col_rem.iter() {
-        let c = *last_bin_loc_own > 0 && *last_bin_loc_own > num_bins && (*last_bin_loc_own - 1) % n_out == s.0;
+        let c = last_bin_loc > 0 && last_bin_loc > num_bins && (last_bin_loc - 1) % n_out == s.0;
         if c {
             *last_bin_loc_own = s.1;
         }
