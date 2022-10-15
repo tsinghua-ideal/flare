@@ -44,3 +44,5 @@ mod big_data_bench;
 pub use big_data_bench::*;
 mod tpc_h;
 pub use tpc_h::*;
+mod social_graph;
+pub use social_graph::*;
