@@ -24,6 +24,7 @@ pub use obliv_aggregate::*;
 pub use obliv_group_by::*;
 pub use obliv_join::*;
 
+pub const PAD_FACTOR: f64 = 20.0;
 pub static VALID_BIT: u64 = 63;
 static TID_BIT: u64 = 62;
 static DUMMY_BIT: u64 = 61; //used for padding during sort

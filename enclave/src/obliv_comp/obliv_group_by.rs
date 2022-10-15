@@ -94,7 +94,7 @@ where
     patch_part_num(&mut part, buckets, n_in, f_from_bkt, f_from_part);
 
     let mut lim = (2 * beta + n_in * n_out - 1) / n_in / n_out;
-    lim += ((lim as f64).sqrt() * 5.0) as usize;
+    lim += ((lim as f64).sqrt() * PAD_FACTOR) as usize;
 
     let cmp_f = |a: &((K, V), u64), b: &((K, V), u64)| {
         (is_dummy(a), get_field_bktid(a), !is_valid(a), &a.0.0).cmp(&(is_dummy(b), get_field_bktid(b), !is_valid(b), &b.0.0))

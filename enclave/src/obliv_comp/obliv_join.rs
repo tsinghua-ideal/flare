@@ -388,7 +388,7 @@ where
     }
 
     let mut lim = (2 * (beta[0] + beta[1]) + n_in * n_out - 1) / n_in / n_out;
-    lim += ((lim as f64).sqrt() * 5.0) as usize;
+    lim += ((lim as f64).sqrt() * PAD_FACTOR) as usize;
 
     let mut part = part_a;
     part.append(&mut part_b);
