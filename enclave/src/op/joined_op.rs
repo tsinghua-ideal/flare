@@ -512,116 +512,117 @@ where
                     }
                 }
                 let data_len = data.len();
-                //sort in order to split Ta and Tb
-                let max_value = Default::default();
-                //Tb < Ta < dummy
-                let cmp_f = |a: &((K, (Option<V>, Option<W>)), (u64, u64)), b: &((K, (Option<V>, Option<W>)), (u64, u64))| {
-                    ((3 - a.0.1.0.is_some() as u8 - 2 * a.0.1.1.is_some() as u8), &a.0.0).cmp(&((3 - b.0.1.0.is_some() as u8 - 2 * b.0.1.1.is_some() as u8), &b.0.0)) 
-                };
-                let (sub_parts, max_len) = split_with_interval(data, CACHE_LIMIT/input.get_parallel(), cmp_f.clone()); 
-                let mut sort_helper = SortHelper::new(sub_parts, max_len, max_value, true, cmp_f);
-                sort_helper.sort();
-                let (ta, tb) = {
-                    let mut sorted_data = sort_helper.take().0.into_iter().map(|((k, (v, w)), (a, b))| ((k, (v, w)), (a, b), 0u64)).collect::<Vec<_>>();
-                    let cnt = sorted_data.group_by(|a, b| ((a.0.1.0.is_some(), a.0.1.1.is_some())) == ((b.0.1.0.is_some(), b.0.1.1.is_some()))).map(|x| x.len()).collect::<Vec<_>>();
-                    assert_eq!(cnt.len(), 2);
-                    let ta = sorted_data.split_off(cnt[0]);
-                    (ta, sorted_data)
-                };
                 //compute the length needed to padding to
                 let max_a = (((max_cnt_sum * max_cnt_sum) as f64/4.0 - max_cnt_prod as f64).sqrt() + max_cnt_sum as f64/2.0).round() as usize;
                 let max_b = max_cnt_sum as usize - max_a; 
                 let remaining_cnt = data_len % max_cnt_sum as usize;
                 let remaining_cnt_prod = std::cmp::max(max_a * (remaining_cnt.saturating_sub(max_a)), max_b * (remaining_cnt.saturating_sub(max_b)));
-                let len = data_len/max_cnt_sum as usize * max_cnt_prod as usize + remaining_cnt_prod;
-                //oblivious expand
-                let mut res = Vec::new();
-                for (i, mut t) in vec![ta, tb].into_iter().enumerate() {
-                    let mask = if i == 0 {
-                        (0, 1)
-                    } else {
-                        (1, 0)
-                    };
-                    let mut s = 0;
-                    for x in t.iter_mut() {
-                        let g = x.1.0 * mask.0 + x.1.1 * mask.1;
-                        if g != 0 {
-                            x.2 = s;
-                        } else {
-                            x.2 = u64::MAX;
-                        }
-                        s += g;
-                    }
-                    println!("max_a = {:?}, max_b = {:?}, remaining_cnt = {:?}, remaining_cnt_prod = {:?}, len = {:?}, s = {:?}", max_a, max_b, remaining_cnt, remaining_cnt_prod, len, s);
-                    assert!(s as usize <= len);
+                let padding_len = data_len/max_cnt_sum as usize * max_cnt_prod as usize + remaining_cnt_prod;
 
-                    let max_value = (Default::default(), Default::default(), u64::MAX);
-                    //real < dummy
+                //sort in order to split Ta and Tb
+                let max_value = Default::default();
+                //Ta < Tb < dummy
+                let cmp_f = |a: &((K, (Option<V>, Option<W>)), (u64, u64)), b: &((K, (Option<V>, Option<W>)), (u64, u64))| {
+                    (a.1 == (0, 0), (3 - 2 * a.0.1.0.is_some() as u8 - a.0.1.1.is_some() as u8), &a.0.0).cmp(&((b.1 == (0, 0)), (3 - 2 * b.0.1.0.is_some() as u8 - b.0.1.1.is_some() as u8), &b.0.0)) 
+                };
+                let (sub_parts, max_len) = split_with_interval(data, CACHE_LIMIT/input.get_parallel(), cmp_f.clone()); 
+                let mut sort_helper = SortHelper::new(sub_parts, max_len, max_value, true, cmp_f);
+                sort_helper.sort();
+                let mut sorted_data = sort_helper.take().0.into_iter().map(|((k, (v, w)), (a, b))| ((k, (v, w)), (a, b), u64::MAX)).collect::<Vec<_>>();
+                //oblivious expand
+                let mut s = 0;
+                for i in 0..sorted_data.len() {
+                    let tid = sorted_data[i].0.1.1.is_some() as usize;
+                    if i != 0 && tid != sorted_data[i-1].0.1.1.is_some() as usize {
+                        s = 0;
+                    }
+                    let g = sorted_data[i].1.0 * tid as u64 + sorted_data[i].1.1 * (1 - tid) as u64;
+                    if g != 0 {
+                        sorted_data[i].2 = s + (tid * padding_len) as u64;
+                    } else {
+                        sorted_data[i].2 = u64::MAX;
+                    }
+                    s += g;
+                    assert!(s as usize <= padding_len);
+                }
+                println!("max_a = {:?}, max_b = {:?}, remaining_cnt = {:?}, remaining_cnt_prod = {:?}, len = {:?}, s = {:?}", max_a, max_b, remaining_cnt, remaining_cnt_prod, padding_len, s);
+
+                sorted_data.resize(2 * padding_len, (Default::default(), Default::default(), u64::MAX));
+                //oblivious distribute
+                let mut j = 1usize << (((2 * padding_len) as f64).log2().ceil() as u32 - 1);
+                while j >= 1 {
+                    for i in (0..(2 * padding_len-j)).rev() {
+                        if sorted_data[i].2 as usize >= i + j && sorted_data[i].2 != u64::MAX { //to be verified!
+                            sorted_data.swap(i, i+j);
+                        }
+                    }
+                    j = j >> 1;
+                }
+
+                //split into table A and table B
+                let mut data_b = sorted_data.split_off(padding_len); //note that loc in data_b is still added by padding_len
+                let mut data_a = sorted_data;
+
+                //fill in missing entries
+                for (tid, table) in [&mut data_a, &mut data_b].iter_mut().enumerate() {
+                    let mut alpha = 0;
+                    for i in 0..table.len() {
+                        let mut cur_loc = table[i].2;
+                        if cur_loc == u64::MAX && alpha > 0 {
+                            table[i] = table[i-1].clone();
+                            alpha -= 1;
+                        } else {
+                            if cur_loc != u64::MAX {
+                                cur_loc -= (tid * padding_len) as u64;
+                                table[i].2 = cur_loc;
+                            }
+                            alpha = table[i].1.0 as usize * tid + table[i].1.1 as usize * (1 - tid) - 1;
+                        }
+                    }
+                }
+
+                let tb = {
+                    //align tables
                     let cmp_f = |a: &((K, (Option<V>, Option<W>)), (u64, u64), u64), b: &((K, (Option<V>, Option<W>)), (u64, u64), u64)| {
                         a.2.cmp(&b.2)
                     };
-                    let (sub_parts, max_len) = split_with_interval(t, CACHE_LIMIT/input.get_parallel(), cmp_f.clone()); 
-                    let mut sort_helper = SortHelper::new(sub_parts, max_len, max_value.clone(), true, cmp_f);
-                    sort_helper.sort();
-                    let mut sorted_data = sort_helper.take().0;
-                    sorted_data.resize(len, max_value.clone());
-                    //oblivious distribute
-                    let mut j = 1usize << ((len as f64).log2().ceil() as u32 - 1);
-                    while j >= 1 {
-                        for i in (0..(len-j)).rev() {
-                            if sorted_data[i].2 as usize >= i + j && sorted_data[i].2 != u64::MAX { //to be verified!
-                                sorted_data.swap(i, i+j);
+                    let max_value = (Default::default(), Default::default(), u64::MAX);
+                    let mut b = 0;
+                    let mut q = 0;
+                    for j in 1..data_b.len() {
+                        if data_b[j].1.1 == 0 || data_b[j].1.0 == 0 {
+                            for jj in j..data_b.len() {
+                                assert_eq!(data_b[jj].2, u64::MAX);
                             }
+                            break;
                         }
-                        j = j >> 1;
-                    }
-                    //fill in missing entries
-                    let mut alpha = 0;
-                    for i in 0..sorted_data.len() {
-                        if sorted_data[i].2 == u64::MAX && alpha > 0 {
-                            sorted_data[i] = sorted_data[i-1].clone();
-                            alpha -= 1;
+                        if data_b[j].0.0 != data_b[j-1].0.0 {
+                            q = 0;
+                            b = data_b[j].2;
                         } else {
-                            alpha = sorted_data[i].1.0 * mask.0 + sorted_data[i].1.1 * mask.1 - 1;
+                            q += 1;
+                            data_b[j].2 = b + q/data_b[j].1.0 + (q % data_b[j].1.0) * data_b[j].1.1; 
                         }
                     }
+                    let (sub_parts, max_len) = split_with_interval(data_b, CACHE_LIMIT/input.get_parallel(), cmp_f.clone()); 
+                    let mut sort_helper = SortHelper::new(sub_parts, max_len, max_value, true, cmp_f);
+                    sort_helper.sort();
+                    sort_helper.take().0.into_iter()
+                        .map(|((k, (v, w)), _, pos)| ((k, (v, w)), pos != u64::MAX))
+                        .collect::<Vec<_>>()
+                };
+                let ta = data_a.into_iter()
+                    .map(|((k, (v, w)), _, pos)| ((k, (v, w)), pos != u64::MAX))
+                    .collect::<Vec<_>>();
 
-                    //align tables
-                    let t = if i == 1 {
-                        let mut b = 0;
-                        let mut q = 0;
-                        for j in 1..sorted_data.len() {
-                            if sorted_data[j].1.1 == 0 || sorted_data[j].1.0 == 0 {
-                                for jj in j..sorted_data.len() {
-                                    assert_eq!(sorted_data[jj].2, u64::MAX);
-                                }
-                                break;
-                            }
-                            if sorted_data[j].0.0 != sorted_data[j-1].0.0 {
-                                q = 0;
-                                b = sorted_data[j].2;
-                            } else {
-                                q += 1;
-                                sorted_data[j].2 = b + q/sorted_data[j].1.0 + (q % sorted_data[j].1.0) * sorted_data[j].1.1; 
-                            }
-                        }
-                        let (sub_parts, max_len) = split_with_interval(sorted_data, CACHE_LIMIT/input.get_parallel(), cmp_f.clone()); 
-                        let mut sort_helper = SortHelper::new(sub_parts, max_len, max_value, true, cmp_f);
-                        sort_helper.sort();
-                        sort_helper.take().0.into_iter()
-                            .map(|((k, (v, w)), _, pos)| ((k, (v, w)), pos != u64::MAX))
-                            .collect::<Vec<_>>()
-                    } else {
-                        sorted_data.into_iter()
-                            .map(|((k, (v, w)), _, pos)| ((k, (v, w)), pos != u64::MAX))
-                            .collect::<Vec<_>>()
-                    };
-                    res.push(t);
+                let ((kp, (mut vp, _)), _) = ta[0].clone(); //in case the default value involved in invalid computation (e.g., /0).
+                if vp.is_none() {
+                    vp = Some(Default::default());
                 }
-                let tb = res.pop().unwrap();
-                let ta = res.pop().unwrap();
-                let ((kp, (vp, _)), _) = ta[0].clone(); //in case the default value involved in invalid computation (e.g., /0).
-                let ((_, (_, wp)), _) = tb[0].clone();
+                let ((_, (_, mut wp)), _) = tb[0].clone();
+                if wp.is_none() {
+                    wp = Some(Default::default());
+                }
                 let (table, marks): (Vec<_>, Vec<_>) =ta.into_iter().zip(tb.into_iter()).map(|(((ka, (va, wa)), ma), ((kb, (vb, wb)), mb))| {
                     assert_eq!(ma, mb);
                     if ma {
