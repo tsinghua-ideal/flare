@@ -99,24 +99,24 @@ fn main() {
     // );
 
     //read BigDataBench data
-    let dir = PathBuf::from("/home/lixiang/eval_flare_plus/data_for_flare_plus/bdb-ect_5g");
-    let (os_order_items, os_order) = read_bdb_data(dir);
-    println!(
-        "head 1, customer = {:?}, supplier = {:?}",
-        os_order_items[0], os_order[0]
-    );
-    save_plain_file(
-        &os_order_items,
-        PathBuf::from("/opt/data/pt_bdb_ec_order_items_5g"),
-        16,
-    );
-    save_encrypted_file(
-        &os_order_items,
-        PathBuf::from("/opt/data/ct_bdb_ec_order_items_5g"),
-        16,
-    );
-    save_plain_file(&os_order, PathBuf::from("/opt/data/pt_bdb_ec_order_5g"), 16);
-    save_encrypted_file(&os_order, PathBuf::from("/opt/data/ct_bdb_ec_order_5g"), 16);
+    // let dir = PathBuf::from("/home/lixiang/eval_flare_plus/data_for_flare_plus/bdb-ect_5g");
+    // let (os_order_items, os_order) = read_bdb_data(dir);
+    // println!(
+    //     "head 1, customer = {:?}, supplier = {:?}",
+    //     os_order_items[0], os_order[0]
+    // );
+    // save_plain_file(
+    //     &os_order_items,
+    //     PathBuf::from("/opt/data/pt_bdb_ec_order_items_5g"),
+    //     16,
+    // );
+    // save_encrypted_file(
+    //     &os_order_items,
+    //     PathBuf::from("/opt/data/ct_bdb_ec_order_items_5g"),
+    //     16,
+    // );
+    // save_plain_file(&os_order, PathBuf::from("/opt/data/pt_bdb_ec_order_5g"), 16);
+    // save_encrypted_file(&os_order, PathBuf::from("/opt/data/ct_bdb_ec_order_5g"), 16);
 
     //read social graph data
     // let links_anon = generate_tc_data(
@@ -127,6 +127,38 @@ fn main() {
     // println!("head 1, links_anon = {:?}", links_anon[0]);
     // save_plain_file(&links_anon, PathBuf::from("/opt/data/pt_social_graph"), 16);
     // save_encrypted_file(&links_anon, PathBuf::from("/opt/data/ct_social_graph"), 16);
+    let links_anon = from_file_parts::<(u32, u32)>(PathBuf::from("/opt/data/pt_social_graph"), 16);
+    let (popular, inactive, normal) = build_social_graph_tables(links_anon, 1000000);
+    save_plain_file(
+        &popular,
+        PathBuf::from("/opt/data/pt_social_graph_1m_popular"),
+        16,
+    );
+    save_encrypted_file(
+        &popular,
+        PathBuf::from("/opt/data/ct_social_graph_1m_popular"),
+        16,
+    );
+    save_plain_file(
+        &inactive,
+        PathBuf::from("/opt/data/pt_social_graph_1m_inactive"),
+        16,
+    );
+    save_encrypted_file(
+        &inactive,
+        PathBuf::from("/opt/data/ct_social_graph_1m_inactive"),
+        16,
+    );
+    save_plain_file(
+        &normal,
+        PathBuf::from("/opt/data/pt_social_graph_1m_normal"),
+        16,
+    );
+    save_encrypted_file(
+        &normal,
+        PathBuf::from("/opt/data/ct_social_graph_1m_normal"),
+        16,
+    );
 
     /* logistic regression */
     // let data = generate_logistic_regression_data(1_000_000, 2);
@@ -331,6 +363,56 @@ fn read_bdb_data(dir: PathBuf) -> (Vec<(u64, u64, u64, u64, f32, f32)>, Vec<(u64
         .collect::<Vec<_>>()
     };
     (os_order_items, os_order)
+}
+
+fn build_social_graph_tables(
+    data: Vec<(u32, u32)>,
+    n: usize,
+) -> (Vec<(u32, u32)>, Vec<(u32, u32)>, Vec<(u32, u32)>) {
+    let mut follower = vec![0; n + 1];
+    let mut following = vec![0; n + 1];
+    let mut popular = HashSet::new();
+    let mut inactive = HashSet::new();
+    let mut normal = HashSet::new();
+
+    for (x, y) in data.iter() {
+        if *x as usize <= n {
+            follower[*x as usize] += 1;
+        }
+        if *y as usize <= n {
+            following[*y as usize] += 1;
+        }
+    }
+
+    for i in 1..n {
+        if follower[i] > 0 {
+            if follower[i] >= 10000 {
+                popular.insert(i);
+            } else if follower[i] <= 5 && following[i] <= 5 {
+                inactive.insert(i);
+            } else {
+                normal.insert(i);
+            }
+        }
+    }
+
+    let mut popular_table = Vec::new();
+    let mut inactive_table = Vec::new();
+    let mut normal_table = Vec::new();
+    for d in data {
+        let id = d.0 as usize;
+        if popular.contains(&id) {
+            popular_table.push(d);
+        }
+        if inactive.contains(&id) {
+            inactive_table.push(d);
+        }
+        if normal.contains(&id) {
+            normal_table.push(d);
+        }
+    }
+
+    (popular_table, inactive_table, normal_table)
 }
 
 fn generate_dijkstra_data(true_data: Option<&str>) -> Vec<(usize, usize, Option<String>)> {

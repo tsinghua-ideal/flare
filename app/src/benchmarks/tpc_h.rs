@@ -108,7 +108,7 @@ pub fn te3_sec() -> Result<()> {
     }));
 
     let now = Instant::now();
-    let dir = PathBuf::from("/opt/data/ct_tpch_1g_customer");
+    let dir = PathBuf::from("/opt/data/ct_tpch_200m_customer");
     let table = sc
         .read_source(
             LocalFsReaderConfig::new(dir).num_partitions_per_executor(NUM_PARTS_LOCAL),
@@ -279,7 +279,7 @@ pub fn te3_unsec() -> Result<()> {
     }));
 
     let now = Instant::now();
-    let dir = PathBuf::from("/opt/data/pt_tpch_1g_customer");
+    let dir = PathBuf::from("/opt/data/pt_tpch_200m_customer");
     let table = sc
         .read_source(
             LocalFsReaderConfig::new(dir).num_partitions_per_executor(NUM_PARTS_LOCAL),

@@ -111,6 +111,14 @@ fn main() -> Result<()> {
     // te2_unsec()?;
     // te3_unsec()?;
 
+    /* social graph */
+    // se1_sec()?;
+    // se2_sec()?;
+    // se3_sec()?;
+    // se1_unsec()?;
+    // se2_unsec()?;
+    // se3_unsec()?;
+
     /* kmeans */
     //kmeans_sec_0()?;
     //kmeans_unsec_0()?;
