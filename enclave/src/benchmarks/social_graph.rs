@@ -20,11 +20,13 @@ pub fn se1_sec() -> Result<()> {
             Some(deserializer.clone()),
         )
         .map(Fn!(|x: (u32, u32)| (x.1, x.0)));
-    let table1 = sc.read_source::<_, _, (u32, u32)>(
-        LocalFsReaderConfig::new(dir1).num_partitions_per_executor(NUM_PARTS_LOCAL),
-        None,
-        Some(deserializer.clone()),
-    );
+    let table1 = sc
+        .read_source::<_, _, (u32, u32)>(
+            LocalFsReaderConfig::new(dir1).num_partitions_per_executor(NUM_PARTS_LOCAL),
+            None,
+            Some(deserializer.clone()),
+        )
+        .map(Fn!(|x: (u32, u32)| x));
 
     let joined = table0.join(table1, NUM_PARTS);
     let _res = joined.collect().unwrap();
@@ -52,11 +54,13 @@ pub fn se2_sec() -> Result<()> {
             Some(deserializer.clone()),
         )
         .map(Fn!(|x: (u32, u32)| (x.1, x.0)));
-    let table1 = sc.read_source::<_, _, (u32, u32)>(
-        LocalFsReaderConfig::new(dir1).num_partitions_per_executor(NUM_PARTS_LOCAL),
-        None,
-        Some(deserializer.clone()),
-    );
+    let table1 = sc
+        .read_source::<_, _, (u32, u32)>(
+            LocalFsReaderConfig::new(dir1).num_partitions_per_executor(NUM_PARTS_LOCAL),
+            None,
+            Some(deserializer.clone()),
+        )
+        .map(Fn!(|x: (u32, u32)| x));
 
     let joined = table0.join(table1, NUM_PARTS);
     let _res = joined.collect().unwrap();
@@ -77,11 +81,13 @@ pub fn se3_sec() -> Result<()> {
 
     let dir0 = PathBuf::from("/opt/data/ct_social_graph_1m_popular");
     let dir1 = PathBuf::from("/opt/data/ct_social_graph_1m_normal");
-    let table0 = sc.read_source::<_, _, (u32, u32)>(
-        LocalFsReaderConfig::new(dir0).num_partitions_per_executor(NUM_PARTS_LOCAL),
-        None,
-        Some(deserializer.clone()),
-    );
+    let table0 = sc
+        .read_source::<_, _, (u32, u32)>(
+            LocalFsReaderConfig::new(dir0).num_partitions_per_executor(NUM_PARTS_LOCAL),
+            None,
+            Some(deserializer.clone()),
+        )
+        .map(Fn!(|x: (u32, u32)| x));
     let table1 = sc
         .read_source(
             LocalFsReaderConfig::new(dir1).num_partitions_per_executor(NUM_PARTS_LOCAL),
