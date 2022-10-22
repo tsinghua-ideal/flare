@@ -29,10 +29,10 @@ pub fn se1_sec() -> Result<()> {
         .map(Fn!(|x: (u32, u32)| x));
 
     let joined = table0.join(table1, NUM_PARTS);
-    let res = joined.secure_collect().unwrap();
+    let res = joined.secure_count().unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
-    println!("res.len() = {:?}", res.get_pt().len());
+    println!("res.len() = {:?}", res);
 
     Ok(())
 }
@@ -63,10 +63,10 @@ pub fn se2_sec() -> Result<()> {
         .map(Fn!(|x: (u32, u32)| x));
 
     let joined = table0.join(table1, NUM_PARTS);
-    let res = joined.secure_collect().unwrap();
+    let res = joined.secure_count().unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
-    println!("res.len() = {:?}", res.get_pt().len());
+    println!("res.len() = {:?}", res);
 
     Ok(())
 }
@@ -97,10 +97,10 @@ pub fn se3_sec() -> Result<()> {
         .map(Fn!(|x: (u32, u32)| (x.1, x.0)));
 
     let joined = table0.join(table1, NUM_PARTS);
-    let res = joined.secure_collect().unwrap();
+    let res = joined.secure_count().unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
-    println!("res.len() = {:?}", res.get_pt().len());
+    println!("res.len() = {:?}", res);
 
     Ok(())
 }
@@ -136,10 +136,10 @@ pub fn se1_unsec() -> Result<()> {
         ));
 
     let joined = table0.join(table1, NUM_PARTS);
-    let res = joined.collect().unwrap();
+    let res = joined.count().unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
-    println!("res.len() = {:?}", res.len());
+    println!("res.len() = {:?}", res);
 
     Ok(())
 }
@@ -175,10 +175,10 @@ pub fn se2_unsec() -> Result<()> {
         ));
 
     let joined = table0.join(table1, NUM_PARTS);
-    let res = joined.collect().unwrap();
+    let res = joined.count().unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
-    println!("res.len() = {:?}", res.len());
+    println!("res.len() = {:?}", res);
 
     Ok(())
 }
@@ -214,10 +214,10 @@ pub fn se3_unsec() -> Result<()> {
         .map(Fn!(|x: (u32, u32,)| (x.1, x.0)));
 
     let joined = table0.join(table1, NUM_PARTS);
-    let res = joined.collect().unwrap();
+    let res = joined.count().unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
-    println!("res.len() = {:?}", res.len());
+    println!("res.len() = {:?}", res);
 
     Ok(())
 }

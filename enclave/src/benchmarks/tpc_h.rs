@@ -54,7 +54,7 @@ pub fn te1_sec() -> Result<()> {
         )| (x.0, x.1 .0)));
 
     let joined = table0.join(table1, NUM_PARTS);
-    let _res = joined.collect().unwrap();
+    let _res = joined.count().unwrap();
 
 
 
@@ -92,7 +92,7 @@ pub fn te2_sec() -> Result<()> {
         )| (x.0, x.1 .0)));
 
     let joined = table.join(table.clone(), NUM_PARTS);
-    let _res = joined.collect().unwrap();
+    let _res = joined.count().unwrap();
 
 
 
@@ -131,7 +131,7 @@ pub fn te3_sec() -> Result<()> {
         )| (x.0, x.1 .0)));
 
     let joined = table.join(table.clone(), NUM_PARTS);
-    let _res = joined.collect().unwrap();
+    let _res = joined.count().unwrap();
 
 
 
