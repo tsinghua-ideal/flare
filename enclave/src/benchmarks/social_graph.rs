@@ -29,7 +29,7 @@ pub fn se1_sec() -> Result<()> {
         .map(Fn!(|x: (u32, u32)| x));
 
     let joined = table0.join(table1, NUM_PARTS);
-    let _res = joined.collect().unwrap();
+    let _res = joined.count().unwrap();
     
     
     
@@ -63,7 +63,7 @@ pub fn se2_sec() -> Result<()> {
         .map(Fn!(|x: (u32, u32)| x));
 
     let joined = table0.join(table1, NUM_PARTS);
-    let _res = joined.collect().unwrap();
+    let _res = joined.count().unwrap();
 
 
 
@@ -97,7 +97,7 @@ pub fn se3_sec() -> Result<()> {
         .map(Fn!(|x: (u32, u32)| (x.1, x.0)));
 
     let joined = table0.join(table1, NUM_PARTS);
-    let _res = joined.collect().unwrap();
+    let _res = joined.count().unwrap();
 
 
 
