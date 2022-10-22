@@ -24,10 +24,10 @@ pub fn aggregate_sec() -> Result<()> {
             x.0, x.1 .3
         )));
     let agg = keyed.reduce_by_key(Fn!(|(x, y): (u64, u64)| x + y), NUM_PARTS);
-    let res = agg.secure_collect().unwrap();
+    let res = agg.secure_count().unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
-    println!("res.len() = {:?}", res.get_pt().len());
+    println!("res.len() = {:?}", res);
 
     Ok(())
 }
@@ -48,10 +48,10 @@ pub fn filter_sec() -> Result<()> {
         Some(deserializer.clone()),
     );
     let filtered = table.filter(Fn!(|x: &(u64, u64, u64, u64, f32, f32)| x.5 > 750000.0));
-    let res = filtered.secure_collect().unwrap();
+    let res = filtered.secure_count().unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
-    println!("res.len() = {:?}", res.get_pt().len());
+    println!("res.len() = {:?}", res);
 
     Ok(())
 }
@@ -84,10 +84,10 @@ pub fn cross_project_sec() -> Result<()> {
         .map(Fn!(|x: (u64, u64, String)| (x.0, (x.1, x.2))));
 
     let joined = table0.join(table1, NUM_PARTS);
-    let res = joined.secure_collect().unwrap();
+    let res = joined.secure_count().unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
-    println!("res.len() = {:?}", res.get_pt().len());
+    println!("res.len() = {:?}", res);
 
     Ok(())
 }
@@ -117,10 +117,10 @@ pub fn aggregate_unsec() -> Result<()> {
             x.0, x.1 .3
         )));
     let agg = keyed.reduce_by_key(Fn!(|(x, y): (u64, u64)| x + y), NUM_PARTS);
-    let res = agg.collect().unwrap();
+    let res = agg.count().unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
-    println!("res.len() = {:?}", res.len());
+    println!("res.len() = {:?}", res);
 
     Ok(())
 }
@@ -145,10 +145,10 @@ pub fn filter_unsec() -> Result<()> {
                 as Box<dyn Iterator<Item = _>>
         ));
     let filtered = table.filter(Fn!(|x: &(u64, u64, u64, u64, f32, f32)| x.5 > 750000.0));
-    let res = filtered.collect().unwrap();
+    let res = filtered.count().unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
-    println!("res.len() = {:?}", res.len());
+    println!("res.len() = {:?}", res);
 
     Ok(())
 }
@@ -190,10 +190,10 @@ pub fn cross_project_unsec() -> Result<()> {
         .map(Fn!(|x: (u64, u64, String,)| (x.0, (x.1, x.2))));
 
     let joined = table0.join(table1, NUM_PARTS);
-    let res = joined.collect().unwrap();
+    let res = joined.count().unwrap();
     let dur = now.elapsed().as_nanos() as f64 * 1e-9;
     println!("Total time {:?} s", dur);
-    println!("res.len() = {:?}", res.len());
+    println!("res.len() = {:?}", res);
 
     Ok(())
 }

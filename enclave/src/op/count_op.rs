@@ -129,7 +129,7 @@ where
             let res = vec![count as u64];
             (res_enc_to_ptr(res), 0usize as *mut u8)
         } else {
-            call_seq.should_filter.1 = false;
+            call_seq.should_filter.1 = true;
             let opb = call_seq.get_next_op().clone();
             if opb.get_op_id() == self.prev.get_op_id() {
                 self.prev.compute_start(call_seq, input, dep_info)
