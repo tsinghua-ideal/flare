@@ -296,7 +296,7 @@ where
         let max_value = ((None, Default::default()), false);
         let cmp_f = |a: &((Option<K>, (Option<V>, Option<W>)), bool), b: &((Option<K>, (Option<V>, Option<W>)), bool)| {
             if a.0.0.is_some() && b.0.0.is_some() {
-                (a.1, (&a.0.0, a.0.1.1.is_some())).cmp(&(b.1, (&b.0.0, b.0.1.1.is_some())))
+                (!a.1, (&a.0.0, a.0.1.1.is_some())).cmp(&(!b.1, (&b.0.0, b.0.1.1.is_some())))
             } else {
                 a.0.0.cmp(&b.0.0).reverse()
             }
@@ -545,7 +545,7 @@ where
                     s += g;
                     assert!(s as usize <= padding_len);
                 }
-                println!("max_a = {:?}, max_b = {:?}, remaining_cnt = {:?}, remaining_cnt_prod = {:?}, len = {:?}, s = {:?}", max_a, max_b, remaining_cnt, remaining_cnt_prod, padding_len, s);
+                println!("max_a = {:?}, max_b = {:?}, max_cnt_prod = {:?}, remaining_cnt = {:?}, remaining_cnt_prod = {:?}, data_len = {:?}, padding_len = {:?}, s = {:?}", max_a, max_b, max_cnt_prod, remaining_cnt, remaining_cnt_prod, data_len, padding_len, s);
 
                 sorted_data.resize(2 * padding_len, (Default::default(), Default::default(), u64::MAX));
                 //oblivious distribute
