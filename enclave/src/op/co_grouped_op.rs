@@ -295,7 +295,7 @@ where
         let max_value = ((None, Default::default()), false);
         let cmp_f = |a: &((Option<K>, (Option<V>, Option<W>)), bool), b: &((Option<K>, (Option<V>, Option<W>)), bool)| {
             if a.0.0.is_some() && b.0.0.is_some() {
-                (a.1, (&a.0.0, a.0.1.1.is_some())).cmp(&(b.1, (&b.0.0, b.0.1.1.is_some())))
+                (!a.1, (&a.0.0, a.0.1.1.is_some())).cmp(&(!b.1, (&b.0.0, b.0.1.1.is_some())))
             } else {
                 a.0.0.cmp(&b.0.0).reverse()
             }
