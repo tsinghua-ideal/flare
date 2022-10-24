@@ -8,11 +8,13 @@ use std::vec::Vec;
 use deepsize::DeepSizeOf;
 use sgx_trts::trts::rsgx_read_rand;
 use sgx_types::*;
+use rand::Rng;
 
 use crate::aggregator::Aggregator;
 use crate::basic::{AnyData, Arc as SerArc, Data, Func, SerFunc};
 use crate::partitioner::{hash, Partitioner};
 use crate::op::{ser_encrypt, ser_decrypt, ItemE, SortHelper, CACHE_LIMIT, MAX_ENC_BL, MAX_THREAD, compose_subpart, split_with_interval, batch_encrypt, batch_decrypt, create_enc, merge_enc};
+use crate::utils::random::get_default_rng_from_seed;
 
 pub mod obliv_filter;
 pub mod obliv_aggregate;
@@ -176,19 +178,6 @@ fn get_field_bktid<T>(a: &(T, u64)) -> usize {
     (a.1 & MASK_BUCKET) as usize
 }
 
-fn shuffle_perm(n_out: usize) -> Vec<usize> {
-    let mut perm: Vec<usize> = (0..n_out).collect();
-    assert_eq!(usize::BITS, 64);
-    let mut rand_pos: Vec<u8> = vec![0; n_out * 8];
-    rsgx_read_rand(&mut rand_pos).unwrap();
-    perm.sort_by_key(|i| {
-        let mut buf = [0u8; 8];
-        buf.copy_from_slice(&rand_pos[i*8..(i+1)*8]);
-        u64::from_le_bytes(buf)
-    });
-    perm
-}
-
 fn obliv_place<T, F>(data: &mut Vec<T>, total_len: usize, f: F, padding_value: T)
 where
     T: Data,
@@ -225,6 +214,25 @@ where
         }
         len <<= 1;
     }
+}
+
+fn calc(k: usize, mut n: usize) -> usize {
+    if k == 1 {
+        return n;
+    }
+    n = std::cmp::max(k, n);
+    let n: f64 = n as f64;
+    let k: f64 = k as f64;
+    let tmp = (k.ln() - 0.5 * k.ln().ln()) * k / n;
+    let mut x: f64 = tmp;
+    let mut d: f64 = tmp;
+    for i in 0..10 {
+        if (1. + x - d) * (1. + x - d).ln() - x + d > tmp {
+            x -= d;
+        }
+        d /= 2.;
+    }
+    return ((1. + x) * n / k + (0.5 * n / (k * k.ln())).sqrt() * 20.).ceil() as usize;
 }
 
 fn build_buckets<T, F>(
@@ -331,8 +339,8 @@ fn coordinate_bin_num<T>(
 
 fn patch_part_num<K, V, T, F1, F2>(
     part: &mut Vec<Vec<((K, V), u64)>>,
-    buckets: Vec<Vec<(T, u64, u64)>>,
-    n_in: usize,
+    buckets: Vec<Vec<Vec<(T, u64, u64)>>>,
+    max_len_subpart: usize,
     mut f_from_bkt: F1,
     mut f_from_part: F2,
 ) where
@@ -342,16 +350,18 @@ fn patch_part_num<K, V, T, F1, F2>(
     F1: FnMut(&mut ((K, V), u64), &(T, u64, u64)) + Clone,
     F2: FnMut(&mut ((K, V), u64), &((K, V), u64)) + Clone,
 {
-    let perm = shuffle_perm(n_in);
 
-    let mut buckets = buckets
-        .into_iter()
-        .enumerate()
-        .map(|(i, x)| (perm[i], x))
-        .collect::<Vec<_>>();
-    buckets.sort_by(|a, b| a.0.cmp(&b.0));
+    // prepare to patch new partition number back to original items
+    let cmp_f = |x: &(T, u64, u64), y: &(T, u64, u64)| {
+        (is_dummy(x), get_field_partid(x), get_field_loc(x)).cmp(&(is_dummy(y), get_field_partid(y), get_field_loc(y)))
+    };
+    let max_value = (Default::default(), 1 << DUMMY_BIT, 0);
+    let mut sort_helper = SortHelper::new_with(buckets, max_len_subpart, max_value, true, cmp_f);
+    sort_helper.sort();
+    let (data, num_elems) = sort_helper.take();
+    assert_eq!(data.len(), num_elems);
     
-    for d in buckets.into_iter().map(|x| x.1).flatten() {
+    for d in data.into_iter() {
         if get_field_loc(&d) != MASK_LOC as usize {
             let loc = get_field_loc(&d);
             let part_mut = &mut part[loc/MAX_ENC_BL][loc%MAX_ENC_BL];

@@ -7,6 +7,7 @@ use crate::dependency::{
 };
 use crate::obliv_comp::{VALID_BIT, obliv_global_filter_stage3_kv, obliv_agg_stage1, obliv_agg_stage2, obliv_group_by_stage1, obliv_join::*};
 use crate::op::*;
+use crate::partitioner::hash;
 
 use deepsize::DeepSizeOf;
 use itertools::Itertools;
@@ -296,11 +297,12 @@ where
                 )>();
                 let outer_parallel = input.get_parallel();
                 let part_id = call_seq.get_part_id();
+                let seed = hash(&call_seq.get_cur_rdd_id());
 
                 let mut part_enc = create_enc();
                 let mut buckets_enc = create_enc();
-                let (part_enc_a, buckets_enc_a) = filter_3_agg_1::<K, V>(buckets_enc_a, outer_parallel, part_id, &self.part);
-                let (part_enc_b, buckets_enc_b) = filter_3_agg_1::<K, W>(buckets_enc_b, outer_parallel, part_id, &self.part);
+                let (part_enc_a, buckets_enc_a) = filter_3_agg_1::<K, V>(buckets_enc_a, outer_parallel, part_id, &self.part, seed);
+                let (part_enc_b, buckets_enc_b) = filter_3_agg_1::<K, W>(buckets_enc_b, outer_parallel, part_id, &self.part, seed);
                 crate::ALLOCATOR.set_switch(true);
                 part_enc.push(part_enc_a);
                 part_enc.push(part_enc_b);

@@ -325,7 +325,7 @@ where
 }
 
 //the results are encrypted and stay outside enclave
-pub fn filter_3_agg_1<K, V>(buckets_enc: &Vec<Vec<ItemE>>, outer_parallel: usize, part_id: usize, partitioner: &Box<dyn Partitioner>) -> (Vec<ItemE>, Vec<Vec<ItemE>>) 
+pub fn filter_3_agg_1<K, V>(buckets_enc: &Vec<Vec<ItemE>>, outer_parallel: usize, part_id: usize, partitioner: &Box<dyn Partitioner>, seed: u64) -> (Vec<ItemE>, Vec<Vec<ItemE>>) 
 where
     K: Data + Eq + Hash + Ord,
     V: Data,
@@ -338,7 +338,7 @@ where
     let merge_combiners = Box::new(move |(b1, b2)| { b1 + b2 });
     let aggregator = Arc::new(Aggregator::new(create_combiner, merge_value, merge_combiners));
 
-    let buckets = obliv_agg_stage1(
+    let buckets_enc = obliv_agg_stage1(
         part.iter()
             .map(|(k, _)| ((k.clone(), 1i64), 1 << VALID_BIT))
             .collect::<Vec<_>>(),
@@ -346,12 +346,10 @@ where
         true,
         &aggregator,
         partitioner,
+        seed,
+        outer_parallel,
     );
-    let mut buckets_enc = create_enc();
-    for bucket in buckets {
-        merge_enc(&mut buckets_enc, &batch_encrypt(&bucket, false));
-    }
-    let mut part_enc = batch_encrypt(&part, true);
+    let part_enc = batch_encrypt(&part, true);
     (part_enc, buckets_enc)
 }
 
@@ -1062,7 +1060,7 @@ impl NextOpId {
         }
     }
 
-    fn get_cur_rdd_id(&self) -> usize {
+    pub fn get_cur_rdd_id(&self) -> usize {
         self.rdd_ids[self.cur_idx]
     }
 

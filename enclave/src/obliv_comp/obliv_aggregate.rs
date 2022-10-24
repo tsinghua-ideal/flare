@@ -56,17 +56,26 @@ pub fn obliv_agg_stage1<K, V, C>(
     should_assign_loc: bool,
     aggregator: &Arc<Aggregator<K, V, C>>,
     partitioner: &Box<dyn Partitioner>,
-) -> Vec<Vec<((K, C), u64)>>
+    seed_seed: u64,
+    outer_parallel: usize,
+) -> Vec<Vec<ItemE>>
 where
     K: Data + Eq + Hash + Ord,
     V: Data,
     C: Data,
 {
     let n_out = partitioner.get_num_of_partitions();
+    if part.len() == 0 {
+        return Vec::new();
+    }
+    let seed = {
+        let mut rng = get_default_rng_from_seed(seed_seed);
+        (rng.gen::<u64>(), rng.gen::<u64>(), rng.gen::<u64>(), rng.gen::<u64>())
+    };
+    let padding_len = calc(n_out, part.len());
 
     if should_assign_loc {
         for i in 0..part.len() {
-            set_field_partid(&mut part[i], id);
             set_field_loc(&mut part[i], i);
         }
     }
@@ -95,60 +104,80 @@ where
             set_valid(data.last_mut().unwrap(), is_valid(&acc));
         }
     }
-    //shuffle perm
-    let perm = shuffle_perm(n_out);
-    let mut buckets = vec![(0, Vec::<((K, C), u64)>::new()); n_out];
-    let mut max_len = 0;
-    for d in data.into_iter() {
-        let mut b = if is_valid(&d) {  //bucket id
-            partitioner.get_partition(&d.0.0)
+
+    //assume the existence of OM
+    let mut cnts = vec![0; n_out];
+    let mut rng = {
+        let mut seed_buf = [0u8; 8];
+        rsgx_read_rand(&mut seed_buf).unwrap();
+        get_default_rng_from_seed(u64::from_le_bytes(seed_buf))
+    };
+    for d in data.iter_mut() {
+        let b = if is_valid(d) {  //bucket id
+            partitioner.get_partition_with_seed(&d.0.0, seed)
         } else {
-            let mut buf = [0u8; 8];
-            rsgx_read_rand(&mut buf).unwrap();
-            hash(&usize::from_le_bytes(buf)) as usize % n_out
+            hash(&rng.gen::<u64>()) as usize % n_out
         };
-        let b_true = b;
-
-        //with OM, the following can be simplified
-        // for j in 0..n_out {
-        //     if j == b_true {
-        //         b = perm[j];
-        //     }
-        // }
-        b = perm[b_true];
-
-        buckets[b].1.push(d);
-        max_len = std::cmp::max(max_len, buckets[b].1.len());
+        cnts[b] += 1; //access to OM
+        set_field_partid(d, b); //reuse this field
     }
+    for cnt in cnts.iter_mut() {
+        assert!(padding_len >= *cnt);
+        *cnt = padding_len - *cnt;
+    }
+
     //padding with max key
-    if max_len > 0 {
-        for i in 0..n_out {
-            let last_one = buckets[i].1.pop().unwrap_or(Default::default());
-            let mut tmp = ((last_one.0 .0 .clone(), C::default()), 0);
-            if should_assign_loc {
-                set_field_partid(&mut tmp, id);
-                set_field_loc(&mut tmp, MASK_LOC as usize);
+    let last_one = data.pop().unwrap_or(Default::default());
+    let mut tmp = ((last_one.0 .0 .clone(), C::default()), 0);
+    if should_assign_loc {
+        set_field_loc(&mut tmp, MASK_LOC as usize);
+    }
+    data.resize(padding_len * n_out - 1, tmp.clone());
+    data.push(last_one);
+
+    //adjust the part_id for padding one
+    let mut cur_bucket = n_out - 1;
+    for d in data.iter_mut().rev() {
+        if d.1 == tmp.1 {
+            if cnts[cur_bucket] == 0 && cur_bucket == 0 {
+                break;  //use cmov to make the loop body oblivious
+            } else if cnts[cur_bucket] == 0 { 
+                cur_bucket -= 1;
             }
-            buckets[i].1.resize(max_len - 1, tmp);
-            buckets[i].1.push(last_one);
+            set_field_partid(d, cur_bucket);
+            cnts[cur_bucket] -= 1;
         }
     }
 
-    //with OM, the following can be simplified
-    // for i in 0..n_out {
-    //     for j in 0..n_out {
-    //         if j == perm[i] {
-    //             buckets[j].0 = i;
-    //         }
-    //     }
-    // }
-    for i in 0..n_out {
-        buckets[perm[i]].0 = i;
+    let cmp_f = |x: &((K, C), u64), y: &((K, C), u64)| {
+        (is_dummy(x), get_field_partid(x), &x.0 .0, is_valid(x)).cmp(&(
+            is_dummy(y),
+            get_field_partid(y),
+            &y.0 .0,
+            is_valid(y),
+        ))
+    };
+    let max_value = (Default::default(), 1 << DUMMY_BIT);
+    let (sub_parts, max_len) = split_with_interval(data, CACHE_LIMIT/outer_parallel, cmp_f); 
+    let mut sort_helper = SortHelper::new(sub_parts, max_len, max_value, true, cmp_f);
+    sort_helper.sort();
+    let (mut data, num_elems) = sort_helper.take();
+    assert_eq!(data.len(), num_elems);
+
+    let mut buckets_enc = create_enc();
+    for bucket in data.chunks_mut(padding_len) {
+        assert_eq!(bucket.len(), padding_len);
+        for d in bucket.iter_mut() {
+            set_field_partid(d, id);
+        }
+        let bucket_enc = batch_encrypt(&bucket, true);
+        crate::ALLOCATOR.set_switch(true);
+        buckets_enc.push(bucket_enc);
+        crate::ALLOCATOR.set_switch(false);
     }
 
-    //the cost of oblivious sort on bucket is close to that of non-oblivious sort due to the small amount of buckets.
-    buckets.sort_by(|a, b| a.0.cmp(&b.0));
-    return buckets.into_iter().map(|a| a.1).collect();
+    assert_eq!(buckets_enc.len(), n_out);
+    return buckets_enc;
 }
 
 pub fn obliv_agg_stage2<K, V, C>(

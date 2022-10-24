@@ -73,25 +73,6 @@ where
     // return len;
 }
 
-fn calc(k: usize, mut n: usize) -> usize {
-    if k == 1 {
-        return n;
-    }
-    n = std::cmp::max(k, n);
-    let n: f64 = n as f64;
-    let k: f64 = k as f64;
-    let tmp = (k.ln() - 0.5 * k.ln().ln()) * k / n;
-    let mut x: f64 = tmp;
-    let mut d: f64 = tmp;
-    for i in 0..10 {
-        if (1. + x - d) * (1. + x - d).ln() - x + d > tmp {
-            x -= d;
-        }
-        d /= 2.;
-    }
-    return ((1. + x) * n / k + (0.5 * n / (k * k.ln())).sqrt() * 20.).ceil() as usize;
-}
-
 fn obliv_global_filter_stage2<T, F>(
     mut data: Vec<Vec<(T, u64)>>,
     cmp_f: F,
@@ -112,12 +93,15 @@ where
     let mut padding_len = calc(n_out, data_len);
     let mut b: usize = (&num_invalids[0..part_id]).iter().sum();
     let mut b_count = vec![0; n_out];
+    let mut rng = {
+        let mut seed_buf = [0u8; 8];
+        rsgx_read_rand(&mut seed_buf).unwrap();
+        get_default_rng_from_seed(u64::from_le_bytes(seed_buf))
+    };
     for block in data.iter_mut() {
         for d in block.iter_mut() {
             if is_valid(d) {
-                let mut buf = [0u8; 8];
-                rsgx_read_rand(&mut buf).unwrap();
-                set_field_bktid(d, usize::from_le_bytes(buf) % n_out);
+                set_field_bktid(d, rng.gen::<usize>() % n_out);
             } else {
                 set_field_bktid(d, b % n_out);
                 b += 1;

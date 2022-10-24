@@ -11,7 +11,7 @@ use crate::aggregator::Aggregator;
 use crate::basic::{AnyData, Data, Func};
 use crate::obliv_comp::{obliv_agg_presort, obliv_agg_stage1, obliv_global_filter_stage1, obliv_global_filter_stage2_kv, zip_data_marks};
 use crate::op::*;
-use crate::partitioner::Partitioner;
+use crate::partitioner::{Partitioner, hash};
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use downcast_rs::DowncastSync;
 use itertools::Itertools;
@@ -176,6 +176,7 @@ where
 
     fn do_shuffle_task(&self, tid: u64, opb: Arc<dyn OpBase>, call_seq: NextOpId, input: Input) -> *mut u8 {
         let op = opb.to_arc_op::<dyn Op<Item = (K, V)>>().unwrap();
+        let seed = hash(&call_seq.get_cur_rdd_id());
         
         let part_id = call_seq.get_part_id();
         let outer_parallel = input.get_parallel();
@@ -199,11 +200,7 @@ where
             to_ptr(info)
         } else {
             let sorted_data = obliv_agg_presort(results, outer_parallel);
-            let buckets = obliv_agg_stage1(sorted_data, part_id, false, &self.aggregator, &partitioner);
-            let mut buckets_enc = create_enc();
-            for bucket in buckets {
-                merge_enc(&mut buckets_enc, &batch_encrypt(&bucket, false));
-            }
+            let buckets_enc = obliv_agg_stage1(sorted_data, part_id, false, &self.aggregator, &partitioner, seed, outer_parallel);
             to_ptr(buckets_enc)
         }
     }

@@ -1,3 +1,4 @@
+use crate::op::read_sorted_bucket;
 use crate::obliv_comp::*;
 
 pub fn obliv_join_stage1<K>(
@@ -360,14 +361,9 @@ where
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    let buckets_a = buckets_set_enc[0]
-        .iter()
-        .map(|bucket_enc| batch_decrypt::<((K, (i64, i64)), u64, u64)>(bucket_enc, true))
-        .collect::<Vec<_>>();
-    let buckets_b = buckets_set_enc[1]
-        .iter()
-        .map(|bucket_enc| batch_decrypt::<((K, (i64, i64)), u64, u64)>(bucket_enc, true))
-        .collect::<Vec<_>>();
+
+    let (buckets_a, max_len_subpart_a) = read_sorted_bucket::<((K, (i64, i64)), u64, u64)>(&buckets_set_enc[0], outer_parallel);
+    let (buckets_b, max_len_subpart_b) = read_sorted_bucket::<((K, (i64, i64)), u64, u64)>(&buckets_set_enc[1], outer_parallel);
     let f_from_bkt = |a: &mut ((K, (V, W, i64)), u64), b: &((K, (i64, i64)), u64, u64)| {
         a.0 .1 .2 = b.0 .1 .1;
         set_field_bktid(a, get_field_binid(b));
@@ -376,8 +372,8 @@ where
         a.0 .1 .2 = b.0 .1 .2;
         set_field_bktid(a, get_field_bktid(b));
     };
-    patch_part_num(&mut part_a, buckets_a, n_in, f_from_bkt.clone(), f_from_part.clone());
-    patch_part_num(&mut part_b, buckets_b, n_in, f_from_bkt, f_from_part);
+    patch_part_num(&mut part_a, buckets_a, max_len_subpart_a, f_from_bkt.clone(), f_from_part.clone());
+    patch_part_num(&mut part_b, buckets_b, max_len_subpart_b, f_from_bkt, f_from_part);
     for block in part_a.iter_mut().chain(part_b.iter_mut()) {
         for d in block.iter_mut() {
             if d.0 .1 .2 != 0 {

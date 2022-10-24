@@ -75,7 +75,8 @@ where
 
 pub fn obliv_group_by_stage4<K, V>(
     mut part: Vec<Vec<((K, V), u64)>>,
-    buckets: Vec<Vec<((K, i64), u64, u64)>>,
+    buckets: Vec<Vec<Vec<((K, i64), u64, u64)>>>,
+    max_len_subpart: usize,
     beta: usize,
     n_in: usize,
     n_out: usize,
@@ -91,7 +92,7 @@ where
     let f_from_part = |a: &mut ((K, V), u64), b: &((K, V), u64)| {
         set_field_bktid(a, get_field_bktid(b));
     };
-    patch_part_num(&mut part, buckets, n_in, f_from_bkt, f_from_part);
+    patch_part_num(&mut part, buckets, max_len_subpart, f_from_bkt, f_from_part);
 
     let mut lim = (2 * beta + n_in * n_out - 1) / n_in / n_out;
     lim += ((lim as f64).sqrt() * PAD_FACTOR) as usize;

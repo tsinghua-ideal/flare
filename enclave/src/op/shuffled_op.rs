@@ -5,6 +5,7 @@ use crate::aggregator::Aggregator;
 use crate::dependency::ShuffleDependency;
 use crate::obliv_comp::{VALID_BIT, obliv_agg_stage2, obliv_group_by::*};
 use crate::op::*;
+use crate::partitioner::hash;
 use itertools::Itertools;
 
 pub struct Shuffled<K, V, C>
@@ -250,7 +251,8 @@ where
             20 => {
                 let buckets_enc = input.get_enc_data::<Vec<Vec<ItemE>>>();
                 let outer_parallel = input.get_parallel();
-                let (part_enc, buckets_enc) = filter_3_agg_1::<K, V>(buckets_enc, outer_parallel, call_seq.get_part_id(), &self.part);
+                let seed = hash(&call_seq.get_cur_rdd_id());
+                let (part_enc, buckets_enc) = filter_3_agg_1::<K, V>(buckets_enc, outer_parallel, call_seq.get_part_id(), &self.part, seed);
                 (to_ptr(part_enc), to_ptr(buckets_enc))
             }
             21  => {
@@ -331,8 +333,8 @@ where
                         .map(|t| (t, 1u64 << VALID_BIT))
                         .collect::<Vec<_>>()
                 }).collect::<Vec<_>>();
-                let buckets = buckets_enc.iter().map(|bucket_enc| batch_decrypt::<((K, i64), u64, u64)>(bucket_enc, true)).collect::<Vec<_>>();
-                let buckets = obliv_group_by_stage4(data, buckets, beta, part_group.2, n_out_prime, input.get_parallel());
+                let (buckets, max_len_subpart) = read_sorted_bucket::<((K, i64), u64, u64)>(buckets_enc, input.get_parallel());
+                let buckets = obliv_group_by_stage4(data, buckets, max_len_subpart, beta, part_group.2, n_out_prime, input.get_parallel());
                 let mut buckets_enc = create_enc();
                 for bucket in buckets {
                     merge_enc(&mut buckets_enc, &batch_encrypt(&bucket, false));
