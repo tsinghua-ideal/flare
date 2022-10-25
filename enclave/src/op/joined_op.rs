@@ -402,7 +402,7 @@ where
                     Box::from_raw(part_ptr as *mut u8 as *mut Vec<((K, (i64, i64)), u64, u64)>)
                 };
                 let last_bin_info = last_bin_info.iter().map(|x| ser_decrypt::<(usize, usize, i64)>(&x.clone())).collect::<Vec<_>>();
-                let (part, data, acc_col, num_bins, idx_last, acc_col_rem) = obliv_join_stage2(
+                let (part, data, acc_col, idx_last, acc_col_rem) = obliv_join_stage2(
                     part,
                     cache_limit,
                     &alpha,
@@ -417,7 +417,7 @@ where
                 merge_enc(&mut data_set_enc, &vec![ser_encrypt(&acc_col_rem)]);
                 merge_enc(
                     &mut data_set_enc,
-                    &vec![ser_encrypt(&(acc_col, num_bins, idx_last))],
+                    &vec![ser_encrypt(&(acc_col, idx_last))],
                 );
                 (to_ptr(data_set_enc), 0 as *mut u8)
             },
@@ -460,26 +460,23 @@ where
                 assert_eq!(part_group.0, call_seq.stage_id);
 
                 let acc_cols = input.get_enc_data::<Vec<ItemE>>();
-                let (mut acc_col, num_bins, mut last_bin_loc): (Vec<(usize, usize)>, usize, usize) = ser_decrypt(&acc_cols[0].clone());   
+                let (mut acc_col, mut last_bin_loc): (Vec<(usize, usize)>, i64) = ser_decrypt(&acc_cols[0].clone());   
                 let acc_col_rem: Vec<(usize, usize)> = ser_decrypt(&acc_cols[1].clone());
                 let mut acc_col_rec: Vec<(usize, usize)> = ser_decrypt(&acc_cols[2].clone());
-                let last_bin_loc_rec: usize = if acc_cols[3].is_empty() {
-                    assert!(last_bin_loc != 0 || acc_col_rem.iter().filter(|x| x.1 != usize::MAX).count() == 0);
-                    0
+                let last_bin_loc_rec: i64 = if acc_cols[3].is_empty() {
+                    -1
                 } else {
                     ser_decrypt(&acc_cols[3].clone())
                 };
 
-                obliv_join_stage3(&mut acc_col_rec, &mut acc_col, num_bins, last_bin_loc_rec, &mut last_bin_loc, acc_col_rem);
+                obliv_join_stage3(&mut acc_col_rec, &mut acc_col, last_bin_loc_rec, &mut last_bin_loc, acc_col_rem);
                 let mut data_enc = create_enc();
                 let acc_col_rec_enc = ser_encrypt(&acc_col_rec);
                 let acc_col_enc = ser_encrypt(&acc_col);
                 let last_bin_loc_enc = ser_encrypt(&last_bin_loc);
-                let num_bins_enc = ser_encrypt(&num_bins);
                 merge_enc(&mut data_enc, &acc_col_rec_enc);
                 merge_enc(&mut data_enc, &acc_col_enc);
                 merge_enc(&mut data_enc, &last_bin_loc_enc);
-                merge_enc(&mut data_enc, &num_bins_enc);
 
                 if call_seq.get_part_id() == part_group.2 - 1 {
                     let join_cnt = acc_col_rec.into_iter().map(|x| x.1).sum::<usize>();
@@ -494,14 +491,13 @@ where
                 assert_eq!(part_group.0, call_seq.stage_id);
                 let cache_limit = CACHE_LIMIT / MAX_THREAD / input.get_parallel();
 
-                let (part, data, acc_col, num_bins, last_bin_loc, acc_col_rem) = input.get_enc_data::<(Vec<ItemE>, Vec<ItemE>, ItemE, ItemE, ItemE, ItemE)>();
+                let (part, data, acc_col, last_bin_loc, acc_col_rem) = input.get_enc_data::<(Vec<ItemE>, Vec<ItemE>, ItemE, ItemE, ItemE)>();
                 let part: Vec<((K, (i64, i64)), u64, u64)> = batch_decrypt(part, true);
-                let data: Vec<(usize, usize, i64)> = batch_decrypt(data, true);
+                let data: Vec<(usize, usize, usize)> = batch_decrypt(data, true);
                 let acc_col: Vec<(usize, usize)> = ser_decrypt(&acc_col);
-                let num_bins: usize = ser_decrypt(num_bins);
-                let last_bin_loc: usize = ser_decrypt(last_bin_loc);
+                let last_bin_loc: i64 = ser_decrypt(last_bin_loc);
                 let acc_col_rem: Vec<(usize, usize)> = ser_decrypt(acc_col_rem);
-                let buckets_enc = obliv_join_stage4(part, data, acc_col, num_bins, last_bin_loc, acc_col_rem, part_group.2, cache_limit);
+                let buckets_enc = obliv_join_stage4(part, data, acc_col, last_bin_loc, acc_col_rem, part_group.2, cache_limit);
                 
                 (to_ptr(buckets_enc), 0 as *mut u8)
             },

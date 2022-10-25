@@ -120,10 +120,9 @@ pub fn obliv_join_stage2<K>(
     n_out: usize,
 ) -> (
     Vec<((K, (i64, i64)), u64, u64)>,
-    Vec<(usize, usize, i64)>,
+    Vec<(usize, usize, usize)>,
     Vec<(usize, usize)>,
-    usize,
-    usize,
+    i64,
     Vec<(usize, usize)>,
 )
 where
@@ -154,116 +153,125 @@ where
         acc = -acc;
     }
 
-    let b_last = if !data.is_empty() {
+    if !data.is_empty() {
         data[0].0 .1 .0 = acc; //items with non-positive number does not involve 2nd assignment
         //items with the same b share the same a
-        let b_last = get_field_binid(&data[0]);
         for i in 1..data.len() {
             if get_field_binid(&data[i]) == get_field_binid(&data[i - 1]) {
                 data[i].0 .1 .0  = data[i - 1].0 .1 .0 ;
             }
         }
-        b_last
-    } else {
-        0
-    };
+    }
 
     //begin second-level assignment to balance the results after join
-    let cmp_f = |a: &((K, (i64, i64)), u64, u64), b: &((K, (i64, i64)), u64, u64)| {
-        (is_dummy(a), &a.0 .1 .0, get_field_binid(a)).cmp(&(is_dummy(b), &b.0 .1 .0, get_field_binid(b)))
-    };
-    let (sub_parts, max_len_subpart) = split_with_interval(data, cache_limit, cmp_f);
-    let max_value = (Default::default(), 1 << DUMMY_BIT, 0);
-    let mut sort_helper = SortHelper::new(sub_parts, max_len_subpart, max_value, true, cmp_f);
-    sort_helper.sort();
-    let (part, num_elems) = sort_helper.take();
-    assert_eq!(part.len(), num_elems);
-    
-    let mut idx = 1;
-    let mut idx_last = 0;
-    let mut data = vec![(usize::MAX, usize::MAX, 0); part.len() + 1];
+    let part = data;
+    let mut idx = 0;
+    let mut idx_last = -1;
+    let num_chunks = part.len()/n_out + (part.len() % n_out > 0) as usize;
+    let mut data = (0..n_out * num_chunks).map(|x| (x, usize::MAX, 0)).collect::<Vec<_>>();
     for i in 0..part.len() {
-        let c = (i == 0 || get_field_binid(&part[i]) != get_field_binid(&part[i - 1])) && part[i].0 .1 .0  >= 0;
-        if c && get_field_binid(&part[i]) == b_last {
-            idx_last = idx;
-        }
+        let c = (i == 0 || get_field_binid(&part[i]) != get_field_binid(&part[i - 1])) && part[i].0 .1 .0  > 0;
         if c {
-            data[i] = (i, idx, part[i].0 .1 .0);
+            data[i] = (i, idx, part[i].0 .1 .0 as usize);
             idx += 1;
         }
-        let c = (i == 0 || get_field_binid(&part[i]) != get_field_binid(&part[i - 1])) && part[i].0 .1 .0  < 0;
-        if c {
-            data[i] = (i, idx_last, part[i].0 .1 .0);
-        }
     }
-
-    //shift right, data should at least have one item
-    //with OM, it can be simplified
-    if data[0].1 == 1 {
-        data.insert(0, (usize::MAX, usize::MAX, 0));
-        data.pop().unwrap();
-    }
-
-    obliv_place_rev(&mut data, part.len() + 1, |x| x.1, (usize::MAX, usize::MAX, 0));
-
     let mut acc_col = (0..n_out).map(|x| (x, 0)).collect::<Vec<_>>();
-    let mut acc_col_rem = (0..n_out).map(|x| (x, usize::MAX)).collect::<Vec<_>>();
-    let len = (idx - 1) / n_out * n_out;
-    for i in 1..data.len() {
-        let k = (i - 1) % n_out;
-        if i <= len {
-            acc_col[k].1 += data[i].2 as usize; //assert data[i].2 >= 0;
+    let mut cur = 0;
+    let mut tmp = (0..n_out).map(|x| (x, usize::MAX, usize::MAX)).collect::<Vec<_>>();
+    for chunk in data.chunks_mut(n_out) {
+        for d in chunk.iter_mut() {
+            if d.1 != usize::MAX {
+                d.1 = cur % n_out;
+                cur += 1;
+            }
         }
-        if i > len && data[i].1 != usize::MAX {
-            acc_col_rem[k].1 = data[i].2 as usize; //assert data[i].2 >= 0;
+
+        chunk.sort_by(|a, b| a.1.cmp(&b.1));   //use OM to simplify 
+        for src in (0..n_out).rev() {
+            let dst = chunk[src].1;
+            if dst != usize::MAX { 
+                chunk.swap(src, dst);         //use OM to simplify
+            }
+        }  
+        for j in 0..n_out {
+            if chunk[j].1 != usize::MAX && tmp[j].1 == usize::MAX {
+                tmp[j].1 = chunk[j].2;  //copy acc
+            }
+        }
+        acc_col.sort_by(|a, b| a.1.cmp(&b.1).reverse()); //descending
+        tmp.sort_by(|a, b| a.1.cmp(&b.1)); //ascending
+        let c = cur >= n_out;
+        if c {
+            for j in 0..n_out {
+                acc_col[j].1 += tmp[j].1;
+                tmp[j].2 = acc_col[j].0; //assign init partition number
+            }
+        }
+        tmp.sort_by(|a, b| a.0.cmp(&b.0));
+        cur = cur % n_out;
+        for j in 0..n_out {
+            if c {
+                if j < cur {
+                    tmp[j].1 = chunk[j].2;
+                } else {
+                    tmp[j].1 = usize::MAX;
+                }
+                chunk[j].2 = tmp[j].2; //patch init partition number
+                assert!(tmp[j].2 < n_out);
+                if part[0].0 .1 .0 > 0 && idx_last == -1 {
+                    idx_last = chunk[0].2 as i64; //record original partition number for the last bin
+                }
+            } else {
+                chunk[j].2 = usize::MAX;
+            }
         }
     }
-    return (part, data, acc_col, len, idx_last, acc_col_rem);
+    if part[0].0 .1 .0 > 0 && idx_last == -1 {
+        idx_last = -2;  //the last bin is in the remainder bins
+    }
+    let acc_col_rem = tmp.into_iter().map(|d| (d.0, d.1)).collect::<Vec<_>>();
+
+    return (part, data, acc_col, idx_last, acc_col_rem);
 }
 
 pub fn obliv_join_stage3(
     acc_col_rec: &mut Vec<(usize, usize)>,
     acc_col_own: &mut Vec<(usize, usize)>,
-    num_bins: usize,
-    last_bin_loc_rec: usize,
-    last_bin_loc_own: &mut usize,
+    last_bin_loc_rec: i64,
+    last_bin_loc_own: &mut i64,
     acc_col_rem: Vec<(usize, usize)>,
 ) {
     let n_out = acc_col_own.len();
-    acc_col_rec.sort_by(|a, b| a.1.cmp(&b.1));
-    acc_col_own.sort_by(|a, b| b.1.cmp(&a.1));
+    acc_col_rec.sort_by(|a, b| b.1.cmp(&a.1));
+    acc_col_own.sort_by(|a, b| a.1.cmp(&b.1));
     assert_eq!(acc_col_rec.len(), acc_col_own.len());
     for i in 0..acc_col_rec.len() {
         acc_col_rec[i].1 += acc_col_own[i].1;
         acc_col_own[i].1 = acc_col_rec[i].0;
     }
-    acc_col_rec.sort_by_key(|x| x.0);
     acc_col_own.sort_by_key(|x| x.0);
 
     let last_bin_loc = *last_bin_loc_own; 
     for s in acc_col_own.iter() {
-        let c = last_bin_loc > 0 && last_bin_loc <= num_bins && (last_bin_loc - 1) % n_out == s.0;
+        let c = last_bin_loc >= 0 && last_bin_loc == s.0 as i64;
         if c {
-            *last_bin_loc_own = s.1;
+            *last_bin_loc_own = s.1 as i64; //if last bin is in regular bins
         }
     }
-    for s in acc_col_rem.iter() {
-        let c = last_bin_loc > 0 && last_bin_loc > num_bins && (last_bin_loc - 1) % n_out == s.0;
-        if c {
-            *last_bin_loc_own = s.1;
-        }
-    }
-    if *last_bin_loc_own == 0 {
+    if last_bin_loc == -2 {
+        *last_bin_loc_own = acc_col_rem[0].1 as i64; //if last bin is in remainder bins
+    } 
+    if last_bin_loc == -1 {
         *last_bin_loc_own = last_bin_loc_rec;
     }
 }
 
 pub fn obliv_join_stage4<K>(
     mut part: Vec<((K, (i64, i64)), u64, u64)>,
-    mut data: Vec<(usize, usize, i64)>,
+    mut data: Vec<(usize, usize, usize)>,
     acc_col: Vec<(usize, usize)>,
-    num_bins: usize,
-    last_bin_loc: usize,
+    last_bin_loc: i64,
     acc_col_rem: Vec<(usize, usize)>,
     n_in: usize,
     cache_limit: usize,
@@ -273,31 +281,45 @@ where
 {
     let n_out = acc_col.len();
     // prepare the patch of new partition numbers
-    for i in 1..data.len() {
-        let k = (i - 1) % n_out;
+    let mut cur = 0;
+    for i in 0..data.len() {
         if data[i].1 != usize::MAX {
-            if i <= num_bins {
-                data[i].2 = acc_col[k].1 as i64;
-            } else {
-                data[i].2 = acc_col_rem[k].1 as i64;
-            }
+            cur = (cur + 1) % n_out;
         }
     }
-    //shift left, data should at least have one item
-    if data[0].1 != usize::MAX {
-        data[0].2 = last_bin_loc as i64;
-    } else {
-        let first = data.remove(0);
-        assert_eq!(first.0, usize::MAX);
+    let mut tmp = acc_col_rem;
+    for chunk in data.chunks_mut(n_out).rev() {
+        let mut buf = chunk.to_vec();
+        let last_cur = cur;
+        for j in 0..n_out {
+            if chunk[j].1 != usize::MAX && chunk[j].1 < last_cur {
+                chunk[j].2 = tmp[j].1; //assign partition number to current chunk
+                cur -= 1;
+            }
+            buf[j].1 = j;
+        }
+        buf.sort_by(|a, b| a.2.cmp(&b.2));
+        for (b, a) in buf.iter_mut().zip(acc_col.iter()) {
+            b.2 = a.1;
+        }
+        buf.sort_by(|a, b| a.1.cmp(&b.1));
+        if cur == 0 {
+            cur = n_out;
+        }
+        for j in 0..n_out {
+            if buf[j].2 != usize::MAX {
+                tmp[j].1 = buf[j].2;  //update tmp for patching next chunk
+            }
+            if chunk[j].1 != usize::MAX && chunk[j].1 >= last_cur {
+                chunk[j].2 = tmp[j].1; //assign partition number to next chunk
+                cur -= 1;
+            }
+        }
+        chunk.sort_by(|a, b| a.0.cmp(&b.0));
     }
     // assign new partition number
-    obliv_place(
-        &mut data,
-        part.len() + 1,
-        |x| x.0,
-        (usize::MAX, usize::MAX, 0),
-    );
-    for i in 0..part.len() {
+    set_field_binid(&mut part[0], last_bin_loc as usize);
+    for i in 1..part.len() {
         if data[i].1 != usize::MAX {
             assert!((data[i].2 as usize) < n_out);
             set_field_binid(&mut part[i], data[i].2 as usize); //data[i].2 is definitely smaller than n_out
