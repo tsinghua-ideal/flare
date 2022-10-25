@@ -193,7 +193,7 @@ where
             if dst != usize::MAX { 
                 chunk.swap(src, dst);         //use OM to simplify
             }
-        }  
+        }
         for j in 0..n_out {
             if chunk[j].1 != usize::MAX && tmp[j].1 == usize::MAX {
                 tmp[j].1 = chunk[j].2;  //copy acc
@@ -218,7 +218,6 @@ where
                     tmp[j].1 = usize::MAX;
                 }
                 chunk[j].2 = tmp[j].2; //patch init partition number
-                assert!(tmp[j].2 < n_out);
                 if part[0].0 .1 .0 > 0 && idx_last == -1 {
                     idx_last = chunk[0].2 as i64; //record original partition number for the last bin
                 }
@@ -290,8 +289,9 @@ where
     let mut tmp = acc_col_rem;
     for chunk in data.chunks_mut(n_out).rev() {
         let mut buf = chunk.to_vec();
+        let is_full_chunk = buf.iter().filter(|x| x.2 == usize::MAX).count() == 0;
         let last_cur = cur;
-        for j in 0..n_out {
+        for j in (0..n_out).rev() {
             if chunk[j].1 != usize::MAX && chunk[j].1 < last_cur {
                 chunk[j].2 = tmp[j].1; //assign partition number to current chunk
                 cur -= 1;
@@ -303,11 +303,11 @@ where
             b.2 = a.1;
         }
         buf.sort_by(|a, b| a.1.cmp(&b.1));
-        if cur == 0 {
+        if cur == 0 && is_full_chunk {
             cur = n_out;
         }
-        for j in 0..n_out {
-            if buf[j].2 != usize::MAX {
+        for j in (0..n_out).rev() {
+            if is_full_chunk {
                 tmp[j].1 = buf[j].2;  //update tmp for patching next chunk
             }
             if chunk[j].1 != usize::MAX && chunk[j].1 >= last_cur {
