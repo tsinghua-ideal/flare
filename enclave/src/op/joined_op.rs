@@ -530,9 +530,18 @@ where
                 sort_helper.sort();
                 let mut sorted_data = sort_helper.take().0.into_iter().map(|((k, (v, w)), (a, b))| ((k, (v, w)), (a, b), u64::MAX)).collect::<Vec<_>>();
                 //oblivious expand
+                let mut padding_v = None;
+                let mut padding_w = None;
                 let mut s = 0;
                 for i in 0..sorted_data.len() {
                     let tid = sorted_data[i].0.1.1.is_some() as usize;
+                    if sorted_data[i].0.1.0.is_some() && padding_v.is_none() {
+                        padding_v = sorted_data[i].0.1.0.clone();
+                    }
+                    if sorted_data[i].0.1.1.is_some() && padding_w.is_none() {
+                        padding_w = sorted_data[i].0.1.1.clone();
+                    }
+
                     if i != 0 && tid != sorted_data[i-1].0.1.1.is_some() as usize {
                         s = 0;
                     }
@@ -547,7 +556,7 @@ where
                 }
                 println!("max_a = {:?}, max_b = {:?}, max_cnt_prod = {:?}, remaining_cnt = {:?}, remaining_cnt_prod = {:?}, data_len = {:?}, padding_len = {:?}, s = {:?}", max_a, max_b, max_cnt_prod, remaining_cnt, remaining_cnt_prod, data_len, padding_len, s);
 
-                sorted_data.resize(2 * padding_len, (Default::default(), Default::default(), u64::MAX));
+                sorted_data.resize(2 * padding_len, ((K::default(), (padding_v, padding_w)), Default::default(), u64::MAX));
                 //oblivious distribute
                 let mut j = 1usize << (((2 * padding_len) as f64).log2().ceil() as u32 - 1);
                 while j >= 1 {
