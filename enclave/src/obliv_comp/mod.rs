@@ -237,7 +237,7 @@ fn calc(k: usize, mut n: usize) -> usize {
 
 fn build_buckets<T, F>(
     data: Vec<Vec<(T, u64)>>,
-    mut cmp_f: F,
+    cmp_f: F,
     max_value: (T, u64),
     outer_parallel: usize,
     total_len: usize,
@@ -257,16 +257,19 @@ where
     assert_ne!(sep, 0);
     assert_eq!(total_len % n, 0);
     if data.len() > 0 {
-        let mut b_last = get_field_bktid(&data[0]);
-        let mut loc = sep * b_last;
+        let mut b_last = usize::MAX;
+        let mut loc = usize::MAX;
         for d in data.iter_mut() {
-            if get_field_bktid(d) != b_last {
+            let b_cur = get_field_bktid(d);
+            if b_cur != MASK_BUCKET as usize {
+                let c = b_cur != b_last;
                 b_last = get_field_bktid(d);
-                set_field_bktid(d, sep * get_field_bktid(d));
-            } else {
+                if c {
+                    loc = sep * b_last;
+                }
                 set_field_bktid(d, loc);
+                loc += 1;
             }
-            loc = get_field_bktid(d) + 1;
         }
     }
     obliv_place(&mut data, total_len, get_field_bktid, max_value);
@@ -310,7 +313,7 @@ fn coordinate_bin_num<T>(
     let mut bin_num = last_bin_info[0].0;
     let mut bin_size = last_bin_info[0].1;
     let mut n = bin_num + 1;
-    let mut n_last = n;
+    let mut n_last = 0;
     for i in 1..last_bin_info.len() {
         let cur_bin_num = last_bin_info[i].0;
         let (a, b) = next_fit(cap, true, last_bin_info[i].1, bin_num, bin_size, Some(n + cur_bin_num));
@@ -326,10 +329,10 @@ fn coordinate_bin_num<T>(
         bin_size = b;
     }
     if data.len() > 0 {
-        let mut tmp = get_field_binid(&data[0]);
+        let tmp = get_field_binid(&data[0]);
         for d in data.iter_mut() {
             if get_field_binid(d) != tmp {
-                set_field_binid(d, n + get_field_binid(d));
+                set_field_binid(d, n_last + get_field_binid(d));
             } else {
                 set_field_binid(d, last_bin_info[id].0);
             }

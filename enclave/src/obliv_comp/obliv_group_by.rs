@@ -101,10 +101,11 @@ where
         (is_dummy(a), get_field_bktid(a), !is_valid(a), &a.0.0).cmp(&(is_dummy(b), get_field_bktid(b), !is_valid(b), &b.0.0))
     };
 
+    let max_value = (Default::default(), 1 << DUMMY_BIT | MASK_BUCKET);
     return build_buckets(
         part,
         cmp_f,
-        (Default::default(), 1u64 << DUMMY_BIT),
+        max_value,
         outer_parallel,
         lim * n_out,
         n_out,

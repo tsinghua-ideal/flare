@@ -40,27 +40,26 @@ where
     );
 
     //compute sum per group and invalidate group only has A items or B items
-    let mut acc = ((0, 0), 0);
+    let mut acc = (0, 0);
     for i in 0..part.len() {
         let c = i == 0 || part[i - 1].0 .0 != part[i].0 .0;
-        if c && acc.0 .0 * acc.0 .1 > 0 {
-            set_valid(&mut part[i - 1], acc.1 > 0);
-            part[i - 1].0 .1 = acc.0;
+        if c && acc.0 * acc.1 > 0 {
+            set_valid(&mut part[i - 1], true);
+            part[i - 1].0 .1 = acc;
         }
         if c {
-            acc = ((0, 0), 0);
+            acc = (0, 0);
         }
         if is_valid(&part[i]) {
-            acc.0 .0 += part[i].0 .1 .0;
-            acc.0 .1 += part[i].0 .1 .1;
-            acc.1 = 1;
+            acc.0 += part[i].0 .1 .0;
+            acc.1 += part[i].0 .1 .1;
         }
         part[i].0 .1 = (0, 0);
         set_valid(&mut part[i], false);
     }
-    if !part.is_empty() {
-        set_valid(part.last_mut().unwrap(), acc.1 > 0);
-        part.last_mut().unwrap().0 .1 = acc.0;
+    if !part.is_empty() && acc.0 * acc.1 > 0 {
+        set_valid(part.last_mut().unwrap(), true);
+        part.last_mut().unwrap().0 .1 = acc;
     }
 
     let mut data = part.into_iter().map(|((k, v), m)| ((k, v), m, 0)).collect::<Vec<_>>(); 
@@ -321,8 +320,8 @@ where
     set_field_binid(&mut part[0], last_bin_loc as usize);
     for i in 1..part.len() {
         if data[i].1 != usize::MAX {
-            assert!((data[i].2 as usize) < n_out);
-            set_field_binid(&mut part[i], data[i].2 as usize); //data[i].2 is definitely smaller than n_out
+            assert!(data[i].2 < n_out);
+            set_field_binid(&mut part[i], data[i].2); //data[i].2 is definitely smaller than n_out
         } else {
             let tmp = get_field_binid(&part[i - 1]);
             set_field_binid(&mut part[i], tmp);
@@ -401,6 +400,8 @@ where
             if d.0 .1 .2 != 0 {
                 assert!(d.0 .1 .2 > 0);
                 set_valid(d, true);
+            } else {
+                set_field_bktid(d, MASK_BUCKET as usize);
             }
         }
     }
@@ -419,7 +420,7 @@ where
             &y.0 .0,
         ))
     };
-    let max_value = (Default::default(), 1 << DUMMY_BIT);
+    let max_value = (Default::default(), 1 << DUMMY_BIT | MASK_BUCKET);
     let buckets_new = build_buckets(part, cmp_f, max_value, outer_parallel, lim * n_out, n_out);
 
     return buckets_new;
