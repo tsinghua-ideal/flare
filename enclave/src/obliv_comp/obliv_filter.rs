@@ -151,7 +151,7 @@ where
     let cmp_f = |a: &(T, u64), b: &(T, u64)| {
         (is_dummy(a), get_field_bktid(a), !is_valid(a)).cmp(&(is_dummy(b), get_field_bktid(b), !is_valid(b)))
     };
-    obliv_global_filter_stage2(data, cmp_f, (Default::default(), 1u64 << DUMMY_BIT), part_id, n_out, num_invalids, outer_parallel)
+    obliv_global_filter_stage2(data, cmp_f, (Default::default(), 1u64 << DUMMY_BIT | MASK_BUCKET), part_id, n_out, num_invalids, outer_parallel)
 }
 
 pub fn obliv_global_filter_stage2_kv<K, V>(
@@ -168,7 +168,7 @@ where
     let cmp_f = |a: &((K, V), u64), b: &((K, V), u64)| {
         (is_dummy(a), get_field_bktid(a), !is_valid(a), &a.0.0).cmp(&(is_dummy(b), get_field_bktid(b), !is_valid(b), &b.0.0))
     };
-    obliv_global_filter_stage2(data, cmp_f, (Default::default(), 1u64 << DUMMY_BIT), part_id, n_out, num_invalids, outer_parallel)
+    obliv_global_filter_stage2(data, cmp_f, (Default::default(), 1u64 << DUMMY_BIT | MASK_BUCKET), part_id, n_out, num_invalids, outer_parallel)
 }
 
 pub fn obliv_global_filter_stage3_t<T>(data: Vec<Vec<Vec<(T, u64)>>>, max_len_subpart: usize) -> Vec<T>

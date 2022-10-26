@@ -276,7 +276,13 @@ where
     let mut buckets = vec![Vec::new(); n];
     let mut i = n - 1;
     while data.len() > 0 {
-        buckets[i] = data.split_off(data.len() - sep);
+        buckets[i] = data.split_off(data.len() - sep)
+            .into_iter()
+            .map(|mut x| {
+                set_field_bktid(&mut x, 0);
+                set_dummy(&mut x, false);
+                x
+            }).collect::<Vec<_>>();      
         i -= 1;
     }
     return buckets;
