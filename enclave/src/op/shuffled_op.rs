@@ -101,34 +101,39 @@ where
         
         let mut acc = create_enc();
         let data_enc = input.get_enc_data::<Vec<Vec<Vec<ItemE>>>>();
-        assert_eq!(data_enc.len(), MAX_THREAD + 1);
-        let (is_para_enc, is_para_mer) = {
-            crate::ALLOCATOR.reset_alloc_cnt();
-            let sample_data = data_enc[0].iter().map(|bucket_enc| batch_decrypt::<(K, C)>(bucket_enc, true)).collect::<Vec<_>>();
-            let sample_len = sample_data.iter().map(|v| v.len()).sum::<usize>();
-            let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
-            let alloc_cnt_ratio = (alloc_cnt as f64)/(sample_len as f64);
-            let is_para_enc = alloc_cnt_ratio < PARA_THRESHOLD;
-            println!("for decryption, alloc_cnt per len = {:?}", alloc_cnt_ratio);
+        assert_eq!(data_enc.len(), INNER_PARA);
+        // assert_eq!(data_enc.len(), INNER_PARA + 1);
+        // let (is_para_enc, is_para_mer) = {
+        //     crate::ALLOCATOR.reset_alloc_cnt();
+        //     let sample_data = data_enc[0].iter().map(|bucket_enc| batch_decrypt::<(K, C)>(bucket_enc, true)).collect::<Vec<_>>();
+        //     let sample_len = sample_data.iter().map(|v| v.len()).sum::<usize>();
+        //     let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
+        //     let alloc_cnt_ratio = (alloc_cnt as f64)/(sample_len as f64);
+        //     let is_para_enc = alloc_cnt_ratio < PARA_THRESHOLD;
+        //     println!("for decryption, alloc_cnt per len = {:?}", alloc_cnt_ratio);
 
-            crate::ALLOCATOR.reset_alloc_cnt();
-            let combiners = merge_core(sample_data, &self.aggregator);
-            let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
-            let alloc_cnt_ratio = (alloc_cnt as f64)/(sample_len as f64);
-            let is_para_merge = alloc_cnt_ratio < PARA_THRESHOLD;
-            println!("for merge, alloc_cnt per len = {:?}", alloc_cnt_ratio);
-            combine_enc(&mut acc, batch_encrypt(&combiners, true));
-            (is_para_enc, is_para_merge)
-        };
+        //     crate::ALLOCATOR.reset_alloc_cnt();
+        //     let combiners = merge_core(sample_data, &self.aggregator);
+        //     let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
+        //     let alloc_cnt_ratio = (alloc_cnt as f64)/(sample_len as f64);
+        //     let is_para_merge = alloc_cnt_ratio < PARA_THRESHOLD;
+        //     println!("for merge, alloc_cnt per len = {:?}", alloc_cnt_ratio);
+        //     combine_enc(&mut acc, batch_encrypt(&combiners, true));
+        //     (is_para_enc, is_para_merge)
+        // };
+        let is_para_enc = true;
+        let is_para_mer = true;
 
-        let mut handlers = Vec::with_capacity(MAX_THREAD);
+        let mut handlers = Vec::with_capacity(INNER_PARA);
         if !is_para_enc {
-            let mut data = data_enc[1..MAX_THREAD+1].iter().map(|buckets_enc| {
+            let mut data = data_enc
+                //data_enc[1..INNER_PARA + 1]
+                .iter().map(|buckets_enc| {
                 buckets_enc.iter().map(|bucket_enc| batch_decrypt::<(K, C)>(bucket_enc, true)).collect::<Vec<_>>()
             }).collect::<Vec<_>>();
             if !is_para_mer {
                 let mut combiners = data.into_iter().map(|buckets| merge_core(buckets, &self.aggregator)).collect::<Vec<_>>();
-                for i in 0..MAX_THREAD {
+                for i in 0..INNER_PARA {
                     let combiners = combiners.pop().unwrap();
                     let builder = thread::Builder::new();
                     let handler = builder
@@ -138,7 +143,7 @@ where
                     handlers.push(handler);
                 }
             } else {
-                for i in 0..MAX_THREAD {
+                for i in 0..INNER_PARA {
                     let aggregator = self.aggregator.clone();
                     let buckets = data.pop().unwrap();
                     let builder = thread::Builder::new();
@@ -152,8 +157,9 @@ where
             }
         } else {
             if !is_para_mer {
-                let mut handlers_pt = Vec::with_capacity(MAX_THREAD);
-                for i in 1..MAX_THREAD + 1 {
+                let mut handlers_pt = Vec::with_capacity(INNER_PARA);
+                for i in 0..INNER_PARA {
+                //for i in 1..INNER_PARA + 1 {
                     let handler = thread::Builder::new()
                         .spawn(move || {
                             let buckets_enc = input.get_enc_data::<Vec<Vec<Vec<ItemE>>>>();
@@ -172,7 +178,8 @@ where
                     handlers.push(handler);
                 }
             } else {
-                for i in 1..MAX_THREAD + 1 {
+                for i in 0..INNER_PARA {
+                // for i in 1..INNER_PARA + 1 {
                     let aggregator = self.aggregator.clone();
                     let handler = thread::Builder::new()
                         .spawn(move || {

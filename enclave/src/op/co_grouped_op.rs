@@ -183,27 +183,30 @@ W: Data,
             decrypt_buckets(&data_enc.2),
             data_enc.3.iter().map(|buckets| decrypt_buckets(buckets)).collect::<Vec<_>>(),
         );
-        assert_eq!(data_enc.1.len(), MAX_THREAD + 1);
-        assert_eq!(data_enc.3.len(), MAX_THREAD + 1);
+        assert_eq!(data_enc.1.len(), INNER_PARA);
+        assert_eq!(data_enc.3.len(), INNER_PARA);
+        // assert_eq!(data_enc.1.len(), INNER_PARA + 1);
+        // assert_eq!(data_enc.3.len(), INNER_PARA + 1);
 
         //currently only support that both children are shuffle dep
     
-        let (is_para_mer, agg) = {
-            crate::ALLOCATOR.reset_alloc_cnt();
-            let sample_a1 = a1.pop().unwrap();
-            let sample_b1 = b1.pop().unwrap();
-            let sample_len = sample_a1.iter().map(|v| v.len()).sum::<usize>() 
-                + sample_b1.iter().map(|v| v.len()).sum::<usize>();
-            let agg = merge_core(sample_a1, sample_b1);
-            let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
-            let alloc_cnt_ratio = (alloc_cnt as f64)/(sample_len as f64);
-            println!("for merge, alloc_cnt per len = {:?}", alloc_cnt_ratio);
-            (alloc_cnt_ratio < PARA_THRESHOLD, agg)
-        };
+        // let (is_para_mer, agg) = {
+        //     crate::ALLOCATOR.reset_alloc_cnt();
+        //     let sample_a1 = a1.pop().unwrap();
+        //     let sample_b1 = b1.pop().unwrap();
+        //     let sample_len = sample_a1.iter().map(|v| v.len()).sum::<usize>() 
+        //         + sample_b1.iter().map(|v| v.len()).sum::<usize>();
+        //     let agg = merge_core(sample_a1, sample_b1);
+        //     let alloc_cnt = crate::ALLOCATOR.get_alloc_cnt();
+        //     let alloc_cnt_ratio = (alloc_cnt as f64)/(sample_len as f64);
+        //     println!("for merge, alloc_cnt per len = {:?}", alloc_cnt_ratio);
+        //     (alloc_cnt_ratio < PARA_THRESHOLD, agg)
+        // };
+        let is_para_mer = true;
 
-        let mut handlers = Vec::with_capacity(MAX_THREAD);
+        let mut handlers = Vec::with_capacity(INNER_PARA);
         if is_para_mer {
-            for i in 0..MAX_THREAD {
+            for i in 0..INNER_PARA {
                 let a1 = a1.pop().unwrap();
                 let b1 = b1.pop().unwrap();
                 let builder = thread::Builder::new();
@@ -216,9 +219,11 @@ W: Data,
         } 
 
         let mut acc = create_enc();
-        for agg in vec![agg].into_iter()
-            .chain(handlers.into_iter().map(|handler| handler.join().unwrap()))
-            .chain(a1.into_iter().zip(b1.into_iter()).map(|(a1, b1)| merge_core(a1, b1))) 
+        for agg in handlers.into_iter().map(|handler| handler.join().unwrap())
+        .chain(a1.into_iter().zip(b1.into_iter()).map(|(a1, b1)| merge_core(a1, b1)))
+        // for agg in vec![agg].into_iter()
+        //     .chain(handlers.into_iter().map(|handler| handler.join().unwrap()))
+        //     .chain(a1.into_iter().zip(b1.into_iter()).map(|(a1, b1)| merge_core(a1, b1))) 
         {
             //block reshape
             let res = if self.is_for_join {

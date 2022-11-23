@@ -16,6 +16,8 @@ mod micro_map;
 pub use micro_map::*;
 mod micro_reduce;
 pub use micro_reduce::*;
+mod micro_sort_by;
+pub use micro_sort_by::*;
 mod micro_take;
 pub use micro_take::*;
 mod micro_zip;

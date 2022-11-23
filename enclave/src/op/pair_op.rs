@@ -170,6 +170,31 @@ where
         new_op
     }
 
+    #[track_caller]
+    fn partition_by_key(&self, partitioner: Box<dyn Partitioner>) -> SerArc<dyn Op<Item = V>> {
+        // Guarantee the number of partitions by introducing a shuffle phase
+        let shuffle_steep = Shuffled::new(
+            self.get_op(),
+            Arc::new(Aggregator::<K, V, _>::default()),
+            partitioner,
+        );
+        if !self.get_context().get_is_tail_comp() {
+            insert_opmap(shuffle_steep.get_op_id(), shuffle_steep.get_op_base());
+        }
+        // Flatten the results of the combined partitions
+        let flattener = Fn!(|grouped: (K, Vec<V>)| {
+            let (_key, values) = grouped;
+            let iter: Box<dyn Iterator<Item = _>> = Box::new(values.into_iter());
+            iter
+        });
+        self.get_context().add_num(1);
+        let new_op = shuffle_steep.flat_map(flattener);
+        if !self.get_context().get_is_tail_comp() {
+            insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        }
+        new_op
+    }
+
 }
 
 // Implementing the Pair trait for all types which implements Op

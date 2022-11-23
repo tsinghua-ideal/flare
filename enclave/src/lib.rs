@@ -136,6 +136,9 @@ lazy_static! {
         /* zip */
         //zip_sec_0()?;
 
+        /* sort */
+        //sort_by_sec()?;
+
         /* big data bench */
         // aggregate_sec()?;
         // filter_sec()?;
@@ -188,17 +191,19 @@ pub extern "C" fn secure_execute_pre(tid: u64,
     op_ids: *const u8,
     part_nums: *const u8,
     dep_info: DepInfo,
+    range_bound_src: *const u8,
 ) { 
     let _init = *init; //this is necessary to let it accually execute
     let mut op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap().clone();
     let mut part_nums = unsafe { (part_nums as *const Vec<usize>).as_ref() }.unwrap().clone();
+    let range_bound_src = unsafe { (range_bound_src as *const Vec<ItemE>).as_ref() }.unwrap().clone();
     println!("in secure_execute_pre, op_ids = {:?}, part_nums = {:?}", op_ids, part_nums);
     if dep_info.dep_type() == 1 {
         assert!(part_nums.len() == op_ids.len()+1);
         let reduce_num = part_nums.remove(0);
         let (parent_id, _) = dep_info.get_op_key();
         let parent = load_opmap().get(&parent_id).unwrap();
-        parent.sup_next_shuf_dep(&dep_info, reduce_num);  //set shuf dep if missing when in loop
+        parent.sup_next_shuf_dep(&dep_info, reduce_num, range_bound_src);  //set shuf dep if missing when in loop
     }
     //The header is action id
     if part_nums[0] == usize::MAX {

@@ -95,6 +95,10 @@ fn main() -> Result<()> {
     /* zip */
     //zip_sec_0()?;
 
+    /* sort */
+    //sort_by_sec()?;
+    //sort_by_unsec()?;
+
     /* big data bench */
     // aggregate_sec()?;
     // filter_sec()?;

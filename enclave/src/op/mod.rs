@@ -26,7 +26,7 @@ use crate::{CACHE, Fn, OP_MAP};
 use crate::basic::{AnyData, Arc as SerArc, Data, Func, SerFunc};
 use crate::custom_thread::PThread;
 use crate::dependency::{Dependency, OneToOneDependency, ShuffleDependencyTrait};
-use crate::partitioner::Partitioner;
+use crate::partitioner::{Partitioner, RangePartitioner};
 use crate::serialization_free::{Construct, Idx, SizeBuf};
 use crate::utils;
 use crate::utils::random::{BernoulliCellSampler, BernoulliSampler, PoissonSampler, RandomSampler};
@@ -68,7 +68,7 @@ type ResIter<T> = Box<dyn Iterator<Item = Box<dyn Iterator<Item = T>>>>;
 pub const MAX_ENC_BL: usize = 1024;
 pub const CACHE_LIMIT: usize = 4_000_000;
 pub const ENABLE_CACHE_INSIDE: bool = false;
-pub const MAX_THREAD: usize = 1;
+pub const INNER_PARA: usize = 1;
 pub const PARA_THRESHOLD: f64 = 3.0;
 pub type Result<T> = std::result::Result<T, &'static str>;
 
@@ -827,7 +827,7 @@ pub trait OpBase: Send + Sync {
         res
     }
     //supplement
-    fn sup_next_shuf_dep(&self, dep_info: &DepInfo, reduce_num: usize) {
+    fn sup_next_shuf_dep(&self, dep_info: &DepInfo, reduce_num: usize, range_bound_src: Vec<ItemE>) {
         let cur_key = dep_info.get_op_key();
         let next_deps = self.get_next_deps().read().unwrap().clone();
         match next_deps.get(&cur_key) {
@@ -840,7 +840,7 @@ pub trait OpBase: Send + Sync {
                                 self.get_next_deps().write().unwrap().insert(
                                     cur_key, 
                                     Dependency::ShuffleDependency(
-                                        shuf_dep.set_parent_and_child(cur_key.0, cur_key.1)
+                                        shuf_dep.set_dependency(cur_key.0, cur_key.1, reduce_num, range_bound_src)
                                     )
                                 );
                                 break;
@@ -852,7 +852,7 @@ pub trait OpBase: Send + Sync {
             },
             Some(dep) => { //already exist, check and change the partitioner
                 match dep {
-                    Dependency::ShuffleDependency(shuf_dep) => shuf_dep.change_partitioner(reduce_num),
+                    Dependency::ShuffleDependency(shuf_dep) => shuf_dep.change_partitioner(reduce_num, range_bound_src),
                     Dependency::NarrowDependency(nar_dep) => panic!("should not be narrow dep"),
                 };
             },
@@ -1282,8 +1282,8 @@ pub trait Op: OpBase + 'static {
 
     fn spawn_enc_thread(&self, mut results: Vec<Vec<Self::Item>>, handlers: &mut Vec<JoinHandle<Vec<ItemE>>>) {
         let mut remaining = results.len();
-        let r = remaining.saturating_sub(1) / MAX_THREAD + 1;
-        for _ in 0..MAX_THREAD {
+        let r = remaining.saturating_sub(1) / INNER_PARA + 1;
+        for _ in 0..INNER_PARA {
             let data = results.split_off(results.len() - std::cmp::min(r, remaining));
             remaining = remaining.saturating_sub(r);
             let handler = thread::Builder::new()
@@ -1300,10 +1300,10 @@ pub trait Op: OpBase + 'static {
 
     fn spawn_dec_nar_thread(&self, call_seq: &NextOpId, input: Input, handlers: &mut Vec<JoinHandle<Vec<Vec<Self::Item>>>>, only_dec: bool) {
         let (s, len) = call_seq.para_range.as_ref().unwrap();
-        let r = (len.saturating_sub(*s)).saturating_sub(1) / MAX_THREAD + 1;
+        let r = (len.saturating_sub(*s)).saturating_sub(1) / INNER_PARA + 1;
         let mut b = *s;
         let mut e = std::cmp::min(b + r, *len);
-        for _ in 0..MAX_THREAD {
+        for _ in 0..INNER_PARA {
             let op = self.get_op();
             let mut call_seq = call_seq.clone();
             call_seq.para_range = Some((b, e));
@@ -1325,10 +1325,10 @@ pub trait Op: OpBase + 'static {
 
     fn spawn_dec_nar_enc_thread(&self, call_seq: &NextOpId, input: Input, handlers: &mut Vec<JoinHandle<Vec<ItemE>>>, only_dec: bool) {
         let (s, len) = call_seq.para_range.as_ref().unwrap();
-        let r = (len.saturating_sub(*s)).saturating_sub(1) / MAX_THREAD + 1;
+        let r = (len.saturating_sub(*s)).saturating_sub(1) / INNER_PARA + 1;
         let mut b = *s;
         let mut e = std::cmp::min(b + r, *len);
-        for _ in 0..MAX_THREAD {
+        for _ in 0..INNER_PARA {
             let op = self.get_op();
             let mut call_seq = call_seq.clone();
             call_seq.para_range = Some((b, e));
@@ -1375,8 +1375,8 @@ pub trait Op: OpBase + 'static {
             }
         };
 
-        let mut handlers_pt =  Vec::with_capacity(MAX_THREAD);
-        let mut handlers_ct = Vec::with_capacity(MAX_THREAD);
+        let mut handlers_pt =  Vec::with_capacity(INNER_PARA);
+        let mut handlers_ct = Vec::with_capacity(INNER_PARA);
         if !call_seq.is_step_para.0 && !call_seq.is_step_para.1 {
             results.append(&mut self.compute(&mut call_seq, input).map(|result| result.collect::<Vec<_>>()).collect::<Vec<_>>());
             if need_enc {
@@ -1412,8 +1412,8 @@ pub trait Op: OpBase + 'static {
                     for handler in handlers_pt {
                         handler.join().unwrap();
                     }
-                    handlers_ct = Vec::with_capacity(MAX_THREAD);
-                    handlers_pt = Vec::with_capacity(MAX_THREAD);
+                    handlers_ct = Vec::with_capacity(INNER_PARA);
+                    handlers_pt = Vec::with_capacity(INNER_PARA);
                     let mut call_seq = call_seq.clone();
                     results.append(&mut self.compute(&mut call_seq, input).map(|result| result.collect::<Vec<_>>()).collect::<Vec<_>>());
                     if need_enc {
@@ -1533,6 +1533,22 @@ pub trait Op: OpBase + 'static {
         F: SerFunc(Self::Item) -> Box<dyn Iterator<Item = U>>,
     {
         let new_op = SerArc::new(FlatMapper::new(self.get_op(), f));
+        if !self.get_context().get_is_tail_comp() {
+            insert_opmap(new_op.get_op_id(), new_op.get_op_base());
+        }
+        new_op
+    }
+
+    #[track_caller]
+    fn map_partitions<U: Data, F>(&self, func: F) -> SerArc<dyn Op<Item = U>>
+    where
+        F: SerFunc(Box<dyn Iterator<Item = Self::Item>>) -> Box<dyn Iterator<Item = U>>,
+        Self: Sized,
+    {
+        let ignore_idx = Fn!(move |_index: usize,
+                                   items: Box<dyn Iterator<Item = Self::Item>>|
+              -> Box<dyn Iterator<Item = _>> { (func)(items) });
+        let new_op = SerArc::new(MapPartitions::new(self.get_op(), ignore_idx));
         if !self.get_context().get_is_tail_comp() {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         }
@@ -1800,6 +1816,73 @@ pub trait Op: OpBase + 'static {
             insert_opmap(new_op.get_op_id(), new_op.get_op_base());
         }
         new_op
+    }
+
+    #[track_caller]
+    fn sort_by<K, F>(
+        &self,
+        ascending: bool,
+        num_partitions: usize,
+        func: F,
+    ) -> SerArc<dyn Op<Item = Self::Item>>
+    where
+        K: Data + Eq + Hash + PartialEq + Ord + PartialOrd,
+        F: SerFunc(&Self::Item) -> K,
+        Self::Item: Data + Eq + Hash,
+        Self: Sized + Clone,
+    {
+        let f_clone = func.clone();
+        let sample_point_per_partition_hint = 20;
+        let sample_size = std::cmp::min(1000000, sample_point_per_partition_hint * num_partitions);
+        let sample_size_per_partition = sample_size * 3 / num_partitions;
+        let k_rdd = self
+            .map(Fn!(move |x: Self::Item| -> K { (f_clone)(&x) }));
+        self.get_context().add_num(1);
+        let _sample_k_rdd =
+            k_rdd.map_partitions(Box::new(Fn!(
+                move |iter: Box<dyn Iterator<Item = K>>| -> Box<dyn Iterator<Item = K>> {
+                    let mut res = Vec::<K>::new();
+
+                    let mut rand = utils::random::get_rng_with_random_seed();
+                    for (idx, item) in iter.enumerate() {
+                        if idx < sample_size_per_partition {
+                            res.push(item);
+                        } else {
+                            let i = rand.gen_range(0, idx);
+                            if i < sample_size_per_partition {
+                                res[i] = item
+                            }
+                        }
+                    }
+                    Box::new(res.into_iter())
+                }
+            )));
+        self.get_context().add_num(1);
+
+        assert!(num_partitions >= 1);
+
+        let part = RangePartitioner::<K>::new(num_partitions, ascending, Vec::new(), Vec::new());
+
+        // otherwise func is called multiple time during sorting. perhaps change it later
+        let f_clone = func.clone();
+        let rdd = self.map(Box::new(Fn!(move |x: Self::Item| -> (K, Self::Item) {
+            ((f_clone)(&x), x)
+        })));
+        self.get_context().add_num(1);
+
+        let f_clone = func.clone();
+        let sort = Fn!(
+        move|iter: Box<dyn Iterator<Item = Self::Item>>| -> Box<dyn Iterator<Item = Self::Item>> {
+            let mut res: Vec<Self::Item> = iter.collect();
+            // sort_by_key expect a FnMut parameter, but f_clone only implement Fn
+            // so a wrapper which implement FnMut needed here.
+            res.sort_by_key(|x| (f_clone)(&x));
+            Box::new(res.into_iter())
+        });
+
+        let partition_rdd = rdd.partition_by_key(Box::new(part));
+        self.get_context().add_num(1);
+        partition_rdd.map_partitions(sort)
     }
 
     #[track_caller]

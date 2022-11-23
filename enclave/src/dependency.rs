@@ -106,7 +106,7 @@ impl NarrowDependencyTrait for RangeDependency {
 }
 
 pub trait ShuffleDependencyTrait: DowncastSync + Send + Sync  { 
-    fn change_partitioner(&self, reduce_num: usize);
+    fn change_partitioner(&self, reduce_num: usize, range_bound_src: Vec<ItemE>);
     fn do_shuffle_task(&self, tid: u64, opb: Arc<dyn OpBase>, call_seq: NextOpId, input: Input) -> *mut u8;
     fn send_sketch(&self, buf: &mut SizeBuf, p_data_enc: *mut u8);
     fn send_enc_data(&self, p_out: usize, p_data_enc: *mut u8);
@@ -114,7 +114,7 @@ pub trait ShuffleDependencyTrait: DowncastSync + Send + Sync  {
     fn get_parent(&self) -> OpId;
     fn get_child(&self) -> OpId;
     fn get_identifier(&self) -> usize;
-    fn set_parent_and_child(&self, parent_op_id: OpId, child_op_id: OpId) -> Arc<dyn ShuffleDependencyTrait>;
+    fn set_dependency(&self, parent_op_id: OpId, child_op_id: OpId, reduce_num: usize, range_bound_src: Vec<ItemE>) -> Arc<dyn ShuffleDependencyTrait>;
 }
 
 impl_downcast!(sync ShuffleDependencyTrait);
@@ -128,7 +128,6 @@ where
     pub is_cogroup: bool,
     pub aggregator: Arc<Aggregator<K, V, C>>,
     pub partitioner: RwLock<Box<dyn Partitioner>>,
-    pub split_num_unchanged: Arc<AtomicBool>,
     pub identifier: usize,
     pub parent: OpId,
     pub child: OpId,
@@ -152,7 +151,6 @@ where
             is_cogroup,
             aggregator,
             partitioner: RwLock::new(partitioner),
-            split_num_unchanged: Arc::new(AtomicBool::new(true)),
             identifier,
             parent,
             child,
@@ -167,11 +165,11 @@ where
     V: Data, 
     C: Data,
 {
-    fn change_partitioner(&self, reduce_num: usize) {
+    fn change_partitioner(&self, reduce_num: usize, range_bound_src: Vec<ItemE>) {
         let mut cur_partitioner = self.partitioner.write().unwrap();
-        if reduce_num != cur_partitioner.get_num_of_partitions() {
+        if reduce_num != cur_partitioner.get_num_of_partitions() || range_bound_src != cur_partitioner.get_range_bound_src() {
             cur_partitioner.set_num_of_partitions(reduce_num);
-            self.split_num_unchanged.store(false, atomic::Ordering::SeqCst);
+            cur_partitioner.set_range_bound_src(range_bound_src);
         }
     }
 
@@ -184,7 +182,7 @@ where
             let block_size = block.deep_size_of();
             let mut should_create_new = true;
             if let Some(sub_part) = sub_parts.last_mut() {
-                if sub_part_size + block_size <= CACHE_LIMIT/MAX_THREAD/input.get_parallel() {
+                if sub_part_size + block_size <= CACHE_LIMIT/INNER_PARA/input.get_parallel() {
                     sub_part.append(&mut block);
                     sub_part_size += block_size;
                     should_create_new = false;
@@ -196,9 +194,9 @@ where
             }
         }
 
-        let mut handlers = Vec::with_capacity(MAX_THREAD);
-        let r = sub_parts.len().saturating_sub(1) / MAX_THREAD + 1;
-        for _ in 0..MAX_THREAD {
+        let mut handlers = Vec::with_capacity(INNER_PARA);
+        let r = sub_parts.len().saturating_sub(1) / INNER_PARA + 1;
+        for _ in 0..INNER_PARA {
             let mut sub_parts = sub_parts.split_off(sub_parts.len().saturating_sub(r));
             let handler = thread::Builder::new()
                 .spawn(move || {
@@ -214,11 +212,12 @@ where
         let aggregator = self.aggregator.clone();
         let mut partitioner = self.partitioner.read().unwrap().clone();
         let mut num_output_splits = partitioner.get_num_of_partitions();
-        num_output_splits *= MAX_THREAD + 1;
+        // num_output_splits *= INNER_PARA + 1;
+        num_output_splits *= INNER_PARA;
         partitioner.set_num_of_partitions(num_output_splits);
 
         let mut is_para_shuf = true;
-        let mut handlers_res = Vec::with_capacity(MAX_THREAD);
+        let mut handlers_res = Vec::with_capacity(INNER_PARA);
         for (i, handler) in handlers.into_iter().enumerate() {
             let mut buckets_col = Vec::new();
             let mut sub_parts = handler.join().unwrap();
@@ -314,11 +313,14 @@ where
         self.identifier
     }
 
-    fn set_parent_and_child(&self, parent_op_id: OpId, child_op_id: OpId) -> Arc<dyn ShuffleDependencyTrait> {
+    fn set_dependency(&self, parent_op_id: OpId, child_op_id: OpId, reduce_num: usize, range_bound_src: Vec<ItemE>) -> Arc<dyn ShuffleDependencyTrait> {
+        let mut partitioner = self.partitioner.read().unwrap().clone();
+        partitioner.set_num_of_partitions(reduce_num);
+        partitioner.set_range_bound_src(range_bound_src);
         Arc::new(ShuffleDependency::new(
             self.is_cogroup,
             self.aggregator.clone(),
-            self.partitioner.read().unwrap().clone(),
+            partitioner,
             self.identifier,
             parent_op_id,
             child_op_id,
