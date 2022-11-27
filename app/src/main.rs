@@ -19,6 +19,7 @@
 #![feature(specialization)]
 use std::sync::atomic;
 
+use ordered_float::OrderedFloat;
 use vega::*;
 
 pub mod benchmarks;
@@ -107,13 +108,59 @@ fn main() -> Result<()> {
     // filter_unsec()?;
     // cross_project_unsec()?;
 
-    /* tpc-h */
+    /* join on tpc-h */
     // te1_sec()?;
     // te2_sec()?;
     // te3_sec()?;
     // te1_unsec()?;
     // te2_unsec()?;
     // te3_unsec()?;
+
+    /* tpc-h query */
+    // q1_sec()?;
+    // q2_sec()?;
+    // q3_sec()?;
+    // q4_sec()?;
+    // q5_sec()?;
+    // q6_sec()?;
+    // q7_sec()?;
+    // q8_sec()?;
+    // q9_sec()?;
+    // q10_sec()?;
+    // q11_sec()?;
+    // q12_sec()?;
+    // q13_sec()?;
+    // q14_sec()?;
+    // q15_sec()?;
+    // q16_sec()?;
+    // q17_sec()?;
+    // q18_sec()?;
+    // q19_sec()?;
+    // q20_sec()?;
+    // q21_sec()?;
+    // q22_sec()?;
+    // q1_unsec()?;
+    // q2_unsec()?;
+    // q3_unsec()?;
+    // q4_unsec()?;
+    // q5_unsec()?;
+    // q6_unsec()?;
+    // q7_unsec()?;
+    // q8_unsec()?;
+    // q9_unsec()?;
+    // q10_unsec()?;
+    // q11_unsec()?;
+    // q12_unsec()?;
+    // q13_unsec()?;
+    // q14_unsec()?;
+    // q15_unsec()?;
+    // q16_unsec()?;
+    // q17_unsec()?;
+    // q18_unsec()?;
+    // q19_unsec()?;
+    // q20_unsec()?;
+    // q21_unsec()?;
+    // q22_unsec()?;
 
     /* social graph */
     // se1_sec()?;

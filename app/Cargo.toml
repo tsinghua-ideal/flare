@@ -24,7 +24,7 @@ rand = "0.7"
 rand_distr = "0.2"
 rand_pcg = "0.2"
 
-ordered-float = "2.0"
+ordered-float = { version = "3.0", default-features = false, features = ["serde"] }
 
 [patch.'https://github.com/apache/teaclave-sgx-sdk.git']
 sgx_alloc = { path = "../incubator-teaclave-sgx-sdk/sgx_alloc" }

@@ -33,14 +33,16 @@ dyn-clone = "1.0.3"
 itertools = { git = "https://github.com/mesalock-linux/rust-itertools-sgx" }
 lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
 # typetag = { git = "https://github.com/mesalock-linux/typetag-sgx" }
+ordered-float = { git = "https://github.com/AmbitionXiang/rust-ordered-float", default-features = false, features = ["deepsize", "serde"] }
+rand = { git = "https://github.com/mesalock-linux/rand-sgx/" }
+rand_distr = { git = "https://github.com/mesalock-linux/rand-sgx/" }
+rand_pcg = { git = "https://github.com/mesalock-linux/rand-sgx/" }
+regex = { git = "https://github.com/mesalock-linux/regex-sgx.git" }
 serde = { git = "https://github.com/mesalock-linux/serde-sgx" }
 serde_derive = { git = "https://github.com/mesalock-linux/serde-sgx" }
 serde_closure = { git = "https://github.com/AmbitionXiang/serde_closure", branch = "sgx" }
 #serde_closure = { path = "../../../sgx/ported/serde_closure" }
 spin = "0.7.0"
-rand = { git = "https://github.com/mesalock-linux/rand-sgx/" }
-rand_distr = { git = "https://github.com/mesalock-linux/rand-sgx/" }
-rand_pcg = { git = "https://github.com/mesalock-linux/rand-sgx/" }
 
 [patch.'https://github.com/apache/teaclave-sgx-sdk.git']
 sgx_alloc = { path = "../incubator-teaclave-sgx-sdk/sgx_alloc" }

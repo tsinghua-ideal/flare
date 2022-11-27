@@ -1826,10 +1826,9 @@ pub trait Op: OpBase + 'static {
         func: F,
     ) -> SerArc<dyn Op<Item = Self::Item>>
     where
-        K: Data + Eq + Hash + PartialEq + Ord + PartialOrd,
+        K: Data + Eq + Hash + Ord,
         F: SerFunc(&Self::Item) -> K,
-        Self::Item: Data + Eq + Hash,
-        Self: Sized + Clone,
+        Self: Sized,
     {
         let f_clone = func.clone();
         let sample_point_per_partition_hint = 20;
@@ -1860,7 +1859,6 @@ pub trait Op: OpBase + 'static {
         self.get_context().add_num(1);
 
         assert!(num_partitions >= 1);
-
         let part = RangePartitioner::<K>::new(num_partitions, ascending, Vec::new(), Vec::new());
 
         // otherwise func is called multiple time during sorting. perhaps change it later

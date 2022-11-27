@@ -53,6 +53,7 @@ extern crate serde_derive;
 extern crate lazy_static;
 #[macro_use]
 extern crate downcast_rs; 
+use ordered_float::OrderedFloat;
 use serde_closure::Fn;
 
 use std::boxed::Box;
@@ -81,6 +82,7 @@ use op::*;
 mod serialization_free;
 use serialization_free::{Construct, Idx, SizeBuf};
 mod utils;
+use utils::date::date_tuple::Date;
 
 #[global_allocator]
 static ALLOCATOR: Allocator = Allocator;
@@ -144,10 +146,34 @@ lazy_static! {
         // filter_sec()?;
         // cross_project_sec()?;
 
-        /* tpc-h */
+        /* join on tpc-h*/
         // te1_sec()?;
         // te2_sec()?;
         // te3_sec()?;
+
+        /* tpc-h query */
+        // q1_sec()?;
+        // q2_sec()?;
+        // q3_sec()?;
+        // q4_sec()?;
+        // q5_sec()?;
+        // q6_sec()?;
+        // q7_sec()?;
+        // q8_sec()?;
+        // q9_sec()?;
+        // q10_sec()?;
+        // q11_sec()?;
+        // q12_sec()?;
+        // q13_sec()?;
+        // q14_sec()?;
+        // q15_sec()?;
+        // q16_sec()?;
+        // q17_sec()?;
+        // q18_sec()?;
+        // q19_sec()?;
+        // q20_sec()?;
+        // q21_sec()?;
+        // q22_sec()?;
 
         /* social graph */
         // se1_sec()?;
@@ -197,7 +223,7 @@ pub extern "C" fn secure_execute_pre(tid: u64,
     let mut op_ids = unsafe { (op_ids as *const Vec<OpId>).as_ref() }.unwrap().clone();
     let mut part_nums = unsafe { (part_nums as *const Vec<usize>).as_ref() }.unwrap().clone();
     let range_bound_src = unsafe { (range_bound_src as *const Vec<ItemE>).as_ref() }.unwrap().clone();
-    println!("in secure_execute_pre, op_ids = {:?}, part_nums = {:?}", op_ids, part_nums);
+    println!("in secure_execute_pre, op_ids = {:?}, part_nums = {:?}, {:?}", op_ids, part_nums, ordered_float::OrderedFloat(2.0f32));
     if dep_info.dep_type() == 1 {
         assert!(part_nums.len() == op_ids.len()+1);
         let reduce_num = part_nums.remove(0);

@@ -2,6 +2,7 @@ use rand::Rng;
 use std::vec::Vec;
 
 pub(crate) mod bounded_priority_queue;
+pub(crate) mod date;
 pub(crate) mod random;
 
 /// Shuffle the elements of a vec into a random order in place, modifying it.
