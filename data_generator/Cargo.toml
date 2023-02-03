@@ -7,7 +7,7 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-vega = { path = "../Submodule-of-SecureSpark" }
+vega = { path = "../flare-core-untrusted" }
 bincode = "1.2.1"
 serde = { version = "1.0.123", features = ["rc"] }
 serde_closure = { git = "https://github.com/AmbitionXiang/serde_closure", branch = "master" }

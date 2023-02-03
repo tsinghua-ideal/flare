@@ -23,7 +23,7 @@ SGX_ARCH ?= x64
 
 TOP_DIR := ./incubator-teaclave-sgx-sdk
 APP_DIR := app
-SPARK_CORE_DIR := Submodule-of-SecureSpark
+SPARK_CORE_DIR := flare-core-untrusted
 include $(TOP_DIR)/buildenv.mk
 
 ifeq ($(shell getconf LONG_BIT), 32)
