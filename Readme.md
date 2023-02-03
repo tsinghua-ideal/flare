@@ -7,7 +7,7 @@ This is the secure version of `Native Spark`, or `Vega`(https://github.com/rajas
 
 ## Infrastructure
 
-It contains two submodules named `Submodule-of-SecureSpark`, which is the focus to modify, and `incubator-teaclave-sgx-sdk`, the Rust SGX SDK developed by Baidu X Lab. `Submodule-of-SecureSpark` has one branch `master`, which is modified by me based on `master` branch of `Vega` repo.
+It contains two submodules named `flare-core-untrusted`, which is the focus to modify, and `incubator-teaclave-sgx-sdk`, the Rust SGX SDK developed by Baidu X Lab. `flare-core-untrusted` has one branch `master`, which is modified by me based on `master` branch of `Vega` repo.
 
 ## Setup Environment
 
@@ -18,7 +18,7 @@ git clone https://github.com/tsinghua-ideal/SecureSpark
 git submodule update --init --recursive
 ```
 
-Patching with the original `Vega` is feasible, you can do this in directory `Submodule-of-SecureSpark`:
+Patching with the original `Vega` is feasible, you can do this in directory `flare-core-untrusted`:
 ```
 git remote add upstream https://github.com/rajasekarv/vega
 ```

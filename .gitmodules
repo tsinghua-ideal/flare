@@ -1,6 +1,6 @@
-[submodule "Submodule-of-SecureSpark"]
-	path = Submodule-of-SecureSpark
-	url = https://github.com/tsinghua-ideal/Submodule-of-SecureSpark
+[submodule "flare-core-untrusted"]
+	path = flare-core-untrusted
+	url = https://github.com/tsinghua-ideal/flare-core-untrusted
 [submodule "incubator-teaclave-sgx-sdk"]
 	path = incubator-teaclave-sgx-sdk
 	url = https://github.com/AmbitionXiang/incubator-teaclave-sgx-sdk
