@@ -9,7 +9,7 @@ build = "build.rs"
 sgx_types = { path = "../incubator-teaclave-sgx-sdk/sgx_types" }
 sgx_urts = { path = "../incubator-teaclave-sgx-sdk/sgx_urts" }
 
-vega = { path = "../Submodule-of-SecureSpark" }
+vega = { path = "../flare-core-untrusted" }
 
 # serialization
 bincode = "1.2.1"
