@@ -19,8 +19,6 @@ Tasks will not run on the master node, and all the tasks run on worker nodes. So
 
 ### Config for Spark
 
-Checkout the `secure` branch of `native spark` first.
-
 Please refer to https://rajasekarv.github.io/vega/ for `Getting started` part and `Executing an application` part. 
 
 ### Compile
